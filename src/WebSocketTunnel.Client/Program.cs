@@ -11,7 +11,7 @@ public class Program
     private static HubConnection? Connection;
     private static readonly Guid InstanceId = Guid.NewGuid();
     private static readonly string Server = "https://localhost:7193";
-    private static readonly int ChunkSize = 16 * 1024; // 16KB
+    private static readonly int ChunkSize = 512 * 1024; // 512KB
 
     public static async Task Main(string[] args)
     {
@@ -26,12 +26,7 @@ public class Program
 
         rootCommand.SetHandler(async (string localUrl) =>
         {
-            var registered = await RegisterTunnelAsync(Server, localUrl, InstanceId);
-
-            if (registered)
-            {
-                await ConnectToServerAsync(Server, InstanceId);
-            }
+            await ConnectToServerAsync(localUrl, Server, InstanceId);
 
         }, localUrlArgument);
 
@@ -40,7 +35,7 @@ public class Program
         Console.ReadLine();
     }
 
-    private static async Task<bool> RegisterTunnelAsync(string publicUrl, string localUrl, Guid instanceId)
+    private static async Task<bool> RegisterTunnelAsync(string localUrl, string publicUrl, Guid instanceId)
     {
         var response = await HttpClient.PostAsJsonAsync(
             $"{publicUrl}/register-tunnel",
@@ -66,10 +61,14 @@ public class Program
         }
     }
 
-    private static async Task ConnectToServerAsync(string publicUrl, Guid instanceId)
+    private static async Task ConnectToServerAsync(string localUrl, string publicUrl, Guid instanceId)
     {
         Connection = new HubConnectionBuilder()
-            .WithUrl($"{publicUrl}/wstunnel?instanceId={instanceId}")
+            .WithUrl($"{publicUrl}/wstunnel?instanceId={instanceId}", options =>
+            {
+                options.TransportMaxBufferSize = ChunkSize; 
+                options.ApplicationMaxBufferSize = ChunkSize; 
+            })
             .WithAutomaticReconnect()
             .Build();
 
@@ -80,11 +79,11 @@ public class Program
             await TunnelRequestAsync(requestMetadata);
         });
 
-        Connection.Reconnected += connectionId =>
+        Connection.Reconnected += async connectionId =>
         {
             Console.WriteLine($"Reconnected. New ConnectionId {connectionId}");
 
-            return Task.CompletedTask;
+            await RegisterTunnelAsync(localUrl, publicUrl, instanceId);
         };
 
         Connection.Closed += async (error) =>
@@ -93,10 +92,16 @@ public class Program
 
             await Task.Delay(new Random().Next(0, 5) * 1000);
 
-            await ConnectWithRetryAsync(Connection, CancellationToken.None);
+            if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
+            {
+                await RegisterTunnelAsync(localUrl, publicUrl, instanceId);
+            }
         };
 
-        await ConnectWithRetryAsync(Connection, CancellationToken.None);
+        if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
+        {
+            await RegisterTunnelAsync(localUrl, publicUrl, instanceId);
+        }
     }
 
     private static async Task TunnelRequestAsync(RequestMetadata requestMetadata)
@@ -193,7 +198,7 @@ public class Program
             }
             catch
             {
-                Console.WriteLine($"Cannot connect to websocket server on {Server}");
+                Console.WriteLine($"Cannot connect to WebSocket server on {Server}");
 
                 await Task.Delay(5000, token);
             }

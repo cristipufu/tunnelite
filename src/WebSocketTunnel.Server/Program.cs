@@ -10,6 +10,13 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<TunnelStore>();
 builder.Services.AddSingleton<RequestsQueue>();
 
+builder.Services.Configure<HubOptions>(options =>
+{
+    options.MaximumReceiveMessageSize = 1024 * 1024; // 1MB
+    options.MaximumParallelInvocationsPerClient = 128;
+    options.StreamBufferCapacity = 128;
+});
+
 var app = builder.Build();
 
 app.UseHttpsRedirection();
@@ -36,19 +43,14 @@ app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel pa
 
         payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
 
-        if (!tunnelStore.Tunnels.TryAdd(subdomain, payload))
-        {
-            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-            await context.Response.WriteAsync("Failed to create the tunnel.");
-            return;
-        }
+        tunnelStore.Tunnels.AddOrUpdate(subdomain, payload, (key, oldValue) => payload);
 
         var baseUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
 
         var tunnelUrl = $"{baseUrl}/tunnels/{subdomain}";
 
         context.Response.StatusCode = StatusCodes.Status201Created;
-        await context.Response.WriteAsync($"Tunnel created: {tunnelUrl}");
+        await context.Response.WriteAsync(tunnelUrl);
     }
     catch (Exception ex)
     {
@@ -130,6 +132,12 @@ static async Task ProxyRequestAsync(HttpContext context, IHubContext<TunnelHub> 
     }
 }
 
-app.MapHub<TunnelHub>("/wstunnel");
+const int BufferSize = 512 * 1024; // 512KB
+
+app.MapHub<TunnelHub>("/wstunnel", (opt) =>
+{
+    opt.TransportMaxBufferSize = BufferSize;
+    opt.ApplicationMaxBufferSize = BufferSize;
+});
 
 app.Run();

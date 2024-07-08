@@ -24,7 +24,7 @@ namespace WebSocketTunnel.Server
             return base.OnDisconnectedAsync(exception);
         }
 
-        public async IAsyncEnumerable<byte[]> StreamRequestBodyAsync( Guid requestId, [EnumeratorCancellation] CancellationToken cancellationToken)
+        public async IAsyncEnumerable<byte[]> StreamRequestBodyAsync(Guid requestId, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var httpContext = _requestsQueue.GetHttpContext(requestId);
 
@@ -33,7 +33,7 @@ namespace WebSocketTunnel.Server
                 yield break;
             }
 
-            const int chunkSize = 16 * 1024; // 16KB
+            const int chunkSize = 512 * 1024; // 512KB
 
             var buffer = new byte[chunkSize];
             int bytesRead;
