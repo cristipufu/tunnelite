@@ -7,11 +7,18 @@ namespace WebSocketTunnel.Client;
 
 public class Program
 {
-    private static readonly HttpClient HttpClient = new();
     private static HubConnection? Connection;
-    private static readonly Guid InstanceId = Guid.NewGuid();
-    private static readonly string Server = "https://localhost:7193";
+    private static readonly Guid ClientId = Guid.NewGuid();
+    private static readonly string Server = "https://tunnelite.azurewebsites.net/";
+    //private static readonly string Server = "https://localhost:7193";
     private static readonly int ChunkSize = 512 * 1024; // 512KB
+
+    private static readonly HttpClientHandler LocalHttpClientHandler = new()
+    {
+        ServerCertificateCustomValidationCallback = (message, cert, chain, sslPolicyErrors) => true,
+    };
+    private static readonly HttpClient ServerHttpClient = new();
+    private static readonly HttpClient LocalHttpClient = new(LocalHttpClientHandler);
 
     public static async Task Main(string[] args)
     {
@@ -19,14 +26,14 @@ public class Program
 
         var rootCommand = new RootCommand
         {
-            localUrlArgument
+            localUrlArgument,
         };
 
         rootCommand.Description = "CLI tool to create a tunnel to a local server.";
 
         rootCommand.SetHandler(async (string localUrl) =>
         {
-            await ConnectToServerAsync(localUrl, Server, InstanceId);
+            await ConnectToServerAsync(localUrl, Server, ClientId);
 
         }, localUrlArgument);
 
@@ -35,14 +42,14 @@ public class Program
         Console.ReadLine();
     }
 
-    private static async Task<bool> RegisterTunnelAsync(string localUrl, string publicUrl, Guid instanceId)
+    private static async Task<bool> RegisterTunnelAsync(string localUrl, string publicUrl, Guid clientId)
     {
-        var response = await HttpClient.PostAsJsonAsync(
+        var response = await ServerHttpClient.PostAsJsonAsync(
             $"{publicUrl}/register-tunnel",
             new Tunnel
             {
                 LocalUrl = localUrl,
-                InstanceId = instanceId,
+                ClientId = clientId,
             });
 
         var message = await response.Content.ReadAsStringAsync();
@@ -61,10 +68,10 @@ public class Program
         }
     }
 
-    private static async Task ConnectToServerAsync(string localUrl, string publicUrl, Guid instanceId)
+    private static async Task ConnectToServerAsync(string localUrl, string publicUrl, Guid clientId)
     {
         Connection = new HubConnectionBuilder()
-            .WithUrl($"{publicUrl}/wstunnel?instanceId={instanceId}", options =>
+            .WithUrl($"{publicUrl}/wstunnel?clientId={clientId}", options =>
             {
                 options.TransportMaxBufferSize = ChunkSize; 
                 options.ApplicationMaxBufferSize = ChunkSize; 
@@ -83,7 +90,7 @@ public class Program
         {
             Console.WriteLine($"Reconnected. New ConnectionId {connectionId}");
 
-            await RegisterTunnelAsync(localUrl, publicUrl, instanceId);
+            await RegisterTunnelAsync(localUrl, publicUrl, clientId);
         };
 
         Connection.Closed += async (error) =>
@@ -94,13 +101,13 @@ public class Program
 
             if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
             {
-                await RegisterTunnelAsync(localUrl, publicUrl, instanceId);
+                await RegisterTunnelAsync(localUrl, publicUrl, clientId);
             }
         };
 
         if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
         {
-            await RegisterTunnelAsync(localUrl, publicUrl, instanceId);
+            await RegisterTunnelAsync(localUrl, publicUrl, clientId);
         }
     }
 
@@ -137,7 +144,7 @@ public class Program
                 requestMessage.Content.Headers.ContentType = new MediaTypeHeaderValue(requestMetadata.ContentType);
             }
 
-            var response = await HttpClient.SendAsync(requestMessage);
+            var response = await LocalHttpClient.SendAsync(requestMessage);
 
             var responseMetadata = new ResponseMetadata
             {

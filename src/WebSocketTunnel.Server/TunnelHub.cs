@@ -11,16 +11,26 @@ namespace WebSocketTunnel.Server
 
         public override Task OnConnectedAsync()
         {
-            var instanceId = Context.GetHttpContext()!.Request.Query["instanceId"].ToString();
+            var clientId = Context.GetHttpContext()!.Request.Query["clientId"].ToString();
 
-            _tunnelStore.Connections.AddOrUpdate(Guid.Parse(instanceId), Context.ConnectionId, (key, oldValue) => Context.ConnectionId);
+            _tunnelStore.Connections.AddOrUpdate(Guid.Parse(clientId), Context.ConnectionId, (key, oldValue) => Context.ConnectionId);
 
             return base.OnConnectedAsync();
         }
 
         public override Task OnDisconnectedAsync(Exception? exception)
         {
-            // todo 
+            var clientIdQuery = Context.GetHttpContext()!.Request.Query["clientId"].ToString();
+
+            var clientId = Guid.Parse(clientIdQuery);
+
+            if (_tunnelStore.Clients.TryGetValue(clientId, out var subdomain))
+            {
+                _tunnelStore.Tunnels.Remove(subdomain, out var _);
+                _tunnelStore.Connections.Remove(clientId, out var _);
+                _tunnelStore.Clients.Remove(clientId, out _);
+            }
+
             return base.OnDisconnectedAsync(exception);
         }
 

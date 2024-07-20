@@ -32,10 +32,10 @@ app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel pa
             return;
         }
 
-        if (payload.InstanceId == Guid.Empty)
+        if (payload.ClientId == Guid.Empty)
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await context.Response.WriteAsync("Missing or invalid 'InstanceId' property.");
+            await context.Response.WriteAsync("Missing or invalid 'ClientId' property.");
             return;
         }
 
@@ -44,6 +44,7 @@ app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel pa
         payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
 
         tunnelStore.Tunnels.AddOrUpdate(subdomain, payload, (key, oldValue) => payload);
+        tunnelStore.Clients.AddOrUpdate(payload.ClientId, subdomain, (key, oldValue) => subdomain);
 
         var baseUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
 
@@ -83,7 +84,8 @@ static async Task ProxyRequestAsync(HttpContext context, IHubContext<TunnelHub> 
 
         var subdomain = context.Request.Host.Host.Split('.')[0];
 
-        if (subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase))
+        if (subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase) ||
+            subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
         {
             tunnel = tunnelStore.Tunnels.FirstOrDefault().Value;
         }
@@ -100,7 +102,7 @@ static async Task ProxyRequestAsync(HttpContext context, IHubContext<TunnelHub> 
             return;
         }
 
-        if (!tunnelStore.Connections.TryGetValue(tunnel!.InstanceId, out var connectionId))
+        if (!tunnelStore.Connections.TryGetValue(tunnel!.ClientId, out var connectionId))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsync("Client disconnected!");
