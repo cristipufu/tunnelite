@@ -1,4 +1,6 @@
 ﻿using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System.CommandLine;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -75,6 +77,12 @@ public class Program
             {
                 options.TransportMaxBufferSize = ChunkSize; 
                 options.ApplicationMaxBufferSize = ChunkSize; 
+            })
+            .AddMessagePackProtocol()
+            .ConfigureLogging(logging =>
+            {
+                logging.SetMinimumLevel(LogLevel.Information);
+                logging.AddConsole();
             })
             .WithAutomaticReconnect()
             .Build();

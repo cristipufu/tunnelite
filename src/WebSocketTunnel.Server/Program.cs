@@ -5,7 +5,8 @@ using WebSocketTunnel.Server.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSignalR();
+builder.Services.AddSignalR()
+                .AddMessagePackProtocol();
 
 builder.Services.AddSingleton<TunnelStore>();
 builder.Services.AddSingleton<RequestsQueue>();
