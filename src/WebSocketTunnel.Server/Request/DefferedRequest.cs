@@ -1,4 +1,4 @@
-﻿namespace WebSocketTunnel.Server.Infrastructure
+﻿namespace WebSocketTunnel.Server.Request
 {
     public class DefferedRequest : IDisposable
     {

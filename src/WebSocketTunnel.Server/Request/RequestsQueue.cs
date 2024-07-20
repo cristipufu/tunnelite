@@ -1,6 +1,6 @@
 ﻿using System.Collections.Concurrent;
 
-namespace WebSocketTunnel.Server.Infrastructure
+namespace WebSocketTunnel.Server.Request
 {
     public class RequestsQueue : IRequestsQueue
     {

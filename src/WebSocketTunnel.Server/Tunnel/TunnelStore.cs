@@ -1,6 +1,6 @@
 ﻿using System.Collections.Concurrent;
 
-namespace WebSocketTunnel.Server
+namespace WebSocketTunnel.Server.Tunnel
 {
     public class TunnelStore
     {

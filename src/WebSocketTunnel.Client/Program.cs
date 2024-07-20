@@ -11,7 +11,7 @@ public class Program
 {
     private static HubConnection? Connection;
     private static readonly Guid ClientId = Guid.NewGuid();
-    private static readonly string Server = "https://tunnelite.azurewebsites.net/";
+    private static readonly string Server = "https://tunnelite.com";
     //private static readonly string Server = "https://localhost:7193";
     private static readonly int ChunkSize = 512 * 1024; // 512KB
 

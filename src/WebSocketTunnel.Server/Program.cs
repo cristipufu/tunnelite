@@ -1,15 +1,17 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using WebSocketTunnel.Server;
-using WebSocketTunnel.Server.Infrastructure;
+using WebSocketTunnel.Server.Dns;
+using WebSocketTunnel.Server.Request;
+using WebSocketTunnel.Server.Tunnel;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSignalR()
-                .AddMessagePackProtocol();
-
 builder.Services.AddSingleton<TunnelStore>();
 builder.Services.AddSingleton<RequestsQueue>();
+
+builder.Services.AddSignalR()
+                .AddMessagePackProtocol();
 
 builder.Services.Configure<HubOptions>(options =>
 {
@@ -19,6 +21,8 @@ builder.Services.Configure<HubOptions>(options =>
 });
 
 var app = builder.Build();
+
+app.UseStaticFiles();
 
 app.UseHttpsRedirection();
 
@@ -40,16 +44,14 @@ app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel pa
             return;
         }
 
-        var subdomain = Guid.NewGuid().ToString(); // todo create subdomain
+        var subdomain = DnsBuilder.RandomSubdomain();
 
         payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
 
         tunnelStore.Tunnels.AddOrUpdate(subdomain, payload, (key, oldValue) => payload);
         tunnelStore.Clients.AddOrUpdate(payload.ClientId, subdomain, (key, oldValue) => subdomain);
 
-        var baseUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
-
-        var tunnelUrl = $"{baseUrl}/tunnels/{subdomain}";
+        var tunnelUrl = $"{context.Request.Scheme}://{subdomain}.{context.Request.Host}{context.Request.PathBase}";
 
         context.Response.StatusCode = StatusCodes.Status201Created;
         await context.Response.WriteAsync(tunnelUrl);
@@ -61,6 +63,12 @@ app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel pa
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
         await context.Response.WriteAsync("An error occurred while creating the tunnel.");
     }
+});
+
+app.MapGet("/favicon.ico", async context =>
+{
+    context.Response.ContentType = "image/x-icon";
+    await context.Response.SendFileAsync("wwwroot/favicon.ico");
 });
 
 var supportedMethods = new[] { "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD" };
@@ -85,28 +93,32 @@ static async Task ProxyRequestAsync(HttpContext context, IHubContext<TunnelHub> 
 
         var subdomain = context.Request.Host.Host.Split('.')[0];
 
-        if (subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase) ||
-            subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
         {
             tunnel = tunnelStore.Tunnels.FirstOrDefault().Value;
         }
+        else if (subdomain.Equals("tunnelite"))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            await context.Response.WriteAsync(AsciiText.NotFound);
+            return;
+        }
         else
         {
-            // todo get tunnel by subdomain
-            //!tunnels.TryGetValue(subdomain, out var tunnel))
+            tunnelStore.Tunnels.TryGetValue(subdomain, out tunnel);
         }
 
         if (tunnel == null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
-            await context.Response.WriteAsync("Tunnel not found.");
+            await context.Response.WriteAsync(AsciiText.NotFound);
             return;
         }
 
         if (!tunnelStore.Connections.TryGetValue(tunnel!.ClientId, out var connectionId))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
-            await context.Response.WriteAsync("Client disconnected!");
+            await context.Response.WriteAsync(AsciiText.NotFound);
             return;
         }
         

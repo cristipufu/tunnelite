@@ -1,8 +1,8 @@
 ﻿using Microsoft.AspNetCore.SignalR;
 using System.Runtime.CompilerServices;
-using WebSocketTunnel.Server.Infrastructure;
+using WebSocketTunnel.Server.Request;
 
-namespace WebSocketTunnel.Server
+namespace WebSocketTunnel.Server.Tunnel
 {
     public class TunnelHub(RequestsQueue requestsQueue, TunnelStore tunnelStore) : Hub
     {

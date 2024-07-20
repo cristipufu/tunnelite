@@ -1,7 +1,7 @@
 ﻿#nullable disable
 using System.Net;
 
-namespace WebSocketTunnel.Server
+namespace WebSocketTunnel.Server.Request
 {
     public class ResponseMetadata
     {

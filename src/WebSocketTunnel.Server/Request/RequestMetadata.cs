@@ -1,5 +1,5 @@
 ﻿#nullable disable
-namespace WebSocketTunnel.Server
+namespace WebSocketTunnel.Server.Request
 {
     public class RequestMetadata
     {
