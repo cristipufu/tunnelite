@@ -83,7 +83,7 @@ static async Task ProxyRequestAsync(HttpContext context, IHubContext<TunnelHub> 
 
         var subdomain = context.Request.Host.Host.Split('.')[0];
 
-        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        if (subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase))
         {
             tunnel = tunnelStore.Tunnels.FirstOrDefault().Value;
         }

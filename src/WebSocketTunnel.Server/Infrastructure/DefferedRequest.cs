@@ -24,6 +24,7 @@
         {
             if (disposing)
             {
+                HttpContext = null;
                 TimeoutCancellationTokenSource?.Dispose();
                 CancellationTokenSource?.Dispose();
                 CancellationTokenRegistration.Dispose();
