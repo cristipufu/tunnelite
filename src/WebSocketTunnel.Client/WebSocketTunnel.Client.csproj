@@ -5,8 +5,27 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>tunnelite</ToolCommandName>
+    <PackageId>Tunnelite</PackageId>
+    <PackageTags>tunnel;tunneling;websockets;signalr;reverse-proxy;proxy;</PackageTags>
+    <Authors>Cristi Pufu</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Description>Tool for tunneling URLs</Description>
+    <PackageProjectUrl>https://github.com/cristipufu/ws-tunnel-signalr</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/cristipufu/ws-tunnel-signalr</RepositoryUrl>
+    <Version>1.0.2</Version>
   </PropertyGroup>
-
+	
+  <ItemGroup>
+    <None Include="..\..\README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+	
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.6" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="8.0.7" />
