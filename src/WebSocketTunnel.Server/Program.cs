@@ -44,24 +44,48 @@ app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel pa
             return;
         }
 
-        var subdomain = DnsBuilder.RandomSubdomain();
+        if (string.IsNullOrEmpty(payload.Subdomain))
+        {
+            payload.Subdomain = DnsBuilder.RandomSubdomain();
+        }
+        else
+        {
+            // don't hijack existing subdomain from another client
+            if (tunnelStore.Tunnels.TryGetValue(payload.Subdomain, out var tunnel))
+            {
+                if (tunnel.ClientId != payload.ClientId)
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsync("Missing or invalid 'Subdomain' property.");
+                    return;
+                }
+            }
+        }
 
         payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
 
-        tunnelStore.Tunnels.AddOrUpdate(subdomain, payload, (key, oldValue) => payload);
-        tunnelStore.Clients.AddOrUpdate(payload.ClientId, subdomain, (key, oldValue) => subdomain);
+        tunnelStore.Tunnels.AddOrUpdate(payload.Subdomain, payload, (key, oldValue) => payload);
+        tunnelStore.Clients.AddOrUpdate(payload.ClientId, payload.Subdomain, (key, oldValue) => payload.Subdomain);
 
-        var tunnelUrl = $"{context.Request.Scheme}://{subdomain}.{context.Request.Host}{context.Request.PathBase}";
+        var tunnelUrl = $"{context.Request.Scheme}://{payload.Subdomain}.{context.Request.Host}{context.Request.PathBase}";
 
         context.Response.StatusCode = StatusCodes.Status201Created;
-        await context.Response.WriteAsync(tunnelUrl);
+        await context.Response.WriteAsJsonAsync(new
+        {
+            TunnelUrl = tunnelUrl,
+            payload.Subdomain,
+        });
     }
     catch (Exception ex)
     {
         logger.LogError(ex, "Error creating tunnel: {Message}", ex.Message);
 
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-        await context.Response.WriteAsync("An error occurred while creating the tunnel.");
+        await context.Response.WriteAsJsonAsync(new
+        {
+            Message = "An error occurred while creating the tunnel",
+            Error = ex.Message,
+        });
     }
 });
 

@@ -22,29 +22,35 @@ public class Program
     private static readonly HttpClient ServerHttpClient = new();
     private static readonly HttpClient LocalHttpClient = new(LocalHttpClientHandler);
 
+
     public static async Task Main(string[] args)
     {
         var localUrlArgument = new Argument<string>("localUrl", "The local URL to tunnel to.");
+        var logLevelOption = new Option<LogLevel>(
+            "--log",
+            () => LogLevel.Warning,
+            "The logging level (e.g., Trace, Debug, Information, Warning, Error, Critical)");
 
         var rootCommand = new RootCommand
         {
             localUrlArgument,
+            logLevelOption
         };
 
         rootCommand.Description = "CLI tool to create a tunnel to a local server.";
 
-        rootCommand.SetHandler(async (string localUrl) =>
+        rootCommand.SetHandler(async (string localUrl, LogLevel logLevel) =>
         {
-            await ConnectToServerAsync(localUrl, Server, ClientId);
+            await ConnectToServerAsync(localUrl, Server, ClientId, logLevel);
 
-        }, localUrlArgument);
+        }, localUrlArgument, logLevelOption);
 
         await rootCommand.InvokeAsync(args);
 
         Console.ReadLine();
     }
 
-    private static async Task<bool> RegisterTunnelAsync(string localUrl, string publicUrl, Guid clientId)
+    private static async Task<TunnelResponse> RegisterTunnelAsync(string localUrl, string publicUrl, Guid clientId, TunnelResponse? existingTunnel)
     {
         var response = await ServerHttpClient.PostAsJsonAsync(
             $"{publicUrl}/register-tunnel",
@@ -52,26 +58,27 @@ public class Program
             {
                 LocalUrl = localUrl,
                 ClientId = clientId,
+                Subdomain = existingTunnel?.Subdomain,
             });
 
-        var message = await response.Content.ReadAsStringAsync();
+        var content = await response.Content.ReadFromJsonAsync<TunnelResponse>();
 
         if (response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"Tunnel created successfully: {message}");
-
-            return true;
+            Console.WriteLine($"Tunnel created successfully: {content!.TunnelUrl}");
         }
         else
         {
-            Console.WriteLine($"Failed to create tunnel. {message}");
-
-            return false;
+            Console.WriteLine($"{content!.Message}:{content.Error}");
         }
+
+        return content;
     }
 
-    private static async Task ConnectToServerAsync(string localUrl, string publicUrl, Guid clientId)
+    private static async Task ConnectToServerAsync(string localUrl, string publicUrl, Guid clientId, LogLevel logLevel)
     {
+        TunnelResponse? tunnel = null;
+
         Connection = new HubConnectionBuilder()
             .WithUrl($"{publicUrl}/wstunnel?clientId={clientId}", options =>
             {
@@ -81,7 +88,7 @@ public class Program
             .AddMessagePackProtocol()
             .ConfigureLogging(logging =>
             {
-                logging.SetMinimumLevel(LogLevel.Information);
+                logging.SetMinimumLevel(logLevel);
                 logging.AddConsole();
             })
             .WithAutomaticReconnect()
@@ -98,7 +105,7 @@ public class Program
         {
             Console.WriteLine($"Reconnected. New ConnectionId {connectionId}");
 
-            await RegisterTunnelAsync(localUrl, publicUrl, clientId);
+            tunnel = await RegisterTunnelAsync(localUrl, publicUrl, clientId, tunnel);
         };
 
         Connection.Closed += async (error) =>
@@ -109,13 +116,13 @@ public class Program
 
             if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
             {
-                await RegisterTunnelAsync(localUrl, publicUrl, clientId);
+                tunnel = await RegisterTunnelAsync(localUrl, publicUrl, clientId, tunnel);
             }
         };
 
         if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
         {
-            await RegisterTunnelAsync(localUrl, publicUrl, clientId);
+            tunnel = await RegisterTunnelAsync(localUrl, publicUrl, clientId, tunnel);
         }
     }
 

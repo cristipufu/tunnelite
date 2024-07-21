@@ -2,7 +2,7 @@
 {
     public static class DnsBuilder
     {
-        public static string RandomSubdomain(int length = 6)
+        public static string RandomSubdomain(int length = 8)
         {
             Random random = new();
             const string chars = "abcdefghijklmnopqrstuvwxyz0123456789";
