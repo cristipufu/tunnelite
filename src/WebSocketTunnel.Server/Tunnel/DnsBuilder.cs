@@ -1,4 +1,4 @@
-﻿namespace WebSocketTunnel.Server.Dns
+﻿namespace WebSocketTunnel.Server.Tunnel
 {
     public static class DnsBuilder
     {

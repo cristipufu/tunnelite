@@ -1,6 +1,6 @@
-﻿namespace WebSocketTunnel.Server
+﻿namespace WebSocketTunnel.Server.Request
 {
-    public static class AsciiText
+    public static class ResponseText
     {
         public const string NotFound = @"  Oops! Lost in the Tunnel?
 < ------------------------ >

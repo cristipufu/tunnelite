@@ -1,7 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
-using WebSocketTunnel.Server;
-using WebSocketTunnel.Server.Dns;
 using WebSocketTunnel.Server.Request;
 using WebSocketTunnel.Server.Tunnel;
 
@@ -10,8 +8,18 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<TunnelStore>();
 builder.Services.AddSingleton<RequestsQueue>();
 
-builder.Services.AddSignalR()
-                .AddMessagePackProtocol();
+var signalRConnectionString = builder.Configuration.GetConnectionString("AzureSignalR");
+
+var signalRBuilder = builder.Services.AddSignalR()
+                            .AddMessagePackProtocol();
+
+if (!string.IsNullOrEmpty(signalRConnectionString))
+{
+    signalRBuilder.AddAzureSignalR(opt =>
+    {
+        opt.ConnectionString = signalRConnectionString;
+    });
+}
 
 builder.Services.Configure<HubOptions>(options =>
 {
@@ -124,7 +132,7 @@ static async Task ProxyRequestAsync(HttpContext context, IHubContext<TunnelHub> 
         else if (subdomain.Equals("tunnelite"))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
-            await context.Response.WriteAsync(AsciiText.NotFound);
+            await context.Response.WriteAsync(ResponseText.NotFound);
             return;
         }
         else
@@ -135,14 +143,14 @@ static async Task ProxyRequestAsync(HttpContext context, IHubContext<TunnelHub> 
         if (tunnel == null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
-            await context.Response.WriteAsync(AsciiText.NotFound);
+            await context.Response.WriteAsync(ResponseText.NotFound);
             return;
         }
 
         if (!tunnelStore.Connections.TryGetValue(tunnel!.ClientId, out var connectionId))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
-            await context.Response.WriteAsync(AsciiText.NotFound);
+            await context.Response.WriteAsync(ResponseText.NotFound);
             return;
         }
         
