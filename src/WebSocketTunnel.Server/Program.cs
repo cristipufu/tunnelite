@@ -34,7 +34,7 @@ app.UseStaticFiles();
 
 app.UseHttpsRedirection();
 
-app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel payload, TunnelStore tunnelStore, ILogger<Program> logger) =>
+app.MapPost("/tunnelite/tunnel", async (HttpContext context, [FromBody] Tunnel payload, TunnelStore tunnelStore, ILogger<Program> logger) =>
 {
     try
     {
@@ -92,6 +92,115 @@ app.MapPost("/register-tunnel", async (HttpContext context, [FromBody] Tunnel pa
         await context.Response.WriteAsJsonAsync(new
         {
             Message = "An error occurred while creating the tunnel",
+            Error = ex.Message,
+        });
+    }
+});
+
+app.MapGet("/tunnelite/request/{requestId}", async (HttpContext context, [FromRoute] Guid requestId, RequestsQueue requestsQueue, ILogger<Program> logger) =>
+{
+    try
+    {
+        var deferredHttpContext = requestsQueue.GetHttpContext(requestId);
+
+        if (deferredHttpContext == null)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        // Send method
+        context.Response.Headers.Append("X-T-Method", deferredHttpContext.Request.Method);
+
+        // Send headers
+        foreach (var header in deferredHttpContext.Request.Headers)
+        {
+            context.Response.Headers.Append($"X-TR-{header.Key}", header.Value.ToString());
+        }
+
+        // Stream the body
+        await deferredHttpContext.Request.Body.CopyToAsync(context.Response.Body);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Error fetching request body: {Message}", ex.Message);
+
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsJsonAsync(new
+        {
+            Message = "An error occurred while fetching the request body",
+            Error = ex.Message,
+        });
+    }
+});
+
+app.MapPost("/tunnelite/request/{requestId}", async (HttpContext context, [FromRoute] Guid requestId, RequestsQueue requestsQueue, ILogger<Program> logger) =>
+{
+    try
+    {
+        var deferredHttpContext = requestsQueue.GetHttpContext(requestId);
+
+        if (deferredHttpContext == null)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        // Set the status code
+        if (context.Request.Headers.TryGetValue("X-T-Status", out var statusCodeHeader)
+            && int.TryParse(statusCodeHeader, out var statusCode))
+        {
+            deferredHttpContext.Response.StatusCode = statusCode;
+        }
+        else
+        {
+            deferredHttpContext.Response.StatusCode = 200; // Default to 200 OK if not specified
+        }
+
+        // Copy headers from the tunneling client's request to the deferred response
+        var notAllowed = new string[] { "Connection", "Transfer-Encoding", "Keep-Alive", "Upgrade", "Proxy-Connection" };
+
+        foreach (var header in context.Request.Headers)
+        {
+            if (header.Key.StartsWith("X-TR-"))
+            {
+                var headerKey = header.Key[5..]; // Remove "X-TR-" prefix
+
+                if (!notAllowed.Contains(headerKey))
+                {
+                    deferredHttpContext.Response.Headers.TryAdd(headerKey, header.Value);
+                }
+            }
+
+            if (header.Key.StartsWith("X-TC-"))
+            {
+                var headerKey = header.Key[5..]; // Remove "X-TR-" prefix
+
+                if (!notAllowed.Contains(headerKey))
+                {
+                    deferredHttpContext.Response.Headers.TryAdd(headerKey, header.Value);
+                }
+            }
+        }
+
+        // Stream the body from the tunneling client's request to the deferred response
+        await context.Request.Body.CopyToAsync(deferredHttpContext.Response.Body);
+
+        // Complete the deferred response
+        await requestsQueue.CompleteAsync(requestId);
+
+        // Send a confirmation response to the tunneling client
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
+
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsJsonAsync(new
+        {
+            Message = "An error occurred while forwarding the response body",
             Error = ex.Message,
         });
     }

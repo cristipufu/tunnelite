@@ -1,0 +1,24 @@
+@startuml
+actor "External Client" as EC
+participant "Public Tunneling Server\n(Multiple Pods)" as PTS
+participant "Azure SignalR" as AS
+participant "Tunneling Client" as TC
+participant "Intranet Server" as IS
+
+EC -> PTS: 1. HTTP Request
+PTS -> AS: 2. Notify Client (based on subdomain)
+AS --> TC: 3. WSS Notification (contains pod name)
+TC -> PTS: 4. HTTP GET (with headers for pod routing)
+PTS --> TC: 5. Stream HTTP Request Body
+TC -> IS: 6. Forward Request
+IS --> TC: 7. Forward Response
+TC -> PTS: 8. HTTP POST (with headers for pod routing)
+PTS --> EC: 9. Stream Response
+
+note right of PTS
+  Steps 4-5 and 8-9 are routed
+  to the same pod based on
+  HTTP headers
+end note
+
+@enduml

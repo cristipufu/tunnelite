@@ -53,7 +53,7 @@ public class Program
     private static async Task<TunnelResponse> RegisterTunnelAsync(string localUrl, string publicUrl, Guid clientId, TunnelResponse? existingTunnel)
     {
         var response = await ServerHttpClient.PostAsJsonAsync(
-            $"{publicUrl}/register-tunnel",
+            $"{publicUrl}/tunnelite/tunnel",
             new Tunnel
             {
                 LocalUrl = localUrl,
@@ -98,7 +98,8 @@ public class Program
         {
             Console.WriteLine($"Received tunneling request: [{requestMetadata.Method}]{requestMetadata.Path}");
 
-            await TunnelRequestAsync(requestMetadata);
+            await TunnelRequestWithHttpAsync(publicUrl, requestMetadata);
+            //await TunnelRequestWithWssAsync(requestMetadata);
         });
 
         Connection.Reconnected += async connectionId =>
@@ -126,7 +127,76 @@ public class Program
         }
     }
 
-    private static async Task TunnelRequestAsync(RequestMetadata requestMetadata)
+    private static async Task TunnelRequestWithHttpAsync(string publicUrl, RequestMetadata requestMetadata)
+    {
+        try
+        {
+            // Start the request to the public server
+            using var publicResponse = await ServerHttpClient.GetAsync(
+                $"{publicUrl}/tunnelite/request/{requestMetadata.RequestId}",
+                HttpCompletionOption.ResponseHeadersRead);
+
+            publicResponse.EnsureSuccessStatusCode();
+
+            // Prepare the request to the local server
+            var localRequest = new HttpRequestMessage(new HttpMethod(requestMetadata.Method), requestMetadata.Path);
+
+            // Copy headers from public response to local request
+            foreach (var header in publicResponse.Headers)
+            {
+                if (header.Key.StartsWith("X-TR-"))
+                {
+                    localRequest.Headers.TryAddWithoutValidation(header.Key[5..], header.Value);
+                }
+            }
+
+            // Set the content of the local request to stream the data from the public response
+            localRequest.Content = new StreamContent(await publicResponse.Content.ReadAsStreamAsync());
+
+            if (requestMetadata.ContentType != null)
+            {
+                localRequest.Content.Headers.ContentType = new MediaTypeHeaderValue(requestMetadata.ContentType);
+            }
+
+            // Send the request to the local server and get the response
+            using var localResponse = await LocalHttpClient.SendAsync(localRequest);
+
+            // Prepare the request back to the public server
+            var publicRequest = new HttpRequestMessage(HttpMethod.Post, $"{publicUrl}/tunnelite/request/{requestMetadata.RequestId}");
+
+            // Set the status code
+            publicRequest.Headers.Add("X-T-Status", ((int)localResponse.StatusCode).ToString());
+
+            // Copy headers from local response to public request
+            foreach (var header in localResponse.Headers)
+            {
+                publicRequest.Headers.TryAddWithoutValidation($"X-TR-{header.Key}", header.Value);
+            }
+
+            // Copy content headers from local response to public request
+            foreach (var header in localResponse.Content.Headers)
+            {
+                publicRequest.Headers.TryAddWithoutValidation($"X-TC-{header.Key}", header.Value);
+            }
+
+            // Set the content of the public request to stream from the local response
+            publicRequest.Content = new StreamContent(await localResponse.Content.ReadAsStreamAsync());
+
+            // Send the response back to the public server
+            using var response = await ServerHttpClient.SendAsync(publicRequest);
+
+            response.EnsureSuccessStatusCode();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Unexpected error tunneling request: {ex.Message}");
+
+            // todo replace wss
+            await Connection!.SendAsync("CompleteWithErrorAsync", requestMetadata, ex.Message);
+        }
+    }
+
+    private static async Task TunnelRequestWithWssAsync(RequestMetadata requestMetadata)
     {
         if (Connection == null)
         {
