@@ -1,6 +1,7 @@
 using WebSocketTunnel.Server;
 using WebSocketTunnel.Server.HttpTunnel;
 using WebSocketTunnel.Server.TcpTunnel;
+using WebSocketTunnel.Server.WsTunnel;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +18,8 @@ app.UseStaticFiles();
 app.UseFavicon();
 
 app.UseHttpsRedirection();
+
+app.UseWsTunneling();
 
 app.UseHttpTunneling();
 

@@ -8,3 +8,9 @@ public class HttpConnection
     public string ContentType { get; set; }
     public string Path { get; set; }
 }
+
+public class WsConnection
+{
+    public Guid RequestId { get; set; }
+    public string Path { get; set; }
+}

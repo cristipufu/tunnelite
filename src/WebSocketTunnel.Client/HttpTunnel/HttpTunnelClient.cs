@@ -1,8 +1,11 @@
 ﻿using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Buffers;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.WebSockets;
+using System.Runtime.CompilerServices;
 
 namespace WebSocketTunnel.Client.HttpTunnel;
 
@@ -38,7 +41,16 @@ public class HttpTunnelClient
         {
             Console.WriteLine($"Received http tunneling request: [{httpConnection.Method}]{httpConnection.Path}");
 
-            _ = TunnelConnectionAsync(httpConnection);
+            _ = TunnelHttpConnectionAsync(httpConnection);
+
+            return Task.CompletedTask;
+        });
+
+        Connection.On<WsConnection>("NewWsConnection", (wsConnection) =>
+        {
+            Console.WriteLine($"Received ws tunneling request: {wsConnection.Path}");
+
+            _ = TunnelWsConnectionAsync(wsConnection);
 
             return Task.CompletedTask;
         });
@@ -71,7 +83,7 @@ public class HttpTunnelClient
         }
     }
 
-    private async Task TunnelConnectionAsync(HttpConnection httpConnection)
+    private async Task TunnelHttpConnectionAsync(HttpConnection httpConnection)
     {
         var publicUrl = Tunnel.PublicUrl;
 
@@ -139,6 +151,95 @@ public class HttpTunnelClient
 
             using var errorRequest = new HttpRequestMessage(HttpMethod.Delete, requestUrl);
             using var response = await ServerHttpClient.SendAsync(errorRequest);
+        }
+    }
+
+    private async Task TunnelWsConnectionAsync(WsConnection wsConnection)
+    {
+        using var cts = new CancellationTokenSource();
+
+        try
+        {
+            using var webSocket = new ClientWebSocket();
+
+            await webSocket.ConnectAsync(new Uri(wsConnection.Path), cts.Token);
+
+            var incomingTask = StreamIncomingWsAsync(webSocket, wsConnection, cts.Token);
+            var outgoingTask = StreamOutgoingWsAsync(webSocket, wsConnection, cts.Token);
+
+            await Task.WhenAny(incomingTask, outgoingTask);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to connect to WebSocket for connection {wsConnection.RequestId}: {ex.Message}");
+        }
+        finally
+        {
+            cts.Cancel();
+
+            Console.WriteLine($"WS Connection {wsConnection.RequestId} done.");
+        }
+    }
+
+    private async Task StreamIncomingWsAsync(WebSocket webSocket, WsConnection wsConnection, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var chunk in Connection.StreamAsync<(ReadOnlyMemory<byte> Data, WebSocketMessageType Type)>("StreamIncomingWsAsync", wsConnection, cancellationToken: cancellationToken))
+            {
+                if (webSocket.State == WebSocketState.Open)
+                {
+                    if (chunk.Type == WebSocketMessageType.Close)
+                    {
+                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                    }
+                    else
+                    {
+                        await webSocket.SendAsync(chunk.Data, chunk.Type, true, cancellationToken);
+                    }
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            Console.WriteLine($"Writing data to WebSocket connection {wsConnection.RequestId} finished.");
+        }
+    }
+
+    private async Task StreamOutgoingWsAsync(WebSocket localWebSocket, WsConnection wsConnection, CancellationToken cancellationToken)
+    {
+        await Connection.InvokeAsync("StreamOutgoingWsAsync", StreamLocalWsAsync(localWebSocket, wsConnection, cancellationToken), wsConnection, cancellationToken: cancellationToken);
+    }
+
+    private static async IAsyncEnumerable<(ReadOnlyMemory<byte>, WebSocketMessageType)> StreamLocalWsAsync(WebSocket webSocket, WsConnection wsConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        const int chunkSize = 32 * 1024;
+
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+
+        try
+        {
+            while (webSocket.State == WebSocketState.Open)
+            {
+                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    break;
+                }
+
+                yield return (new ReadOnlyMemory<byte>(buffer, 0, result.Count), result.MessageType);
+            }
+        }
+        finally
+        {
+            Console.WriteLine($"Reading data from WebSocket connection {wsConnection.RequestId} finished.");
+
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

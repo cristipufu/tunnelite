@@ -1,5 +1,6 @@
 ﻿using WebSocketTunnel.Server.HttpTunnel;
 using WebSocketTunnel.Server.TcpTunnel;
+using WebSocketTunnel.Server.WsTunnel;
 
 namespace WebSocketTunnel.Server;
 
@@ -9,6 +10,7 @@ public static class Extensions
     {
         builder.Services.AddSingleton<HttpTunnelStore>();
         builder.Services.AddSingleton<HttpRequestsQueue>();
+        builder.Services.AddSingleton<WsRequestsQueue>();
     }
 
     public static void AddTcpTunneling(this WebApplicationBuilder builder)
