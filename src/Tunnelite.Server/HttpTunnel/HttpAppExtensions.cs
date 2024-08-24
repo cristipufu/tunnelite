@@ -31,6 +31,13 @@ public static class HttpAppExtensions
                 }
                 else
                 {
+                    // reserved
+                    if (payload.Subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                        payload.Subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase))
+                    {
+                        payload.Subdomain = RandomSubdomain();
+                    }
+
                     // don't hijack existing subdomain from another client
                     if (tunnelStore.Tunnels.TryGetValue(payload.Subdomain, out var tunnel))
                     {
@@ -48,7 +55,18 @@ public static class HttpAppExtensions
                 tunnelStore.Tunnels.AddOrUpdate(payload.Subdomain, payload, (key, oldValue) => payload);
                 tunnelStore.Clients.AddOrUpdate(payload.ClientId, payload.Subdomain, (key, oldValue) => payload.Subdomain);
 
-                var tunnelUrl = $"{context.Request.Scheme}://{payload.Subdomain}.{context.Request.Host}{context.Request.PathBase}";
+                var subdomain = context.Request.Host.Host.Split('.')[0];
+
+                var tunnelUrl = string.Empty;
+
+                if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+                {
+                    tunnelUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
+                }
+                else
+                {
+                    tunnelUrl = $"{context.Request.Scheme}://{payload.Subdomain}.{context.Request.Host}{context.Request.PathBase}";
+                }
 
                 context.Response.StatusCode = StatusCodes.Status201Created;
                 await context.Response.WriteAsJsonAsync(new
@@ -222,18 +240,18 @@ public static class HttpAppExtensions
             pattern: "/",
             httpMethods: supportedMethods,
             handler: (HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore connectionStore, ILogger<Program> logger) =>
-                TunnelRequestAsync(context, hubContext, requestsQueue, connectionStore, path: string.Empty, logger));
+                TunnelRequestAsync(app, context, hubContext, requestsQueue, connectionStore, path: string.Empty, logger));
 
         app.MapMethods(
             pattern: "/{**path}",
             httpMethods: supportedMethods,
             handler: (HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore connectionStore, string path, ILogger<Program> logger) =>
-                TunnelRequestAsync(context, hubContext, requestsQueue, connectionStore, path, logger));
+                TunnelRequestAsync(app, context, hubContext, requestsQueue, connectionStore, path, logger));
     
         app.MapHub<HttpTunnelHub>("/wsshttptunnel");
     }
 
-    static async Task TunnelRequestAsync(HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore tunnelStore, string path, ILogger<Program> logger)
+    static async Task TunnelRequestAsync(WebApplication app, HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore tunnelStore, string path, ILogger<Program> logger)
     {
         try
         {
@@ -247,8 +265,18 @@ public static class HttpAppExtensions
             }
             else if (subdomain.Equals("tunnelite"))
             {
-                context.Response.StatusCode = StatusCodes.Status404NotFound;
-                await context.Response.WriteAsync(NotFound);
+                var filePath = Path.Combine(app.Environment.WebRootPath, "index.html");
+
+                if (File.Exists(filePath))
+                {
+                    context.Response.ContentType = "text/html";
+                    await context.Response.SendFileAsync(filePath);
+                }
+                else
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await context.Response.WriteAsync("Index page not found");
+                }
                 return;
             }
             else

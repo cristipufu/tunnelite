@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tunnelite - Secure Local Tunneling Solution | ngrok alternative</title>
+    <meta name="description" content="Tunnelite is an open-source, secure tunneling solution for exposing local web applications to the internet. A powerful ngrok alternative for developers.">
+    <meta name="keywords" content="Tunnelite, local tunneling, ngrok alternative, webhook testing, secure tunneling, .NET tool, open-source, self-hosted">
+    <script defer data-domain="tunnelite.com" src="https://plausible.io/js/script.js"></script>
+    <style>
+        :root {
+            --primary-color: #4a90e2;
+            --secondary-color: #f5a623;
+            --background-color: #f4f7fa;
+            --text-color: #333;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--background-color);
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        header {
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 20px 0;
+        }
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+        .nav-links a {
+            margin-left: 20px;
+            text-decoration: none;
+            color: var(--text-color);
+        }
+        .hero {
+            text-align: center;
+            padding: 80px 0;
+        }
+        h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .subtitle {
+            font-size: 24px;
+            color: #666;
+            margin-bottom: 40px;
+        }
+        .cta-button {
+            display: inline-block;
+            background-color: var(--primary-color);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+        }
+        .cta-button:hover {
+            background-color: #3a7bc8;
+        }
+        .features {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 40px;
+            margin: 80px 0;
+        }
+        .feature {
+            text-align: center;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .feature h3 {
+            color: var(--primary-color);
+        }
+        .installation, .usage, .self-hosting {
+            background-color: #fff;
+            border-radius: 8px;
+            padding: 40px;
+            margin-bottom: 40px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        pre {
+            background-color: #f1f1f1;
+            padding: 20px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        footer {
+            background-color: #333;
+            color: #fff;
+            text-align: center;
+            padding: 20px 0;
+            margin-top: 80px;
+        }
+        .copy-button {
+            background-color: var(--secondary-color);
+            border: none;
+            color: white;
+            padding: 5px 10px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 14px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .github-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: bold;
+        }
+        .github-link:hover {
+            text-decoration: underline;
+        }
+        .copy-notification {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: var(--primary-color);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
+        }
+        .copy-notification.show {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <nav class="container">
+            <div class="logo">Tunnelite</div>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#installation">Installation</a>
+                <a href="#usage">Usage</a>
+                <a href="#self-hosting">Self-Hosting</a>
+                <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer">GitHub</a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container">
+        <section class="hero">
+            <h1>Tunnelite</h1>
+            <p class="subtitle">Secure tunneling to your local applications</p>
+            <a href="#installation" class="cta-button">Get Started</a>
+            <p>Open-source and free to use</p>
+            <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer" class="github-link">View on GitHub</a>
+        </section>
+
+        <section id="features" class="features">
+            <div class="feature">
+                <h3>Expose Local Apps</h3>
+                <p>Share your locally-hosted web applications for testing or demos.</p>
+            </div>
+            <div class="feature">
+                <h3>Test Webhooks</h3>
+                <p>Easily test and debug webhook integrations by exposing your local endpoints to the internet.</p>
+            </div>
+            <div class="feature">
+                <h3>Hackathon Ready</h3>
+                <p>Quickly share dev builds during hackathons and collaborative coding sessions.</p>
+            </div>
+            <div class="feature">
+                <h3>Secure Access</h3>
+                <p>Provide internet access to services behind firewalls without exposing incoming ports.</p>
+            </div>
+        </section>
+
+        <section id="installation" class="installation">
+            <h2>Installation</h2>
+            <p>To install Tunnelite as a global tool, use the following command:</p>
+            <h3>.NET CLI</h3>
+            <pre><code>dotnet tool install --global Tunnelite</code></pre>
+            <button class="copy-button" onclick="copyToClipboard('dotnet tool install --global Tunnelite')">Copy</button>
+            <h3>NUKE</h3>
+            <pre><code>nuke :add-package Tunnelite</code></pre>
+            <button class="copy-button" onclick="copyToClipboard('nuke :add-package Tunnelite')">Copy</button>
+            <h3>Cake</h3>
+            <pre><code>#tool dotnet:?package=Tunnelite</code></pre>
+            <button class="copy-button" onclick="copyToClipboard('#tool dotnet:?package=Tunnelite')">Copy</button>
+        </section>
+
+        <section id="usage" class="usage">
+            <h2>Usage</h2>
+            <p>Once installed, you can use the tunnelite command to create a tunnel to your local application.</p>
+            <pre><code>tunnelite http://localhost:3000</code></pre>
+            <button class="copy-button" onclick="copyToClipboard('tunnelite http://localhost:3000')">Copy</button>
+            <p>This command returns a public URL with an auto-generated subdomain.</p>
+        </section>
+
+        <section id="self-hosting" class="self-hosting">
+            <h2>Self-Hosting</h2>
+            <p>Tunnelite allows you to self-host the server, giving you full control over your tunneling infrastructure. This feature is perfect for organizations that require enhanced security or customization.</p>
+            <p>To self-host Tunnelite:</p>
+            <ol>
+                <li>Clone the <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer">repository</a></li>
+                <li>Configure your app server settings</li>
+                <li>Deploy the app server on your own infrastructure</li>
+            </ol>
+            <p>Once your self-hosted server is set up, you can connect to it using the following command:</p>
+            <pre><code>tunnelite http://localhost:3000 --publicUrl yourServerUrl</code></pre>
+            <button class="copy-button" onclick="copyToClipboard('tunnelite http://localhost:3000 --publicUrl yourServerUrl')">Copy</button>
+            
+            <h3>Requirements</h3>
+            <p>To successfully self-host Tunnelite, you'll need:</p>
+            <ul>
+                <li>SSL wildcard certificate for your domain</li>
+                <li>Wildcard DNS record pointing to your server's IP address</li>
+            </ul>
+            <p>These requirements ensure that Tunnelite can generate secure subdomains for your tunnels and route traffic correctly to your self-hosted server.</p>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2024 Tunnelite. All rights reserved.</p>
+        <p>Tunnelite is open-source software. <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer" class="github-link">View the source on GitHub</a></p>
+    </footer>
+
+    <div id="copyNotification" class="copy-notification">Copied to clipboard!</div>
+
+    <script>
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(function() {
+                showNotification();
+            }, function(err) {
+                console.error('Could not copy text: ', err);
+            });
+        }
+
+        function showNotification() {
+            const notification = document.getElementById('copyNotification');
+            notification.classList.add('show');
+            setTimeout(() => {
+                notification.classList.remove('show');
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
