@@ -284,12 +284,19 @@ public static class HttpAppExtensions
 
             await completionTask;
         }
+        catch (TaskCanceledException)
+        {
+            // ignore
+        }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error processing request tunnel: {Message}", ex.Message);
+            if (!context.Response.HasStarted)
+            {
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await context.Response.WriteAsync("An error occurred while processing the tunnel.");
+            }
 
-            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-            await context.Response.WriteAsync("An error occurred while processing the tunnel.");
+            logger.LogError(ex, "Error processing request tunnel: {Message}", ex.Message);
         }
     }
 

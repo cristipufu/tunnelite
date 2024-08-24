@@ -5,9 +5,10 @@ namespace Tunnelite.Server.WsTunnel;
 
 public class WsRequestsQueue
 {
-    public ConcurrentDictionary<Guid, WsDefferedRequest> PendingRequests = new();
+    // client, [requestId, WsDefferedRequest]
+    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, WsDefferedRequest>> PendingRequests = new();
 
-    public virtual Task WaitForCompletionAsync(Guid requestId, WebSocket webSocket)
+    public virtual Task WaitForCompletionAsync(Guid clientId, Guid requestId, WebSocket webSocket)
     {
         WsDefferedRequest request = new()
         {
@@ -16,24 +17,38 @@ public class WsRequestsQueue
             TaskCompletionSource = new TaskCompletionSource(),
         };
 
-        PendingRequests.TryAdd(request.RequestId, request);
+        PendingRequests.AddOrUpdate(
+            clientId,
+            _ => new ConcurrentDictionary<Guid, WsDefferedRequest> { [requestId] = request },
+            (_, requests) =>
+            {
+                requests[requestId] = request;
+                return requests;
+            });
 
         return request.TaskCompletionSource.Task;
     }
 
-    public virtual WebSocket? GetWebSocket(Guid requestId)
+    public virtual WebSocket? GetWebSocket(Guid clientId, Guid requestId)
     {
-        if (!PendingRequests.TryGetValue(requestId, out var request))
+        if (!PendingRequests.TryGetValue(clientId, out var requests))
         {
             return null;
         }
 
-        return request.WebSocket;
+        requests.TryGetValue(requestId, out var request);
+
+        return request?.WebSocket;
     }
 
-    public virtual Task CompleteAsync(Guid requestId)
+    public virtual Task CompleteAsync(Guid clientId, Guid requestId)
     {
-        if (!PendingRequests.TryRemove(requestId, out var request))
+        if (!PendingRequests.TryGetValue(clientId, out var requests))
+        {
+            return Task.CompletedTask;
+        }
+
+        if (!requests.TryRemove(requestId, out var request))
         {
             return Task.CompletedTask;
         }
@@ -52,5 +67,18 @@ public class WsRequestsQueue
         }
 
         return Task.CompletedTask;
+    }
+
+    public virtual async Task CompleteAsync(Guid clientId)
+    {
+        if (!PendingRequests.TryRemove(clientId, out var requests))
+        {
+            return;
+        }
+
+        foreach (var request in requests)
+        {
+            await CompleteAsync(clientId, request.Key);
+        }
     }
 }

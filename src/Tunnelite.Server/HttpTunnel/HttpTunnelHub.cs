@@ -22,7 +22,9 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
 
     public async IAsyncEnumerable<(ReadOnlyMemory<byte>, WebSocketMessageType)> StreamIncomingWsAsync(WsConnection wsConnection)
     {
-        var webSocket = _wsRequestsQueue.GetWebSocket(wsConnection.RequestId);
+        var clientId = GetClientId(Context);
+
+        var webSocket = _wsRequestsQueue.GetWebSocket(clientId, wsConnection.RequestId);
 
         if (webSocket == null)
         {
@@ -32,19 +34,26 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         const int chunkSize = 32 * 1024;
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
-        WebSocketReceiveResult result;
+        WebSocketReceiveResult? result = null;
 
         try
         {
             do
             {
-                result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), Context.ConnectionAborted);
+                try
+                {
+                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), Context.ConnectionAborted);
+                }
+                catch (WebSocketException)
+                {
+                    break;
+                }
 
                 yield return (new ReadOnlyMemory<byte>(buffer, 0, result.Count), result.MessageType);
             }
             while (!result.CloseStatus.HasValue && !Context.ConnectionAborted.IsCancellationRequested);
 
-            if (result.MessageType == WebSocketMessageType.Close)
+            if (result?.MessageType == WebSocketMessageType.Close)
             {
                 await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, CancellationToken.None); 
             }
@@ -62,7 +71,9 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
 
     public async Task StreamOutgoingWsAsync(WsConnection wsConnection, IAsyncEnumerable<(ReadOnlyMemory<byte> Data, WebSocketMessageType Type)> stream)
     {
-        var webSocket = _wsRequestsQueue.GetWebSocket(wsConnection.RequestId);
+        var clientId = GetClientId(Context);
+
+        var webSocket = _wsRequestsQueue.GetWebSocket(clientId, wsConnection.RequestId);
 
         if (webSocket == null)
         {
@@ -83,6 +94,14 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
                 }
             }
         }
+        catch (OperationCanceledException)
+        {
+            // ignore
+        }
+        catch (Exception ex) when (ex.Message == "Stream canceled by client.")
+        {
+            // ignore
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "An unexpected error occurred while streaming outgoing data for {RequestId}", wsConnection.RequestId);
@@ -93,7 +112,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         }
     }
 
-    public override Task OnDisconnectedAsync(Exception? exception)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var clientId = GetClientId(Context);
 
@@ -104,9 +123,9 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
             _httpTunnelStore.Clients.Remove(clientId, out _);
         }
 
-        // todo close and dispose all websockets for clientId
+        await _wsRequestsQueue.CompleteAsync(clientId);
 
-        return base.OnDisconnectedAsync(exception);
+        await base.OnDisconnectedAsync(exception);
     }
 
     private static Guid GetClientId(HubCallerContext context)

@@ -65,7 +65,7 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
 
             _logger.LogInformation("WebSocket connection accepted: {requestId}", requestId);
 
-            var completionTask = _requestsQueue.WaitForCompletionAsync(requestId, webSocket);
+            var completionTask = _requestsQueue.WaitForCompletionAsync(tunnel!.ClientId, requestId, webSocket);
 
             await _hubContext.Clients.Client(connectionId!).SendAsync("NewWsConnection", new WsConnection
             {

@@ -4,7 +4,7 @@ namespace Tunnelite.Server.HttpTunnel;
 
 public class HttpRequestsQueue
 {
-    public ConcurrentDictionary<Guid, HttpDefferedRequest> PendingRequests = new();
+    private readonly ConcurrentDictionary<Guid, HttpDefferedRequest> PendingRequests = new();
 
     public virtual Task WaitForCompletionAsync(Guid requestId, HttpContext context, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {

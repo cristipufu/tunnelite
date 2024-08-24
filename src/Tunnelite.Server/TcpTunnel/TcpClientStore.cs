@@ -7,13 +7,13 @@ namespace Tunnelite.Server.TcpTunnel;
 public class TcpClientStore
 {
     // client, [requestId, TcpClient]
-    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, TcpClient>> _clientStore = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, TcpClient>> PendingRequests = new();
     // clientId, TcpListener
-    public ConcurrentDictionary<Guid, TcpListenerContext> _listenerStore = new();
+    private readonly ConcurrentDictionary<Guid, TcpListenerContext> Listeners = new();
 
     public void AddTcpClient(Guid clientId, Guid requestId, TcpClient tcpClient)
     {
-        _clientStore.AddOrUpdate(
+        PendingRequests.AddOrUpdate(
             clientId,
             _ => new ConcurrentDictionary<Guid, TcpClient> { [requestId] = tcpClient },
             (_, tcpClients) =>
@@ -25,7 +25,7 @@ public class TcpClientStore
 
     public TcpClient GetTcpClient(Guid clientId, Guid requestId)
     {
-        if (!_clientStore.TryGetValue(clientId, out var tcpClients))
+        if (!PendingRequests.TryGetValue(clientId, out var tcpClients))
         {
             return null;
         }
@@ -37,7 +37,7 @@ public class TcpClientStore
 
     public void DisposeTcpClient(Guid clientId, Guid requestId)
     {
-        if (!_clientStore.TryGetValue(clientId, out var tcpClients))
+        if (!PendingRequests.TryGetValue(clientId, out var tcpClients))
         {
             return;
         }
@@ -52,12 +52,12 @@ public class TcpClientStore
 
     public void AddTcpListener(Guid clientId, TcpListenerContext tcpListener)
     {
-        _listenerStore.AddOrUpdate(clientId, tcpListener, (key, oldValue) => tcpListener);
+        Listeners.AddOrUpdate(clientId, tcpListener, (key, oldValue) => tcpListener);
     }
 
     public void DisposeTcpListener(Guid clientId)
     {
-        if (_clientStore.TryRemove(clientId, out var tcpClients))
+        if (PendingRequests.TryRemove(clientId, out var tcpClients))
         {
             foreach (var client in tcpClients.Values)
             {
@@ -65,7 +65,7 @@ public class TcpClientStore
             }
         }
 
-        if (_listenerStore.TryRemove(clientId, out var listener))
+        if (Listeners.TryRemove(clientId, out var listener))
         {
             listener?.Dispose();
         }
