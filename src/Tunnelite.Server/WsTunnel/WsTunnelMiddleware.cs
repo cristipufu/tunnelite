@@ -105,6 +105,6 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
             Query = query
         };
 
-        return wsUri.Uri.ToString();
+        return wsUri.Uri.ToString().TrimEnd(['/']);
     }
 }
