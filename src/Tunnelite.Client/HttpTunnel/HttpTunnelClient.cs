@@ -86,14 +86,11 @@ public class HttpTunnelClient
     private async Task TunnelHttpConnectionAsync(HttpConnection httpConnection)
     {
         var publicUrl = Tunnel.PublicUrl;
-
         var requestUrl = $"{publicUrl}/tunnelite/request/{httpConnection.RequestId}";
-
         try
         {
             // Start the request to the public server
             using var publicResponse = await ServerHttpClient.GetAsync(requestUrl, HttpCompletionOption.ResponseHeadersRead);
-
             publicResponse.EnsureSuccessStatusCode();
 
             // Prepare the request to the local server
@@ -110,10 +107,9 @@ public class HttpTunnelClient
 
             // Set the content of the local request to stream the data from the public response
             localRequest.Content = new StreamContent(await publicResponse.Content.ReadAsStreamAsync());
-
             if (httpConnection.ContentType != null)
             {
-                localRequest.Content.Headers.ContentType = new MediaTypeHeaderValue(httpConnection.ContentType);
+                localRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(httpConnection.ContentType);
             }
 
             // Send the request to the local server and get the response
@@ -134,7 +130,14 @@ public class HttpTunnelClient
             // Copy content headers from local response to public request
             foreach (var (key, value) in localResponse.Content.Headers)
             {
-                publicRequest.Headers.TryAddWithoutValidation($"X-TC-{key}", value);
+                if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+                {
+                    publicRequest.Headers.TryAddWithoutValidation($"X-TC-{key}", value.First());
+                }
+                else
+                {
+                    publicRequest.Headers.TryAddWithoutValidation($"X-TC-{key}", value);
+                }
             }
 
             // Set the content of the public request to stream from the local response
@@ -142,13 +145,11 @@ public class HttpTunnelClient
 
             // Send the response back to the public server
             using var response = await ServerHttpClient.SendAsync(publicRequest);
-
             response.EnsureSuccessStatusCode();
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Unexpected error tunneling request: {ex.Message}");
-
             using var errorRequest = new HttpRequestMessage(HttpMethod.Delete, requestUrl);
             using var response = await ServerHttpClient.SendAsync(errorRequest);
         }
