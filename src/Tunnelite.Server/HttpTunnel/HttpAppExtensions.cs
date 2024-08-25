@@ -33,7 +33,8 @@ public static class HttpAppExtensions
                 {
                     // reserved
                     if (payload.Subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-                        payload.Subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase))
+                        payload.Subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase) ||
+                        payload.Subdomain.Equals("webhooks", StringComparison.OrdinalIgnoreCase))
                     {
                         payload.Subdomain = RandomSubdomain();
                     }
