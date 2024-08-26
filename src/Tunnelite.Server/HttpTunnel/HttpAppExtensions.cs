@@ -212,7 +212,7 @@ public static class HttpAppExtensions
                 deferredHttpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await deferredHttpContext.Response.WriteAsJsonAsync(new
                 {
-                    Message = "An error occurred while tunneling the request",
+                    Message = "An error occurred while tunneling the request. The tunnel is broken, please check if the local application is online!",
                 });
 
                 // Complete the deferred response
