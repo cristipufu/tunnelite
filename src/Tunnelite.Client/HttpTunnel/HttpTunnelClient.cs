@@ -9,8 +9,18 @@ using System.Runtime.CompilerServices;
 
 namespace Tunnelite.Client.HttpTunnel;
 
-public class HttpTunnelClient
+public class HttpTunnelClient : ITunnelClient
 {
+    public event Func<Task>? Connected;
+    public HubConnection Connection { get; }
+    public string? TunnelUrl
+    {
+        get
+        {
+            return _currentTunnel?.TunnelUrl;
+        }
+    }
+
     private static readonly HttpClientHandler LocalHttpClientHandler = new()
     {
         ServerCertificateCustomValidationCallback = (message, cert, chain, sslPolicyErrors) => true,
@@ -19,10 +29,9 @@ public class HttpTunnelClient
     private static readonly HttpClient LocalHttpClient = new(LocalHttpClientHandler);
 
     private HttpTunnelResponse? _currentTunnel = null;
-    private readonly HubConnection Connection;
     private readonly HttpTunnelRequest Tunnel;
 
-    public HttpTunnelClient(HttpTunnelRequest tunnel, LogLevel logLevel)
+    public HttpTunnelClient(HttpTunnelRequest tunnel, LogLevel? logLevel)
     {
         Tunnel = tunnel;
 
@@ -31,15 +40,18 @@ public class HttpTunnelClient
             .AddMessagePackProtocol()
             .ConfigureLogging(logging =>
             {
-                logging.SetMinimumLevel(logLevel);
-                logging.AddConsole();
+                if (logLevel.HasValue)
+                {
+                    logging.SetMinimumLevel(logLevel.Value);
+                    logging.AddConsole();
+                }
             })
             .WithAutomaticReconnect()
             .Build();
 
         Connection.On<HttpConnection>("NewHttpConnection", (httpConnection) =>
         {
-            Console.WriteLine($"Received http tunneling request: [{httpConnection.Method}]{httpConnection.Path}");
+            Program.LogRequest(httpConnection.Method, httpConnection.Path);
 
             _ = TunnelHttpConnectionAsync(httpConnection);
 
@@ -48,7 +60,7 @@ public class HttpTunnelClient
 
         Connection.On<WsConnection>("NewWsConnection", (wsConnection) =>
         {
-            Console.WriteLine($"Received ws tunneling request: {wsConnection.Path}");
+            Program.LogRequest("WS", wsConnection.Path);
 
             _ = TunnelWsConnectionAsync(wsConnection);
 
@@ -57,15 +69,11 @@ public class HttpTunnelClient
 
         Connection.Reconnected += async connectionId =>
         {
-            Console.WriteLine($"Reconnected. New ConnectionId {connectionId}");
-
             _currentTunnel = await RegisterTunnelAsync(tunnel);
         };
 
         Connection.Closed += async (error) =>
         {
-            Console.WriteLine("Connection closed... reconnecting");
-
             await Task.Delay(new Random().Next(0, 5) * 1000);
 
             if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
@@ -149,7 +157,7 @@ public class HttpTunnelClient
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Unexpected error tunneling request: {ex.Message}");
+            Program.LogError($"[HTTP] Unexpected error tunneling request: {ex.Message}.");
             using var errorRequest = new HttpRequestMessage(HttpMethod.Delete, requestUrl);
             using var response = await ServerHttpClient.SendAsync(errorRequest);
         }
@@ -172,13 +180,13 @@ public class HttpTunnelClient
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to connect to WebSocket for connection {wsConnection.RequestId}: {ex.Message}");
+            Program.LogError($"[WS] Failed to connect for connection {wsConnection.RequestId}: {ex.Message}.");
         }
         finally
         {
             cts.Cancel();
 
-            Console.WriteLine($"WS Connection {wsConnection.RequestId} done.");
+            Program.Log($"[WS] Connection {wsConnection.RequestId} closed.");
         }
     }
 
@@ -207,7 +215,7 @@ public class HttpTunnelClient
         }
         finally
         {
-            Console.WriteLine($"Writing data to WebSocket connection {wsConnection.RequestId} finished.");
+            Program.Log($"[WS] Writing data to connection {wsConnection.RequestId} finished.");
         }
     }
 
@@ -238,7 +246,7 @@ public class HttpTunnelClient
         }
         finally
         {
-            Console.WriteLine($"Reading data from WebSocket connection {wsConnection.RequestId} finished.");
+            Program.Log($"[WS] Reading data from connection {wsConnection.RequestId} finished.");
 
             ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -258,18 +266,14 @@ public class HttpTunnelClient
 
                 tunnelResponse = await response.Content.ReadFromJsonAsync<HttpTunnelResponse?>();
 
-                if (response.IsSuccessStatusCode)
+                if (!response.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"Tunnel created successfully: {tunnelResponse!.TunnelUrl}");
-                }
-                else
-                {
-                    Console.WriteLine($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
+                    Program.LogError($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"An error occurred while registering the tunnel {ex.Message}");
+                Program.LogError($"[HTTP] An error occurred while registering the tunnel {ex.Message}.");
 
                 await Task.Delay(5000);
             }
@@ -286,7 +290,7 @@ public class HttpTunnelClient
             {
                 await connection.StartAsync(token);
 
-                Console.WriteLine($"Client connected to SignalR hub. ConnectionId: {connection.ConnectionId}");
+                Connected?.Invoke();
 
                 return true;
             }
@@ -296,7 +300,7 @@ public class HttpTunnelClient
             }
             catch
             {
-                Console.WriteLine($"Cannot connect to WebSocket server on {Tunnel.PublicUrl}");
+                Program.LogError($"[HTTP] Cannot connect to the public server on {Tunnel.PublicUrl}.");
 
                 await Task.Delay(5000, token);
             }

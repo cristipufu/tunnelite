@@ -7,13 +7,22 @@ using System.Runtime.CompilerServices;
 
 namespace Tunnelite.Client.TcpTunnel;
 
-public class TcpTunnelClient
+public class TcpTunnelClient : ITunnelClient
 {
-    private readonly HubConnection Connection;
+    public event Func<Task>? Connected;
+    public HubConnection Connection { get; }
+    public string? TunnelUrl
+    {
+        get
+        {
+            return _currentTunnel?.TunnelUrl;
+        }
+    }
+
     private readonly TcpTunnelRequest Tunnel;
     private TcpTunnelResponse? _currentTunnel = null;
 
-    public TcpTunnelClient(TcpTunnelRequest tunnel, LogLevel logLevel)
+    public TcpTunnelClient(TcpTunnelRequest tunnel, LogLevel? logLevel)
     {
         Tunnel = tunnel;
 
@@ -22,15 +31,18 @@ public class TcpTunnelClient
             .AddMessagePackProtocol()
             .ConfigureLogging(logging =>
             {
-                logging.SetMinimumLevel(logLevel);
-                logging.AddConsole();
+                if (logLevel.HasValue)
+                {
+                    logging.SetMinimumLevel(logLevel.Value);
+                    logging.AddConsole();
+                }
             })
             .WithAutomaticReconnect()
             .Build();
 
         Connection.On<TcpConnection>("NewTcpConnection", (tcpConnection) =>
         {
-            Console.WriteLine($"New TCP Connection {tcpConnection.RequestId}");
+            Program.LogRequest("TCP", $"New Connection {tcpConnection.RequestId}");
 
             _ = HandleNewTcpConnectionAsync(tcpConnection);
 
@@ -39,22 +51,18 @@ public class TcpTunnelClient
 
         Connection.On<string>("TcpTunnelClosed", async (errorMessage) =>
         {
-            Console.WriteLine($"TCP Tunnel closed by server: {errorMessage}");
+            Program.LogError($"[TCP] Tunnel closed by server: {errorMessage}.");
 
             _currentTunnel = await RegisterTunnelAsync(tunnel);
         });
 
         Connection.Reconnected += async connectionId =>
         {
-            Console.WriteLine($"Reconnected. New ConnectionId {connectionId}");
-
             _currentTunnel = await RegisterTunnelAsync(tunnel);
         };
 
         Connection.Closed += async (error) =>
         {
-            Console.WriteLine("Connection closed... reconnecting");
-
             await Task.Delay(new Random().Next(0, 5) * 1000);
 
             if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
@@ -84,18 +92,14 @@ public class TcpTunnelClient
             {
                 tunnelResponse = await Connection.InvokeAsync<TcpTunnelResponse>("RegisterTunnelAsync", tunnel);
 
-                if (string.IsNullOrEmpty(tunnelResponse.Error))
+                if (!string.IsNullOrEmpty(tunnelResponse.Error))
                 {
-                    Console.WriteLine($"Tunnel created successfully: {tunnelResponse!.TunnelUrl}");
-                }
-                else
-                {
-                    Console.WriteLine($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
+                    Program.LogError($"[TCP] {tunnelResponse!.Message}:{tunnelResponse.Error}");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"An error occurred while registering the tunnel {ex.Message}");
+                Program.LogError($"[TCP] An error occurred while registering the tunnel {ex.Message}");
 
                 await Task.Delay(5000);
             }
@@ -120,13 +124,13 @@ public class TcpTunnelClient
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error handling TCP connection {ex.Message}");
+            Program.LogError($"[TCP] Error handling connection {ex.Message}");
         }
         finally
         {
             cts.Cancel();
 
-            Console.WriteLine($"TCP Connection {tcpConnection.RequestId} done.");
+            Program.Log($"[TCP] Connection {tcpConnection.RequestId} closed.");
         }
     }
 
@@ -157,7 +161,7 @@ public class TcpTunnelClient
         }
         finally
         {
-            Console.WriteLine($"Writing data to TCP connection {tcpConnection.RequestId} finished.");
+            Program.Log($"[TCP] Writing data to connection {tcpConnection.RequestId} finished.");
         }
     }
 
@@ -185,7 +189,7 @@ public class TcpTunnelClient
         }
         finally
         {
-            Console.WriteLine($"Reading data from TCP connection {tcpConnection.RequestId} finished.");
+            Program.Log($"[TCP] Reading data from connection {tcpConnection.RequestId} finished.");
 
             ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -199,8 +203,6 @@ public class TcpTunnelClient
             {
                 await connection.StartAsync(token);
 
-                Console.WriteLine($"Client connected to SignalR hub. ConnectionId: {connection.ConnectionId}");
-
                 return true;
             }
             catch when (token.IsCancellationRequested)
@@ -209,7 +211,7 @@ public class TcpTunnelClient
             }
             catch
             {
-                Console.WriteLine($"Cannot connect to WebSocket server on {Tunnel.PublicUrl}");
+                Program.LogError($"[TCP] Cannot connect to the public server on {Tunnel.PublicUrl}");
 
                 await Task.Delay(5000, token);
             }

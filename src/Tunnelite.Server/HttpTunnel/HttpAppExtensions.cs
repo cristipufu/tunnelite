@@ -209,11 +209,7 @@ public static class HttpAppExtensions
                     return;
                 }
 
-                deferredHttpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                await deferredHttpContext.Response.WriteAsJsonAsync(new
-                {
-                    Message = "An error occurred while tunneling the request. The tunnel is broken, please check if the local application is online!",
-                });
+                await ServerErrorAsync(app, deferredHttpContext);
 
                 // Complete the deferred response
                 await requestsQueue.CompleteAsync(requestId);
@@ -267,17 +263,9 @@ public static class HttpAppExtensions
             else if (subdomain.Equals("tunnelite"))
             {
                 var filePath = Path.Combine(app.Environment.WebRootPath, "index.html");
-
-                if (File.Exists(filePath))
-                {
-                    context.Response.ContentType = "text/html";
-                    await context.Response.SendFileAsync(filePath);
-                }
-                else
-                {
-                    context.Response.StatusCode = StatusCodes.Status404NotFound;
-                    await context.Response.WriteAsync("Index page not found");
-                }
+                context.Response.ContentType = "text/html";
+                await context.Response.SendFileAsync(filePath);
+               
                 return;
             }
             else
@@ -287,15 +275,13 @@ public static class HttpAppExtensions
 
             if (tunnel == null)
             {
-                context.Response.StatusCode = StatusCodes.Status404NotFound;
-                await context.Response.WriteAsync(NotFound);
+                await NotFoundAsync(app, context);
                 return;
             }
 
             if (!tunnelStore.Connections.TryGetValue(tunnel!.ClientId, out var connectionId))
             {
-                context.Response.StatusCode = StatusCodes.Status404NotFound;
-                await context.Response.WriteAsync(NotFound);
+                await NotFoundAsync(app, context);
                 return;
             }
 
@@ -329,6 +315,22 @@ public static class HttpAppExtensions
         }
     }
 
+    static async Task NotFoundAsync(WebApplication app, HttpContext context)
+    {
+        var filePath = Path.Combine(app.Environment.WebRootPath, "404.html");
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        context.Response.ContentType = "text/html";
+        await context.Response.SendFileAsync(filePath);
+    }
+
+    static async Task ServerErrorAsync(WebApplication app, HttpContext context)
+    {
+        var filePath = Path.Combine(app.Environment.WebRootPath, "500.html");
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        context.Response.ContentType = "text/html";
+        await context.Response.SendFileAsync(filePath);
+    }
+
     static string RandomSubdomain(int length = 8)
     {
         Random random = new();
@@ -338,16 +340,4 @@ public static class HttpAppExtensions
     }
 
     static readonly string[] NotAllowedHeaders = ["Connection", "Transfer-Encoding", "Keep-Alive", "Upgrade", "Proxy-Connection"];
-
-    const string NotFound = @"  Oops! Lost in the Tunnel?
-< ------------------------ >
-< It seems you've wandered >
-< into a mysterious realm  >
-< ------------------------ >
-        \   ^__^
-         \  (oo)\_______
-            (__)\       )\/\
-                ||----w |
-                ||     ||
-";
 }

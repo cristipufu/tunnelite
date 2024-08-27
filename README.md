@@ -26,6 +26,8 @@ tunnelite http://localhost:3000
 
 This command returns a public URL with an auto-generated subdomain, such as `https://abc123.tunnelite.com`. 
 
+![alt text](https://github.com/cristipufu/tunnelite/blob/master/docs/tunnelite-cli.gif?raw=true)
+
 ## How It Works
 
 Tunnelite works by establishing a websocket connection to the public server and streaming all incoming data to your local application, effectively forwarding requests from the public URL to your local server.
