@@ -38,15 +38,15 @@ public static class TunneliteExtensions
 
                 var client = new HttpTunnelClient(httpTunnel, null);
 
-                client.Log += x => Console.WriteLine(x);
-                client.LogRequest += (method, path) => Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} [{method}]: {path}");
-                client.LogFailedRequest += (method, path) => Console.Write($"{DateTimeOffset.Now:HH:mm:ss} [{method}]: {path}");
-                client.LogError += x => Console.WriteLine(x);
-                client.LogException += x => Console.WriteLine(x.Message);
+                client.Log += x => LogInfo("Tunnelite", x);
+                client.LogRequest += (method, path) => LogInfo("Tunnelite", $"[{method}]: {path}");
+                client.LogFailedRequest += (method, path) => LogError("Tunnelite", $"[{method}]: {path}");
+                client.LogError += x => LogError("Tunnelite", x);
+                client.LogException += x => LogError("Tunnelite", x.Message);
 
                 await client.ConnectAsync();
 
-                LogTunnelInfo(client.TunnelUrl);
+                LogInfo("Tunnelite", client.TunnelUrl);
 
             }, CancellationToken.None);
 
@@ -55,14 +55,21 @@ public static class TunneliteExtensions
         return app;
     }
 
-    private static void LogTunnelInfo(string tunnelUrl)
+    private static void LogInfo(string category, string message)
     {
-        Console.WriteLine();
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("╔══════════════════════════════════════════════════════════════════════════════╗");
-        Console.WriteLine($"   Tunnelite URL: {tunnelUrl,-67}");
-        Console.WriteLine("╚══════════════════════════════════════════════════════════════════════════════╝");
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.Write("info: ");
         Console.ResetColor();
-        Console.WriteLine();
+        Console.WriteLine($"{category}");
+        Console.WriteLine($"      {message}");
+    }
+
+    private static void LogError(string category, string message)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Write("error: ");
+        Console.ResetColor();
+        Console.WriteLine($"{category}");
+        Console.WriteLine($"      {message}");
     }
 }
