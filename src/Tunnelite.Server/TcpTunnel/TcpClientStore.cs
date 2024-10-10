@@ -55,7 +55,7 @@ public class TcpClientStore
         Listeners.AddOrUpdate(clientId, tcpListener, (key, oldValue) => tcpListener);
     }
 
-    public void DisposeTcpListener(Guid clientId)
+    public async Task DisposeTcpListenerAsync(Guid clientId)
     {
         if (PendingRequests.TryRemove(clientId, out var tcpClients))
         {
@@ -67,12 +67,15 @@ public class TcpClientStore
 
         if (Listeners.TryRemove(clientId, out var listener))
         {
-            listener?.Dispose();
+            if (listener != null)
+            {
+                await listener.DisposeAsync();
+            }
         }
     }
 }
 
-public class TcpListenerContext : IDisposable
+public class TcpListenerContext : IAsyncDisposable
 {
     public TcpListener TcpListener { get; set; }
 
@@ -80,19 +83,16 @@ public class TcpListenerContext : IDisposable
 
     public Task AcceptConnectionsTask { get; set; }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-
-    protected virtual void Dispose(bool disposing)
-    {
-        if (disposing)
+        if (CancellationTokenSource != null)
         {
-            CancellationTokenSource?.Cancel();
-            CancellationTokenSource?.Dispose();
-            TcpListener?.Dispose();
+            await CancellationTokenSource.CancelAsync();
+            CancellationTokenSource.Dispose();
         }
+
+        TcpListener?.Dispose();
+
+        GC.SuppressFinalize(this);
     }
 }

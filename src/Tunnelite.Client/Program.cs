@@ -211,9 +211,20 @@ public class Program
         AnsiConsole.MarkupLine(entry);
     }
 
+    public static void LogFailedRequest(string method, string path)
+    {
+        string entry = $"[red] {DateTimeOffset.Now:HH:mm:ss} [[{method}]][/]: {Markup.Escape(path)}";
+        AnsiConsole.MarkupLine(entry);
+    }
+
     public static void LogError(string message)
     {
         string entry = $"[red] {DateTimeOffset.Now:HH:mm:ss}[/]: {Markup.Escape(message)}";
         AnsiConsole.MarkupLine(entry);
+    }
+
+    public static void LogException(Exception ex)
+    {
+        AnsiConsole.WriteException(ex);
     }
 }

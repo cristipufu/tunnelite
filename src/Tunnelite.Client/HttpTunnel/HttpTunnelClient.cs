@@ -157,7 +157,8 @@ public class HttpTunnelClient : ITunnelClient
         }
         catch (Exception ex)
         {
-            Program.LogError($"[HTTP] Unexpected error tunneling request: {ex.Message}.");
+            Program.LogFailedRequest(httpConnection.Method, httpConnection.Path);
+            Program.LogException(ex);
             using var errorRequest = new HttpRequestMessage(HttpMethod.Delete, requestUrl);
             using var response = await ServerHttpClient.SendAsync(errorRequest);
         }
@@ -180,11 +181,12 @@ public class HttpTunnelClient : ITunnelClient
         }
         catch (Exception ex)
         {
-            Program.LogError($"[WS] Failed to connect for connection {wsConnection.RequestId}: {ex.Message}.");
+            Program.LogFailedRequest("WS", wsConnection.Path);
+            Program.LogException(ex);
         }
         finally
         {
-            cts.Cancel();
+            await cts.CancelAsync();
 
             Program.Log($"[WS] Connection {wsConnection.RequestId} closed.");
         }
@@ -273,7 +275,8 @@ public class HttpTunnelClient : ITunnelClient
             }
             catch (Exception ex)
             {
-                Program.LogError($"[HTTP] An error occurred while registering the tunnel {ex.Message}.");
+                Program.LogError($"[HTTP] An error occurred while registering the tunnel:");
+                Program.LogException(ex);
 
                 await Task.Delay(5000);
             }

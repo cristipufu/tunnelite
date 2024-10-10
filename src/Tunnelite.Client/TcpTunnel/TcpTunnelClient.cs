@@ -99,7 +99,8 @@ public class TcpTunnelClient : ITunnelClient
             }
             catch (Exception ex)
             {
-                Program.LogError($"[TCP] An error occurred while registering the tunnel {ex.Message}");
+                Program.LogError($"[TCP] An error occurred while registering the tunnel:");
+                Program.LogException(ex);
 
                 await Task.Delay(5000);
             }
@@ -124,11 +125,11 @@ public class TcpTunnelClient : ITunnelClient
         }
         catch (Exception ex)
         {
-            Program.LogError($"[TCP] Error handling connection {ex.Message}");
+            Program.LogException(ex);
         }
         finally
         {
-            cts.Cancel();
+            await cts.CancelAsync();
 
             Program.Log($"[TCP] Connection {tcpConnection.RequestId} closed.");
         }

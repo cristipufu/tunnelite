@@ -22,7 +22,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         return base.OnConnectedAsync();
     }
 
-    public Task<TcpTunnelResponse> RegisterTunnelAsync(TcpTunnelRequest tunnel)
+    public async Task<TcpTunnelResponse> RegisterTunnelAsync(TcpTunnelRequest tunnel)
     {
         var response = new TcpTunnelResponse();
         var tcpListenerContext = new TcpListenerContext();
@@ -54,10 +54,10 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
             response.Message = "An error occurred while creating the tunnel";
             response.Error = ex.Message;
 
-            tcpListenerContext.Dispose();
+            await tcpListenerContext.DisposeAsync();
         }
 
-        return Task.FromResult(response);
+        return response;
     }
 
     public async IAsyncEnumerable<ReadOnlyMemory<byte>> StreamIncomingAsync(TcpConnection tcpConnection)
@@ -145,15 +145,15 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         }
     }
 
-    public override Task OnDisconnectedAsync(Exception? exception)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var clientId = GetClientId(Context);
 
         _tunnelStore.Connections.Remove(clientId, out var _);
 
-        _tcpClientStore.DisposeTcpListener(clientId);
+        await _tcpClientStore.DisposeTcpListenerAsync(clientId);
 
-        return base.OnDisconnectedAsync(exception);
+        await base.OnDisconnectedAsync(exception);
     }
 
     private async Task AcceptConnectionsAsync(TcpListener listener, Guid clientId, CancellationToken cancellationToken)
@@ -196,7 +196,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         {
             _logger.LogError(ex, "An error has occurred while listening for incoming TCP connections: {Message}", ex.Message);
 
-            _tcpClientStore.DisposeTcpListener(clientId);
+            await _tcpClientStore.DisposeTcpListenerAsync(clientId);
 
             if (_tunnelStore.Connections.TryGetValue(clientId, out var connectionId))
             {
