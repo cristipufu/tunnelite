@@ -1,15 +1,15 @@
-# Tunnelite
+# ⚡Tunnelite
 
-Tunnelite is a .NET tool that allows you to create a secure tunnel from a public URL to your local application running on your machine. 
+Tunnelite is a .NET tool that lets you set up a secure connection between a public web address and an application running on your local machine. It effectively makes your local app accessible from the internet.
 
-## Use Cases
+## 🚀 Use Cases
 
 - Exposing locally-hosted web applications to the internet for testing or demo purposes.
 - Quickly sharing dev builds during hackathons.
 - Testing and debugging webhook integrations.
 - Providing internet access to services running behind firewalls without exposing incoming ports.
 
-## Installation
+## 📄 Installation
 
 To install Tunnelite as a global tool, use the following command:
 
@@ -17,20 +17,28 @@ To install Tunnelite as a global tool, use the following command:
 dotnet tool install --global Tunnelite
 ```
 
-## Usage
-
-Once installed, you can use the `tunnelite` command to create a tunnel to your local application. For example, to tunnel a local application running at http://localhost:3000, run:
+Once installed, you can use the `tunnelite` command to create a tunnel to your local application:
 ```bash
 tunnelite http://localhost:3000
 ```
 
-This command returns a public URL with an auto-generated subdomain, such as `https://abc123.tunnelite.com`. 
+This command returns a public URL with an auto-generated subdomain. 
 
 ![alt text](https://github.com/cristipufu/tunnelite/blob/master/docs/tunnelite-cli.gif?raw=true)
 
-## How It Works
+## 🔍 How It Works
 
-Tunnelite works by establishing a websocket connection to the public server and streaming all incoming data to your local application, effectively forwarding requests from the public URL to your local server.
+Tunnelite creates a bridge between your local application and the internet using a websocket connection. It streams incoming data from a public URL directly to your local server, making your local app accessible from anywhere.
+
+The managed version of Tunnelite supports http(s) and ws(s) tunneling. If you need TCP tunneling, you'll have to host the server yourself.
+
+### Self-Hosting Requirements
+To set up your own Tunnelite server, you'll need:
+
+- Wildcard SSL certificate for your domain
+- Wildcard DNS record pointing to your server's IP address
+
+These allow Tunnelite to create secure subdomains for your tunnels and properly route traffic to your self-hosted server.
 
  <br/>
 <details>
@@ -60,4 +68,8 @@ Tunnelite works by establishing a websocket connection to the public server and 
 
 </details>
 
+ <br/>
 
+## 📄 License
+
+This project is licensed under the MIT License.
