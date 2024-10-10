@@ -7,11 +7,17 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 
-namespace Tunnelite.Client.HttpTunnel;
+namespace Tunnelite.Sdk;
 
 public class HttpTunnelClient : ITunnelClient
 {
     public event Func<Task>? Connected;
+    public event Action<string, string>? LogRequest;
+    public event Action<string, string>? LogFailedRequest;
+    public event Action<Exception>? LogException;
+    public event Action<string>? Log;
+    public event Action<string>? LogError;
+
     public HubConnection Connection { get; }
     public string? TunnelUrl
     {
@@ -51,7 +57,7 @@ public class HttpTunnelClient : ITunnelClient
 
         Connection.On<HttpConnection>("NewHttpConnection", (httpConnection) =>
         {
-            Program.LogRequest(httpConnection.Method, httpConnection.Path);
+            LogRequest?.Invoke(httpConnection.Method, httpConnection.Path);
 
             _ = TunnelHttpConnectionAsync(httpConnection);
 
@@ -60,7 +66,7 @@ public class HttpTunnelClient : ITunnelClient
 
         Connection.On<WsConnection>("NewWsConnection", (wsConnection) =>
         {
-            Program.LogRequest("WS", wsConnection.Path);
+            LogRequest?.Invoke("WS", wsConnection.Path);
 
             _ = TunnelWsConnectionAsync(wsConnection);
 
@@ -157,8 +163,8 @@ public class HttpTunnelClient : ITunnelClient
         }
         catch (Exception ex)
         {
-            Program.LogFailedRequest(httpConnection.Method, httpConnection.Path);
-            Program.LogException(ex);
+            LogFailedRequest?.Invoke(httpConnection.Method, httpConnection.Path);
+            LogException?.Invoke(ex);
             using var errorRequest = new HttpRequestMessage(HttpMethod.Delete, requestUrl);
             using var response = await ServerHttpClient.SendAsync(errorRequest);
         }
@@ -181,14 +187,14 @@ public class HttpTunnelClient : ITunnelClient
         }
         catch (Exception ex)
         {
-            Program.LogFailedRequest("WS", wsConnection.Path);
-            Program.LogException(ex);
+            LogFailedRequest?.Invoke("WS", wsConnection.Path);
+            LogException?.Invoke(ex);
         }
         finally
         {
             await cts.CancelAsync();
 
-            Program.Log($"[WS] Connection {wsConnection.RequestId} closed.");
+            Log?.Invoke($"[WS] Connection {wsConnection.RequestId} closed.");
         }
     }
 
@@ -217,7 +223,7 @@ public class HttpTunnelClient : ITunnelClient
         }
         finally
         {
-            Program.Log($"[WS] Writing data to connection {wsConnection.RequestId} finished.");
+            Log?.Invoke($"[WS] Writing data to connection {wsConnection.RequestId} finished.");
         }
     }
 
@@ -226,7 +232,7 @@ public class HttpTunnelClient : ITunnelClient
         await Connection.InvokeAsync("StreamOutgoingWsAsync", StreamLocalWsAsync(localWebSocket, wsConnection, cancellationToken), wsConnection, cancellationToken: cancellationToken);
     }
 
-    private static async IAsyncEnumerable<(ReadOnlyMemory<byte>, WebSocketMessageType)> StreamLocalWsAsync(WebSocket webSocket, WsConnection wsConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<(ReadOnlyMemory<byte>, WebSocketMessageType)> StreamLocalWsAsync(WebSocket webSocket, WsConnection wsConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         const int chunkSize = 32 * 1024;
 
@@ -248,7 +254,7 @@ public class HttpTunnelClient : ITunnelClient
         }
         finally
         {
-            Program.Log($"[WS] Reading data from connection {wsConnection.RequestId} finished.");
+            Log?.Invoke($"[WS] Reading data from connection {wsConnection.RequestId} finished.");
 
             ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -270,13 +276,13 @@ public class HttpTunnelClient : ITunnelClient
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    Program.LogError($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
+                    LogError?.Invoke($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
                 }
             }
             catch (Exception ex)
             {
-                Program.LogError($"[HTTP] An error occurred while registering the tunnel:");
-                Program.LogException(ex);
+                LogError?.Invoke($"[HTTP] An error occurred while registering the tunnel:");
+                LogException?.Invoke(ex);
 
                 await Task.Delay(5000);
             }
@@ -303,7 +309,7 @@ public class HttpTunnelClient : ITunnelClient
             }
             catch
             {
-                Program.LogError($"[HTTP] Cannot connect to the public server on {Tunnel.PublicUrl}.");
+                LogError?.Invoke($"[HTTP] Cannot connect to the public server on {Tunnel.PublicUrl}.");
 
                 await Task.Delay(5000, token);
             }

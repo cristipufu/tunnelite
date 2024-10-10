@@ -1,5 +1,5 @@
 ﻿#nullable disable
-namespace Tunnelite.Client.HttpTunnel;
+namespace Tunnelite.Sdk;
 
 public class HttpTunnelResponse
 {

@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<PackageId>Tunnelite.AspNetCore</PackageId>
+		<PackageTags>tunnel;tunneling;websockets;signalr;reverse-proxy;proxy;</PackageTags>
+		<Authors>Cristi Pufu</Authors>
+		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<RepositoryType>git</RepositoryType>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<Description>SDK for tunneling AspNetCore apps</Description>
+		<PackageProjectUrl>https://github.com/cristipufu/ws-tunnel-signalr</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/cristipufu/ws-tunnel-signalr</RepositoryUrl>
+		<Version>1.0.0</Version>
+		<IsPackable>true</IsPackable>
+		<IncludeSymbols>true</IncludeSymbols>
+		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="..\..\README.md">
+			<Pack>True</Pack>
+			<PackagePath>\</PackagePath>
+		</None>
+	</ItemGroup>
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Tunnelite.Sdk\Tunnelite.Sdk.csproj" />
+	</ItemGroup>
+
+</Project>

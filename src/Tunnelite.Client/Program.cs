@@ -2,8 +2,7 @@
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using System.CommandLine;
-using Tunnelite.Client.HttpTunnel;
-using Tunnelite.Client.TcpTunnel;
+using Tunnelite.Sdk;
 
 namespace Tunnelite.Client;
 
@@ -100,6 +99,9 @@ public class Program
         ctx.Status("Connecting to TCP tunnel...");
 
         Client = new TcpTunnelClient(tcpTunnel, logLevel);
+
+        AddLogging(Client);
+
         await Client.ConnectAsync();
 
         ctx.Status("TCP tunnel established.");
@@ -117,6 +119,9 @@ public class Program
         ctx.Status("Connecting to HTTP tunnel...");
 
         Client = new HttpTunnelClient(httpTunnel, logLevel);
+
+        AddLogging(Client);
+
         await Client.ConnectAsync();
 
         ctx.Status("HTTP tunnel established.");
@@ -176,7 +181,7 @@ public class Program
         }
     }
 
-    public static Table WriteStatusTable(string localUrl, string? tunnelUrl, string color, string currentStatus)
+    private static Table WriteStatusTable(string localUrl, string? tunnelUrl, string color, string currentStatus)
     {
         AnsiConsole.Clear();
 
@@ -199,32 +204,41 @@ public class Program
         AnsiConsole.WriteLine();
     }
 
-    public static void Log(string log)
+    private static void Log(string log)
     {
         string entry = $"[yellow] {DateTimeOffset.Now:HH:mm:ss}[/]: {Markup.Escape(log)}";
         AnsiConsole.MarkupLine(entry);
     }
 
-    public static void LogRequest(string method, string path)
+    private static void LogRequest(string method, string path)
     {
         string entry = $"[green] {DateTimeOffset.Now:HH:mm:ss} [[{method}]][/]: {Markup.Escape(path)}";
         AnsiConsole.MarkupLine(entry);
     }
 
-    public static void LogFailedRequest(string method, string path)
+    private static void LogFailedRequest(string method, string path)
     {
         string entry = $"[red] {DateTimeOffset.Now:HH:mm:ss} [[{method}]][/]: {Markup.Escape(path)}";
         AnsiConsole.MarkupLine(entry);
     }
 
-    public static void LogError(string message)
+    private static void LogError(string message)
     {
         string entry = $"[red] {DateTimeOffset.Now:HH:mm:ss}[/]: {Markup.Escape(message)}";
         AnsiConsole.MarkupLine(entry);
     }
 
-    public static void LogException(Exception ex)
+    private static void LogException(Exception ex)
     {
         AnsiConsole.WriteException(ex);
+    }
+
+    private static void AddLogging(ITunnelClient client)
+    {
+        client.Log += Log;
+        client.LogRequest += LogRequest;
+        client.LogFailedRequest += LogFailedRequest;
+        client.LogError += LogError;
+        client.LogException += LogException;
     }
 }

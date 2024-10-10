@@ -5,12 +5,19 @@ using System.Buffers;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
-namespace Tunnelite.Client.TcpTunnel;
+namespace Tunnelite.Sdk;
 
 public class TcpTunnelClient : ITunnelClient
 {
     public event Func<Task>? Connected;
+    public event Action<string, string>? LogRequest;
+    public event Action<string, string>? LogFailedRequest;
+    public event Action<Exception>? LogException;
+    public event Action<string>? Log;
+    public event Action<string>? LogError;
+
     public HubConnection Connection { get; }
+
     public string? TunnelUrl
     {
         get
@@ -42,7 +49,7 @@ public class TcpTunnelClient : ITunnelClient
 
         Connection.On<TcpConnection>("NewTcpConnection", (tcpConnection) =>
         {
-            Program.LogRequest("TCP", $"New Connection {tcpConnection.RequestId}");
+            LogRequest?.Invoke("TCP", $"New Connection {tcpConnection.RequestId}");
 
             _ = HandleNewTcpConnectionAsync(tcpConnection);
 
@@ -51,7 +58,7 @@ public class TcpTunnelClient : ITunnelClient
 
         Connection.On<string>("TcpTunnelClosed", async (errorMessage) =>
         {
-            Program.LogError($"[TCP] Tunnel closed by server: {errorMessage}.");
+            LogError?.Invoke($"[TCP] Tunnel closed by server: {errorMessage}.");
 
             _currentTunnel = await RegisterTunnelAsync(tunnel);
         });
@@ -94,13 +101,13 @@ public class TcpTunnelClient : ITunnelClient
 
                 if (!string.IsNullOrEmpty(tunnelResponse.Error))
                 {
-                    Program.LogError($"[TCP] {tunnelResponse!.Message}:{tunnelResponse.Error}");
+                    LogError?.Invoke($"[TCP] {tunnelResponse!.Message}:{tunnelResponse.Error}");
                 }
             }
             catch (Exception ex)
             {
-                Program.LogError($"[TCP] An error occurred while registering the tunnel:");
-                Program.LogException(ex);
+                LogError?.Invoke($"[TCP] An error occurred while registering the tunnel:");
+                LogException?.Invoke(ex);
 
                 await Task.Delay(5000);
             }
@@ -125,13 +132,13 @@ public class TcpTunnelClient : ITunnelClient
         }
         catch (Exception ex)
         {
-            Program.LogException(ex);
+            LogException?.Invoke(ex);
         }
         finally
         {
             await cts.CancelAsync();
 
-            Program.Log($"[TCP] Connection {tcpConnection.RequestId} closed.");
+            Log?.Invoke($"[TCP] Connection {tcpConnection.RequestId} closed.");
         }
     }
 
@@ -162,7 +169,7 @@ public class TcpTunnelClient : ITunnelClient
         }
         finally
         {
-            Program.Log($"[TCP] Writing data to connection {tcpConnection.RequestId} finished.");
+            Log?.Invoke($"[TCP] Writing data to connection {tcpConnection.RequestId} finished.");
         }
     }
 
@@ -171,7 +178,7 @@ public class TcpTunnelClient : ITunnelClient
         await Connection.InvokeAsync("StreamOutgoingAsync", StreamLocalTcpAsync(localClient, tcpConnection, cancellationToken), tcpConnection, cancellationToken: cancellationToken);
     }
 
-    private static async IAsyncEnumerable<ReadOnlyMemory<byte>> StreamLocalTcpAsync(TcpClient localClient, TcpConnection tcpConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<ReadOnlyMemory<byte>> StreamLocalTcpAsync(TcpClient localClient, TcpConnection tcpConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         const int chunkSize = 32 * 1024;
 
@@ -190,7 +197,7 @@ public class TcpTunnelClient : ITunnelClient
         }
         finally
         {
-            Program.Log($"[TCP] Reading data from connection {tcpConnection.RequestId} finished.");
+            Log?.Invoke($"[TCP] Reading data from connection {tcpConnection.RequestId} finished.");
 
             ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -212,7 +219,7 @@ public class TcpTunnelClient : ITunnelClient
             }
             catch
             {
-                Program.LogError($"[TCP] Cannot connect to the public server on {Tunnel.PublicUrl}");
+                LogError?.Invoke($"[TCP] Cannot connect to the public server on {Tunnel.PublicUrl}");
 
                 await Task.Delay(5000, token);
             }
