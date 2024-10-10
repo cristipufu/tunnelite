@@ -176,7 +176,7 @@ public class Program
         }
     }
 
-    private static Table WriteStatusTable(string localUrl, string? tunnelUrl, string color, string currentStatus)
+    public static Table WriteStatusTable(string localUrl, string? tunnelUrl, string color, string currentStatus)
     {
         AnsiConsole.Clear();
 
