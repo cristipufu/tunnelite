@@ -4,26 +4,36 @@ using System.Text;
 
 class TcpServerApp
 {
+    const int BUFFER_SIZE = 8192; // 8KB buffer size
+
     static async Task Main(string[] args)
     {
-        if (args.Length != 1)
+        if (args.Length != 2)
         {
-            Console.WriteLine("Usage: TcpServerApp <port>");
+            Console.WriteLine("Usage: TcpServerApp <port> <filepath>");
             return;
         }
 
         int port = int.Parse(args[0]);
-        var listener = new TcpListener(IPAddress.Any, port);
+        string filePath = args[1];
 
+        if (!File.Exists(filePath))
+        {
+            Console.WriteLine($"File not found: {filePath}");
+            return;
+        }
+
+        var listener = new TcpListener(IPAddress.Any, port);
         try
         {
             listener.Start();
             Console.WriteLine($"Server listening on port {port}");
+            Console.WriteLine($"Ready to send file: {filePath}");
 
             while (true)
             {
                 TcpClient client = await listener.AcceptTcpClientAsync();
-                _ = HandleClientAsync(client);
+                _ = HandleClientAsync(client, filePath);
             }
         }
         catch (Exception ex)
@@ -36,49 +46,79 @@ class TcpServerApp
         }
     }
 
-    static async Task HandleClientAsync(TcpClient client)
+    static async Task HandleClientAsync(TcpClient client, string filePath)
     {
         Console.WriteLine($"Client connected: {client.Client.RemoteEndPoint}");
 
-        using NetworkStream stream = client.GetStream();
+        try
+        {
+            using NetworkStream stream = client.GetStream();
+            var sendFileTask = SendFileAsync(stream, filePath);
+            var receiveDataTask = ReceiveDataAsync(stream);
 
-        var sendDataTask = SendDataAsync(stream);
-        var receiveDataTask = ReceiveDataAsync(stream);
-
-        await Task.WhenAll(sendDataTask, receiveDataTask);
-
-        client.Close();
-        Console.WriteLine($"Client disconnected: {client.Client.RemoteEndPoint}");
+            await Task.WhenAll(sendFileTask, receiveDataTask);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error handling client: {ex.Message}");
+        }
+        finally
+        {
+            client.Close();
+            Console.WriteLine($"Client disconnected: {client.Client.RemoteEndPoint}");
+        }
     }
 
-    static async Task SendDataAsync(NetworkStream stream)
+    static async Task SendFileAsync(NetworkStream stream, string filePath)
     {
-        var random = new Random();
-        while (true)
+        // First send the file name
+        string fileName = Path.GetFileName(filePath);
+        byte[] fileNameBytes = Encoding.UTF8.GetBytes(fileName);
+        byte[] fileNameLengthBytes = BitConverter.GetBytes(fileNameBytes.Length);
+        await stream.WriteAsync(fileNameLengthBytes);
+        await stream.WriteAsync(fileNameBytes);
+
+        // Then send the file size
+        long fileSize = new FileInfo(filePath).Length;
+        byte[] fileSizeBytes = BitConverter.GetBytes(fileSize);
+        await stream.WriteAsync(fileSizeBytes);
+
+        // Send the file contents
+        using var fileStream = File.OpenRead(filePath);
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long totalBytesSent = 0;
+        int bytesRead;
+
+        while ((bytesRead = await fileStream.ReadAsync(buffer)) > 0)
         {
-            string message = GenerateRandomString(random, 10);
-            byte[] buffer = Encoding.UTF8.GetBytes(message);
-            await stream.WriteAsync(buffer);
-            Console.WriteLine($"Sent: {message}");
-            await Task.Delay(1000);
+            await stream.WriteAsync(buffer.AsMemory(0, bytesRead));
+            totalBytesSent += bytesRead;
+
+            // Report progress
+            double progress = (double)totalBytesSent / fileSize * 100;
+            Console.Write($"\rSending file: {progress:F2}% ({totalBytesSent}/{fileSize} bytes)");
         }
+
+        Console.WriteLine("\nFile sent successfully!");
     }
 
     static async Task ReceiveDataAsync(NetworkStream stream)
     {
-        var buffer = new byte[1024];
-        while (true)
+        var buffer = new byte[BUFFER_SIZE];
+        try
         {
-            int bytesRead = await stream.ReadAsync(buffer);
-            if (bytesRead == 0) break;
-            Console.WriteLine($"Received: {Encoding.UTF8.GetString(buffer, 0, bytesRead)}");
-        }
-    }
+            while (true)
+            {
+                int bytesRead = await stream.ReadAsync(buffer);
+                if (bytesRead == 0) break;
 
-    static string GenerateRandomString(Random random, int length)
-    {
-        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        return new string(Enumerable.Repeat(chars, length)
-            .Select(s => s[random.Next(s.Length)]).ToArray());
+                string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                Console.WriteLine($"Received from client: {message}");
+            }
+        }
+        catch (IOException)
+        {
+            // Client disconnected
+        }
     }
 }

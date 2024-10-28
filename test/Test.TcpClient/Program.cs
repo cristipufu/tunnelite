@@ -3,29 +3,34 @@ using System.Text;
 
 class TcpClientApp
 {
+    const int BUFFER_SIZE = 8192; // 8KB buffer size
+
     static async Task Main(string[] args)
     {
-        if (args.Length != 2)
+        if (args.Length != 3)
         {
-            Console.WriteLine("Usage: TcpClientApp <host> <port>");
+            Console.WriteLine("Usage: TcpClientApp <server_ip> <port> <save_directory>");
             return;
         }
 
-        string host = args[0];
+        string serverIp = args[0];
         int port = int.Parse(args[1]);
+        string saveDirectory = args[2];
 
-        using var client = new TcpClient();
+        if (!Directory.Exists(saveDirectory))
+        {
+            Directory.CreateDirectory(saveDirectory);
+        }
+
         try
         {
-            await client.ConnectAsync(host, port);
-            Console.WriteLine($"Connected to {host}:{port}");
+            using var client = new TcpClient();
+            Console.WriteLine($"Connecting to {serverIp}:{port}...");
+            await client.ConnectAsync(serverIp, port);
+            Console.WriteLine("Connected to server!");
 
             using NetworkStream stream = client.GetStream();
-
-            var sendTask = SendDataAsync(stream);
-            var receiveTask = ReceiveDataAsync(stream);
-
-            await Task.WhenAll(sendTask, receiveTask);
+            await ReceiveFileAsync(stream, saveDirectory);
         }
         catch (Exception ex)
         {
@@ -33,34 +38,45 @@ class TcpClientApp
         }
     }
 
-    static async Task SendDataAsync(NetworkStream stream)
+    static async Task ReceiveFileAsync(NetworkStream stream, string saveDirectory)
     {
-        var random = new Random();
-        while (true)
-        {
-            string message = GenerateRandomString(random, 10);
-            byte[] buffer = Encoding.UTF8.GetBytes(message);
-            await stream.WriteAsync(buffer);
-            Console.WriteLine($"Sent: {message}");
-            await Task.Delay(1000);
-        }
-    }
+        // Receive file name length
+        byte[] fileNameLengthBytes = new byte[sizeof(int)];
+        await stream.ReadAsync(fileNameLengthBytes);
+        int fileNameLength = BitConverter.ToInt32(fileNameLengthBytes);
 
-    static async Task ReceiveDataAsync(NetworkStream stream)
-    {
-        var buffer = new byte[1024];
-        while (true)
+        // Receive file name
+        byte[] fileNameBytes = new byte[fileNameLength];
+        await stream.ReadAsync(fileNameBytes);
+        string fileName = Encoding.UTF8.GetString(fileNameBytes);
+
+        // Receive file size
+        byte[] fileSizeBytes = new byte[sizeof(long)];
+        await stream.ReadAsync(fileSizeBytes);
+        long fileSize = BitConverter.ToInt64(fileSizeBytes);
+
+        string filePath = Path.Combine(saveDirectory, fileName);
+        Console.WriteLine($"Receiving file: {fileName} ({fileSize} bytes)");
+
+        // Receive file contents
+        using var fileStream = File.Create(filePath);
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long totalBytesReceived = 0;
+
+        while (totalBytesReceived < fileSize)
         {
             int bytesRead = await stream.ReadAsync(buffer);
             if (bytesRead == 0) break;
-            Console.WriteLine($"Received: {Encoding.UTF8.GetString(buffer, 0, bytesRead)}");
-        }
-    }
 
-    static string GenerateRandomString(Random random, int length)
-    {
-        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        return new string(Enumerable.Repeat(chars, length)
-            .Select(s => s[random.Next(s.Length)]).ToArray());
+            await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+            totalBytesReceived += bytesRead;
+
+            // Report progress
+            double progress = (double)totalBytesReceived / fileSize * 100;
+            Console.Write($"\rReceiving: {progress:F2}% ({totalBytesReceived}/{fileSize} bytes)");
+        }
+
+        Console.WriteLine("\nFile received successfully!");
+        Console.WriteLine($"Saved as: {filePath}");
     }
 }
