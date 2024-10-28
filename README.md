@@ -46,7 +46,7 @@ These allow Tunnelite to create secure subdomains for your tunnels and properly 
   
  <br/>
 
-![image info](https://github.com/cristipufu/ws-tunnel-signalr/blob/master/docs/http_tunneling.png)
+![image info](https://github.com/cristipufu/tunnelite/blob/master/docs/http_tunneling.png)
 
 </details>
 
@@ -55,7 +55,7 @@ These allow Tunnelite to create secure subdomains for your tunnels and properly 
   
  <br/>
 
-![image info](https://github.com/cristipufu/ws-tunnel-signalr/blob/master/docs/tcp_tunneling_global.png)
+![image info](https://github.com/cristipufu/tunnelite/blob/master/docs/tcp_tunneling_global.png)
 
 </details>
 
@@ -64,7 +64,7 @@ These allow Tunnelite to create secure subdomains for your tunnels and properly 
   
  <br/>
 
-![image info](https://github.com/cristipufu/ws-tunnel-signalr/blob/master/docs/tcp_tunneling.png)
+![image info](https://github.com/cristipufu/tunnelite/blob/master/docs/tcp_tunneling.png)
 
 </details>
 

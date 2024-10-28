@@ -11,8 +11,8 @@
 		<RepositoryType>git</RepositoryType>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<Description>SDK for tunneling AspNetCore apps</Description>
-		<PackageProjectUrl>https://github.com/cristipufu/ws-tunnel-signalr</PackageProjectUrl>
-		<RepositoryUrl>https://github.com/cristipufu/ws-tunnel-signalr</RepositoryUrl>
+		<PackageProjectUrl>https://github.com/cristipufu/tunnelite</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/cristipufu/tunnelite</RepositoryUrl>
 		<Version>1.0.1</Version>
 		<IsPackable>true</IsPackable>
 		<IncludeSymbols>true</IncludeSymbols>

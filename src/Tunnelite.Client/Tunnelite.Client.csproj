@@ -14,8 +14,8 @@
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>Tool for tunneling URLs</Description>
-    <PackageProjectUrl>https://github.com/cristipufu/ws-tunnel-signalr</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/cristipufu/ws-tunnel-signalr</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/cristipufu/tunnelite</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/cristipufu/tunnelite</RepositoryUrl>
     <Version>1.1.7</Version>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
