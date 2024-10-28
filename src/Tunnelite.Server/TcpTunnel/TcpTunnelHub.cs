@@ -71,15 +71,16 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
             yield break;
         }
 
-        const int chunkSize = 32 * 1024;
+        const int chunkSize = 16 * 1024;
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+
+        int bytesRead;
 
         try
         {
             var stream = tcpClient.GetStream();
 
-            int bytesRead;
 
             while (!Context.ConnectionAborted.IsCancellationRequested &&
                 (bytesRead = await stream.ReadAsync(buffer, Context.ConnectionAborted)) > 0)

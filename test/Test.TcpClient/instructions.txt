@@ -1,0 +1,3 @@
+.\Test.TcpServer.exe 5000 file.mp4
+.\Test.TcpClient.exe localhost 62340 "files"
+.\Tunnelite.Client.exe tcp://localhost:5000 --publicUrl https://localhost:7193/ --log Debug

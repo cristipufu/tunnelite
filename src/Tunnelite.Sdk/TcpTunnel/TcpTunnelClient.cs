@@ -180,7 +180,7 @@ public class TcpTunnelClient : ITunnelClient
 
     private async IAsyncEnumerable<ReadOnlyMemory<byte>> StreamLocalTcpAsync(TcpClient localClient, TcpConnection tcpConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        const int chunkSize = 32 * 1024;
+        const int chunkSize = 16 * 1024;
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
 
