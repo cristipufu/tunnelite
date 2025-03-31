@@ -1,5 +1,6 @@
 using Tunnelite.Server;
 using Tunnelite.Server.HttpTunnel;
+using Tunnelite.Server.SseTunnel;
 using Tunnelite.Server.TcpTunnel;
 using Tunnelite.Server.WsTunnel;
 
@@ -20,6 +21,8 @@ app.UseFavicon();
 app.UseHttpsRedirection();
 
 app.UseWsTunneling();
+
+app.UsSseTunneling();
 
 app.UseHttpTunneling();
 
