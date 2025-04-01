@@ -1,14 +1,17 @@
 ﻿using Microsoft.AspNetCore.SignalR;
 using System.Buffers;
 using System.Net.WebSockets;
+using Tunnelite.Server.SseTunnel;
 using Tunnelite.Server.WsTunnel;
 
 namespace Tunnelite.Server.HttpTunnel;
 
-public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRequestsQueue, ILogger<HttpTunnelHub> logger) : Hub
+public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRequestsQueue, SseRequestsQueue sseRequestsQueue, ILogger<HttpTunnelHub> logger) : Hub
 {
     private readonly HttpTunnelStore _httpTunnelStore = httpTunnelStore;
     private readonly WsRequestsQueue _wsRequestsQueue = wsRequestsQueue;
+    private readonly SseRequestsQueue _sseRequestsQueue = sseRequestsQueue;
+
     private readonly ILogger _logger = logger;
 
     public override Task OnConnectedAsync()
@@ -112,6 +115,46 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         }
     }
 
+    public async Task StreamOutgoingSseAsync(SseConnection sseConnection, IAsyncEnumerable<ReadOnlyMemory<byte>> stream)
+    {
+        var clientId = GetClientId(Context);
+
+        var context = _sseRequestsQueue.GetHttpContext(clientId, sseConnection.RequestId);
+
+        if (context == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await foreach (var chunk in stream.WithCancellation(Context.ConnectionAborted))
+            {
+                await context.Response.Body.WriteAsync(chunk, Context.ConnectionAborted);
+                await context.Response.Body.FlushAsync(Context.ConnectionAborted);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // ignore
+        }
+        catch (Exception ex) when (ex.Message == "Stream canceled by client.")
+        {
+            // ignore
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "An unexpected error occurred while streaming SSE data for {RequestId}", sseConnection.RequestId);
+        }
+        finally
+        {
+            _logger.LogInformation("Done writing.. SSE Connection {RequestId}", sseConnection.RequestId);
+
+            // Complete the SSE request
+            await _sseRequestsQueue.CompleteAsync(clientId, sseConnection.RequestId);
+        }
+    }
+
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var clientId = GetClientId(Context);
@@ -124,6 +167,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         }
 
         await _wsRequestsQueue.CompleteAsync(clientId);
+        await _sseRequestsQueue.CompleteAsync(clientId);
 
         await base.OnDisconnectedAsync(exception);
     }

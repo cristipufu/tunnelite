@@ -73,6 +73,15 @@ public class HttpTunnelClient : ITunnelClient
             return Task.CompletedTask;
         });
 
+        Connection.On<SseConnection>("NewSseConnection", (sseConnection) =>
+        {
+            LogRequest?.Invoke("SSE", sseConnection.Path);
+
+            _ = TunnelSseConnectionAsync(sseConnection);
+
+            return Task.CompletedTask;
+        });
+
         Connection.Reconnected += async connectionId =>
         {
             _currentTunnel = await RegisterTunnelAsync(tunnel);
@@ -255,6 +264,84 @@ public class HttpTunnelClient : ITunnelClient
         finally
         {
             Log?.Invoke($"[WS] Reading data from connection {wsConnection.RequestId} finished.");
+
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private async Task TunnelSseConnectionAsync(SseConnection sseConnection)
+    {
+        using var cts = new CancellationTokenSource();
+
+        try
+        {
+            // Send the request to the local server
+            using var request = new HttpRequestMessage(new HttpMethod(sseConnection.Method), sseConnection.Path);
+
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+            request.Content = new StringContent(sseConnection.Content);
+            if (sseConnection.ContentType != null)
+            {
+                request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(sseConnection.ContentType);
+            }
+
+            using var response = await LocalHttpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cts.Token);
+
+            response.EnsureSuccessStatusCode();
+
+            // Stream the SSE data from local server to the public tunnel
+            var outgoingTask = StreamOutgoingSseAsync(response, sseConnection, cts.Token);
+
+            // Wait for the streaming to complete
+            await outgoingTask;
+        }
+        catch (Exception ex)
+        {
+            LogFailedRequest?.Invoke("SSE", sseConnection.Path);
+            LogException?.Invoke(ex);
+        }
+        finally
+        {
+            await cts.CancelAsync();
+
+            Log?.Invoke($"[SSE] Connection {sseConnection.RequestId} closed.");
+        }
+    }
+
+    private async Task StreamOutgoingSseAsync(HttpResponseMessage response, SseConnection sseConnection, CancellationToken cancellationToken)
+    {
+        await Connection.InvokeAsync(
+            "StreamOutgoingSseAsync",
+            StreamLocalSseAsync(response, sseConnection, cancellationToken),
+            sseConnection,
+            cancellationToken: cancellationToken);
+    }
+
+    private async IAsyncEnumerable<ReadOnlyMemory<byte>> StreamLocalSseAsync(
+        HttpResponseMessage response,
+        SseConnection sseConnection,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        const int chunkSize = 32 * 1024;
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+
+        try
+        {
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+
+            int bytesRead;
+            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
+            {
+                yield return new ReadOnlyMemory<byte>(buffer, 0, bytesRead);
+            }
+        }
+        finally
+        {
+            Log?.Invoke($"[SSE] Reading data from connection {sseConnection.RequestId} finished.");
 
             ArrayPool<byte>.Shared.Return(buffer);
         }

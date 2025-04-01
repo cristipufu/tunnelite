@@ -1,4 +1,5 @@
 ﻿using Tunnelite.Server.HttpTunnel;
+using Tunnelite.Server.SseTunnel;
 using Tunnelite.Server.TcpTunnel;
 using Tunnelite.Server.WsTunnel;
 
@@ -10,6 +11,7 @@ public static class Extensions
     {
         builder.Services.AddSingleton<HttpTunnelStore>();
         builder.Services.AddSingleton<HttpRequestsQueue>();
+        builder.Services.AddSingleton<SseRequestsQueue>();
         builder.Services.AddSingleton<WsRequestsQueue>();
     }
 
