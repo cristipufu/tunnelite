@@ -1,4 +1,6 @@
 ﻿using Microsoft.AspNetCore.SignalR.Client;
+using Nerdbank.MessagePack;
+using Nerdbank.MessagePack.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Buffers;
@@ -43,7 +45,12 @@ public class HttpTunnelClient : ITunnelClient
 
         Connection = new HubConnectionBuilder()
             .WithUrl($"{tunnel.PublicUrl}/wsshttptunnel?clientId={tunnel.ClientId}")
-            .AddMessagePackProtocol()
+            .AddMessagePackProtocol(
+                TunneliteWitness.GeneratedTypeShapeProvider,
+                new MessagePackSerializer
+                {
+                    Converters = [new GuidAsStringConverter(), new WebSocketMessageTypeConverter()],
+                })
             .ConfigureLogging(logging =>
             {
                 if (logLevel.HasValue)
@@ -211,7 +218,7 @@ public class HttpTunnelClient : ITunnelClient
     {
         try
         {
-            await foreach (var chunk in Connection.StreamAsync<(ReadOnlyMemory<byte> Data, WebSocketMessageType Type)>("StreamIncomingWsAsync", wsConnection, cancellationToken: cancellationToken))
+            await foreach (var chunk in Connection.StreamAsync<WsChunk>("StreamIncomingWsAsync", wsConnection, cancellationToken: cancellationToken))
             {
                 if (webSocket.State == WebSocketState.Open)
                 {
@@ -241,7 +248,7 @@ public class HttpTunnelClient : ITunnelClient
         await Connection.InvokeAsync("StreamOutgoingWsAsync", StreamLocalWsAsync(localWebSocket, wsConnection, cancellationToken), wsConnection, cancellationToken: cancellationToken);
     }
 
-    private async IAsyncEnumerable<(ReadOnlyMemory<byte>, WebSocketMessageType)> StreamLocalWsAsync(WebSocket webSocket, WsConnection wsConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<WsChunk> StreamLocalWsAsync(WebSocket webSocket, WsConnection wsConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         const int chunkSize = 32 * 1024;
 
@@ -258,7 +265,7 @@ public class HttpTunnelClient : ITunnelClient
                     break;
                 }
 
-                yield return (new ReadOnlyMemory<byte>(buffer, 0, result.Count), result.MessageType);
+                yield return new WsChunk(buffer[..result.Count], result.MessageType);
             }
         }
         finally
@@ -321,7 +328,7 @@ public class HttpTunnelClient : ITunnelClient
             cancellationToken: cancellationToken);
     }
 
-    private async IAsyncEnumerable<ReadOnlyMemory<byte>> StreamLocalSseAsync(
+    private async IAsyncEnumerable<byte[]> StreamLocalSseAsync(
         HttpResponseMessage response,
         SseConnection sseConnection,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -336,7 +343,7 @@ public class HttpTunnelClient : ITunnelClient
             int bytesRead;
             while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
             {
-                yield return new ReadOnlyMemory<byte>(buffer, 0, bytesRead);
+                yield return buffer[..bytesRead];
             }
         }
         finally
@@ -357,9 +364,9 @@ public class HttpTunnelClient : ITunnelClient
         {
             try
             {
-                var response = await ServerHttpClient.PostAsJsonAsync($"{Tunnel.PublicUrl}/tunnelite/tunnel", tunnel);
+                var response = await ServerHttpClient.PostAsJsonAsync($"{Tunnel.PublicUrl}/tunnelite/tunnel", tunnel, TunneliteJsonContext.Default.HttpTunnelRequest);
 
-                tunnelResponse = await response.Content.ReadFromJsonAsync<HttpTunnelResponse?>();
+                tunnelResponse = await response.Content.ReadFromJsonAsync(TunneliteJsonContext.Default.HttpTunnelResponse);
 
                 if (!response.IsSuccessStatusCode)
                 {
