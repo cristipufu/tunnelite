@@ -32,11 +32,16 @@ jobs:
 
       - name: Publish
         shell: bash
+        # InvariantGlobalization keeps the binary from requiring ICU at runtime: without it
+        # a Linux build dies on any image that has no libicu installed, which is most slim
+        # images. It is set here rather than in the csproj so the dotnet tool package keeps
+        # its current behaviour.
         run: >
           dotnet publish src/Tunnelite.Client
           -c Release
           -r ${{ matrix.rid }}
           -p:PublishAot=true
+          -p:InvariantGlobalization=true
           -o publish
 
       - name: Stage
@@ -65,6 +70,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path "staging/tunnelite-${{ matrix.rid }}" -DestinationPath "dist/tunnelite-${{ matrix.rid }}.zip"
+
+      - name: Smoke test
+        shell: bash
+        # Every RID in the matrix matches its runner, so the artifact can be run here.
+        run: |
+          set -euo pipefail
+          staging="staging/tunnelite-${{ matrix.rid }}"
+          if [ -f "$staging/tunnelite.exe" ]; then
+            "$staging/tunnelite.exe" --help
+          else
+            "$staging/tunnelite" --help
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
