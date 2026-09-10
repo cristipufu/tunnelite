@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <!-- The hub protocol the pre-EndOfMessage SDK used; LegacyClientTests speaks it to prove old clients still work. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.12" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Tunnelite.Sdk\Tunnelite.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\Tunnelite.Server\Tunnelite.Server.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The server serves its landing and error pages from wwwroot. -->
+    <Content Include="..\..\src\Tunnelite.Server\wwwroot\**" Link="wwwroot\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

@@ -9,7 +9,7 @@ using System.Runtime.CompilerServices;
 
 namespace Tunnelite.Sdk;
 
-public class TcpTunnelClient : ITunnelClient
+public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
 {
     public event Func<Task>? Connected;
     public event Action<string, string>? LogRequest;
@@ -30,6 +30,7 @@ public class TcpTunnelClient : ITunnelClient
 
     private readonly TcpTunnelRequest Tunnel;
     private TcpTunnelResponse? _currentTunnel = null;
+    private bool _disposed;
 
     public TcpTunnelClient(TcpTunnelRequest tunnel, LogLevel? logLevel)
     {
@@ -77,13 +78,35 @@ public class TcpTunnelClient : ITunnelClient
 
         Connection.Closed += async (error) =>
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             await Task.Delay(new Random().Next(0, 5) * 1000);
+
+            if (_disposed)
+            {
+                return;
+            }
 
             if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
             {
                 _currentTunnel = await RegisterTunnelAsync(tunnel);
             }
         };
+    }
+
+    /// <summary>
+    /// Closes the tunnel and stops reconnecting.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+
+        await Connection.DisposeAsync();
+
+        GC.SuppressFinalize(this);
     }
 
     public async Task ConnectAsync()
@@ -226,6 +249,11 @@ public class TcpTunnelClient : ITunnelClient
             }
             catch
             {
+                if (_disposed)
+                {
+                    return false;
+                }
+
                 LogError?.Invoke($"[TCP] Cannot connect to the public server on {Tunnel.PublicUrl}");
 
                 await Task.Delay(5000, token);

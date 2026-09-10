@@ -1,5 +1,7 @@
 # ⚡Tunnelite
 
+[![CI](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml/badge.svg)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
+
 Tunnelite is a .NET tool that lets you set up a secure connection between a public web address and an application running on your local machine. It effectively makes your local app accessible from the internet.
 
 ## 🚀 Use Cases
@@ -69,6 +71,16 @@ These allow Tunnelite to create secure subdomains for your tunnels and properly 
 </details>
 
  <br/>
+
+## 🧪 Tests
+
+`test/Tunnelite.Tests` starts the tunnel server and a local app in-process and drives real traffic through the tunnel: HTTP, Server-Sent Events, WebSockets (including large and fragmented messages), TCP, and a client speaking the original WebSocket wire format. Set `TUNNELITE_CLI` to a built `tunnelite` binary to also run the CLI end-to-end.
+
+```bash
+dotnet test test/Tunnelite.Tests
+```
+
+CI runs the suite on every pull request, plus a NativeAOT publish of the CLI that is tested the same way.
 
 ## 📄 License
 
