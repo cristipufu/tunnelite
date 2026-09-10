@@ -262,10 +262,8 @@ public static class HttpAppExtensions
             }
             else if (subdomain.Equals("tunnelite"))
             {
-                var filePath = Path.Combine(app.Environment.WebRootPath, "index.html");
-                context.Response.ContentType = "text/html";
-                await context.Response.SendFileAsync(filePath);
-               
+                await LandingSiteAsync(app, context, path);
+
                 return;
             }
             else
@@ -313,6 +311,37 @@ public static class HttpAppExtensions
 
             logger.LogError(ex, "Error processing request tunnel: {Message}", ex.Message);
         }
+    }
+
+    // Files that belong to the landing site. They are only served on the root domain (tunnelite.com),
+    // never on tunnel subdomains, so they can't shadow a tunneled application's own robots.txt, llms.txt, etc.
+    static readonly Dictionary<string, string> LandingSiteFiles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["robots.txt"] = "text/plain; charset=utf-8",
+        ["sitemap.xml"] = "application/xml; charset=utf-8",
+        ["llms.txt"] = "text/plain; charset=utf-8",
+        ["llms-full.txt"] = "text/plain; charset=utf-8",
+        ["og-image.png"] = "image/png",
+        ["apple-touch-icon.png"] = "image/png",
+        // previews of the error pages shown on tunnel subdomains
+        ["404.html"] = "text/html; charset=utf-8",
+        ["500.html"] = "text/html; charset=utf-8",
+    };
+
+    static async Task LandingSiteAsync(WebApplication app, HttpContext context, string path)
+    {
+        if (LandingSiteFiles.TryGetValue(path, out var contentType))
+        {
+            var sitePath = Path.Combine(app.Environment.WebRootPath, path.ToLowerInvariant());
+            context.Response.ContentType = contentType;
+            context.Response.Headers.CacheControl = "public, max-age=3600";
+            await context.Response.SendFileAsync(sitePath);
+            return;
+        }
+
+        var filePath = Path.Combine(app.Environment.WebRootPath, "index.html");
+        context.Response.ContentType = "text/html; charset=utf-8";
+        await context.Response.SendFileAsync(filePath);
     }
 
     static async Task NotFoundAsync(WebApplication app, HttpContext context)

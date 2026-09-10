@@ -1,0 +1,177 @@
+# Tunnelite - Full Documentation
+
+> Tunnelite is an open-source .NET tool that lets you set up a secure connection between a public web address and an application running on your local machine. It effectively makes your local app accessible from the internet. Free to use, MIT-licensed, self-hostable, and a lightweight alternative to ngrok.
+
+- Website: https://tunnelite.com
+- Source code: https://github.com/cristipufu/tunnelite
+- License: MIT (https://github.com/cristipufu/tunnelite/blob/master/LICENSE)
+- Author: Cristi Pufu (https://github.com/cristipufu)
+- Short overview for agents: https://tunnelite.com/llms.txt
+
+## Packages
+
+| Package | Purpose | NuGet |
+| --- | --- | --- |
+| Tunnelite | The `tunnelite` command-line tool (installed as a .NET global tool) | https://www.nuget.org/packages/Tunnelite |
+| Tunnelite.Sdk | .NET library exposing `HttpTunnelClient` and `TcpTunnelClient` | https://www.nuget.org/packages/Tunnelite.Sdk |
+| Tunnelite.AspNetCore | `app.UseTunnelite()` middleware that tunnels an ASP.NET Core app when it starts | https://www.nuget.org/packages/Tunnelite.AspNetCore |
+
+## Use cases
+
+- Exposing locally-hosted web applications to the internet for testing or demo purposes.
+- Quickly sharing dev builds during hackathons and collaborative coding sessions.
+- Testing and debugging webhook integrations by exposing local endpoints.
+- Providing internet access to services running behind firewalls without exposing incoming ports.
+
+## Installation
+
+Tunnelite ships as a .NET global tool, so the .NET SDK must be installed (https://dotnet.microsoft.com/download). The current release targets .NET 10.
+
+.NET CLI:
+
+    dotnet tool install --global Tunnelite
+
+NUKE:
+
+    nuke :add-package Tunnelite
+
+Cake:
+
+    #tool dotnet:?package=Tunnelite
+
+Update an existing installation:
+
+    dotnet tool update --global Tunnelite
+
+## Usage
+
+Create a tunnel to a local HTTP application:
+
+    tunnelite http://localhost:3000
+
+The command returns a public URL with an auto-generated subdomain, for example `https://k7x2m9qa.tunnelite.com`. Requests sent to the public URL are forwarded to the local application, and every forwarded request is logged in the terminal with a timestamp, HTTP method and path.
+
+While the tunnel is running, press `c` to clear the screen and `q` to quit. The tunnel closes when the process exits, and the client reconnects automatically if the connection drops.
+
+### Command reference
+
+    tunnelite <localUrl> [--publicUrl <url>] [--log <level>]
+
+- `localUrl` (required): the local address to expose. Use `http://` or `https://` for web applications, or `tcp://host:port` for raw TCP (self-hosted servers only).
+- `--publicUrl`: the Tunnelite server to connect to. Defaults to `https://tunnelite.com`. Point it at your own server when self-hosting.
+- `--log`: client log verbosity: `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical`. Client logging is disabled unless this option is provided.
+
+Notes:
+
+- Local HTTPS URLs with self-signed or development certificates are accepted; the client does not validate the local certificate.
+- Subdomains are generated automatically (8 lowercase alphanumeric characters). The names `localhost`, `tunnelite` and `webhooks` are reserved.
+- A public HTTP request waits up to 30 seconds for the local application to respond. If the local application cannot be reached, the public URL shows a "The Tunnel Collapsed" error page; an unknown or disconnected subdomain shows a "Lost in the Tunnel" 404 page.
+
+### Supported protocols
+
+- HTTP and HTTPS (GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD)
+- WebSockets (ws:// and wss://)
+- Server-Sent Events (SSE)
+- TCP: implemented by the server, but only available when you host the server yourself. The managed service at tunnelite.com does not expose TCP ports.
+
+Example of a TCP tunnel against a self-hosted server:
+
+    tunnelite tcp://localhost:5432 --publicUrl https://tunnel.example.com
+
+## How it works
+
+Tunnelite creates a bridge between your local application and the internet using a persistent WebSocket connection (SignalR with the MessagePack protocol). The client connects outbound to the server, so no inbound ports have to be opened on your machine.
+
+1. The client registers a tunnel with the server and receives a public URL of the form `https://<subdomain>.tunnelite.com`.
+2. When a request arrives at the public URL, the server looks up the tunnel by the first label of the host name and notifies the connected client over the WebSocket.
+3. The client fetches the request (method, headers and body), replays it against the local URL and streams the response back to the server, which completes the original public request.
+4. WebSocket and SSE connections are bridged the same way. TCP tunnels open a public port on the server and relay bytes in both directions.
+
+Hop-by-hop headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, `Upgrade`, `Proxy-Connection`) are not forwarded.
+
+## Self-hosting
+
+Tunnelite allows you to self-host the server, giving you full control over your tunneling infrastructure. This is useful for organizations that require enhanced security or customization, and it is the only way to get TCP tunneling.
+
+Steps:
+
+1. Clone the repository: `git clone https://github.com/cristipufu/tunnelite`
+2. Configure the server project in `src/Tunnelite.Server` (`appsettings.json`). An Azure SignalR Service connection string (`ConnectionStrings:AzureSignalR`) is optional and only needed to scale out; without it the server uses in-process SignalR.
+3. Build and deploy the server (`dotnet publish -c Release`) on your own infrastructure. The repository includes a GitHub Actions workflow that deploys to Azure App Service.
+
+Connect to your server from the CLI:
+
+    tunnelite http://localhost:3000 --publicUrl https://your-server-domain
+
+Requirements:
+
+- A wildcard SSL certificate for your domain (for example `*.tunnel.example.com`)
+- A wildcard DNS record pointing to your server's IP address
+
+These allow Tunnelite to create secure subdomains for your tunnels and route traffic correctly to your self-hosted server. The server selects the tunnel using the first DNS label of the incoming `Host` header.
+
+## SDK usage (Tunnelite.Sdk)
+
+    dotnet add package Tunnelite.Sdk
+
+HTTP tunnel:
+
+    using Tunnelite.Sdk;
+
+    var client = new HttpTunnelClient(new HttpTunnelRequest
+    {
+        ClientId = Guid.NewGuid(),
+        LocalUrl = "http://localhost:3000",
+        PublicUrl = "https://tunnelite.com",
+        // Subdomain = "my-app", // optional; a random subdomain is assigned when omitted
+    }, logLevel: null);
+
+    client.LogRequest += (method, path) => Console.WriteLine($"{method} {path}");
+
+    await client.ConnectAsync();
+
+    Console.WriteLine($"Public URL: {client.TunnelUrl}");
+
+TCP tunnel (self-hosted server only):
+
+    var tcpClient = new TcpTunnelClient(new TcpTunnelRequest
+    {
+        ClientId = Guid.NewGuid(),
+        LocalUrl = "tcp://localhost:5432",
+        Host = "localhost",
+        LocalPort = 5432,
+        PublicUrl = "https://tunnel.example.com",
+    }, logLevel: null);
+
+    await tcpClient.ConnectAsync();
+
+    Console.WriteLine(tcpClient.TunnelUrl); // tcp://tunnel.example.com:<public-port>
+
+Both clients implement `ITunnelClient`, which exposes `TunnelUrl`, `ConnectAsync()`, the underlying SignalR `Connection`, and the events `Connected`, `Log`, `LogRequest`, `LogFailedRequest`, `LogError` and `LogException`. Connections reconnect automatically.
+
+## ASP.NET Core integration (Tunnelite.AspNetCore)
+
+    dotnet add package Tunnelite.AspNetCore
+
+    using Tunnelite.AspNetCore;
+
+    var app = builder.Build();
+
+    app.UseTunnelite(); // opens a tunnel to this app's first bound address when the app starts
+
+    app.Run();
+
+The public URL is written to the console once the tunnel is connected. The integration targets the managed server at https://tunnelite.com.
+
+## Webhook tester
+
+Tunnelite also provides a free webhook testing tool at https://webhooks.tunnelite.com to inspect and debug incoming requests.
+
+## Error pages
+
+- 404 "Oops! Lost in the Tunnel?": the subdomain has no active tunnel.
+- 500 "Oops! The Tunnel Collapsed!": the local application behind the tunnel could not be reached.
+
+## License
+
+Tunnelite is released under the MIT License: https://github.com/cristipufu/tunnelite/blob/master/LICENSE

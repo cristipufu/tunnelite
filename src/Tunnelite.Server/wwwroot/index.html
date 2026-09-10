@@ -3,369 +3,824 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tunnelite - Secure Local Tunneling Solution | ngrok alternative</title>
+    <title>Tunnelite – Secure Local Tunneling | Open-Source ngrok Alternative</title>
     <meta name="description" content="Tunnelite is an open-source, secure tunneling solution for exposing local web applications to the internet. A powerful ngrok alternative for developers.">
     <meta name="keywords" content="Tunnelite, local tunneling, ngrok alternative, webhook testing, secure tunneling, .NET tool, open-source, self-hosted">
+    <meta name="author" content="Cristi Pufu">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+    <meta name="application-name" content="Tunnelite">
+    <meta name="theme-color" content="#f8fafc">
+    <meta name="color-scheme" content="light">
+    <link rel="canonical" href="https://tunnelite.com/">
+    <link rel="icon" href="/favicon.ico" sizes="48x48">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b82f6'/%3E%3Cstop offset='1' stop-color='%2322d3ee'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M20 17H50L47.3 26H38.6L32 48H22L28.6 26H17.3Z' fill='%23fff' stroke='%23fff' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="sitemap" type="application/xml" href="/sitemap.xml">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Tunnelite">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:url" content="https://tunnelite.com/">
+    <meta property="og:title" content="Tunnelite – Secure Local Tunneling | Open-Source ngrok Alternative">
+    <meta property="og:description" content="Tunnelite is an open-source, secure tunneling solution for exposing local web applications to the internet. A powerful ngrok alternative for developers.">
+    <meta property="og:image" content="https://tunnelite.com/og-image.png">
+    <meta property="og:image:secure_url" content="https://tunnelite.com/og-image.png">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Tunnelite – secure tunneling to your local applications">
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Tunnelite – Secure Local Tunneling | Open-Source ngrok Alternative">
+    <meta name="twitter:description" content="Tunnelite is an open-source, secure tunneling solution for exposing local web applications to the internet. A powerful ngrok alternative for developers.">
+    <meta name="twitter:image" content="https://tunnelite.com/og-image.png">
+    <meta name="twitter:image:alt" content="Tunnelite – secure tunneling to your local applications">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
     <script defer data-domain="tunnelite.com" src="https://plausible.io/js/script.js"></script>
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": "https://tunnelite.com/#website",
+          "url": "https://tunnelite.com/",
+          "name": "Tunnelite",
+          "description": "Tunnelite is an open-source, secure tunneling solution for exposing local web applications to the internet. A powerful ngrok alternative for developers.",
+          "inLanguage": "en",
+          "publisher": { "@id": "https://tunnelite.com/#author" }
+        },
+        {
+          "@type": "WebPage",
+          "@id": "https://tunnelite.com/#webpage",
+          "url": "https://tunnelite.com/",
+          "name": "Tunnelite – Secure Local Tunneling | Open-Source ngrok Alternative",
+          "isPartOf": { "@id": "https://tunnelite.com/#website" },
+          "about": { "@id": "https://tunnelite.com/#software" },
+          "primaryImageOfPage": "https://tunnelite.com/og-image.png",
+          "inLanguage": "en"
+        },
+        {
+          "@type": "Person",
+          "@id": "https://tunnelite.com/#author",
+          "name": "Cristi Pufu",
+          "url": "https://github.com/cristipufu"
+        },
+        {
+          "@type": "SoftwareApplication",
+          "@id": "https://tunnelite.com/#software",
+          "name": "Tunnelite",
+          "url": "https://tunnelite.com/",
+          "description": "Open-source .NET tool that creates a secure tunnel between a public URL and an application running on your local machine, making your local app accessible from the internet.",
+          "applicationCategory": "DeveloperApplication",
+          "operatingSystem": "Windows, macOS, Linux",
+          "softwareRequirements": ".NET SDK",
+          "downloadUrl": "https://www.nuget.org/packages/Tunnelite",
+          "installUrl": "https://www.nuget.org/packages/Tunnelite",
+          "license": "https://opensource.org/licenses/MIT",
+          "isAccessibleForFree": true,
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+          "author": { "@id": "https://tunnelite.com/#author" },
+          "screenshot": "https://tunnelite.com/og-image.png",
+          "featureList": [
+            "Expose locally-hosted web applications to the internet",
+            "Test and debug webhook integrations",
+            "Share dev builds during hackathons",
+            "Secure access to services behind firewalls without exposing incoming ports",
+            "Self-hosted server option"
+          ],
+          "sameAs": [
+            "https://github.com/cristipufu/tunnelite",
+            "https://www.nuget.org/packages/Tunnelite"
+          ]
+        },
+        {
+          "@type": "SoftwareSourceCode",
+          "@id": "https://tunnelite.com/#source",
+          "name": "Tunnelite source code",
+          "codeRepository": "https://github.com/cristipufu/tunnelite",
+          "programmingLanguage": "C#",
+          "runtimePlatform": ".NET",
+          "license": "https://opensource.org/licenses/MIT",
+          "author": { "@id": "https://tunnelite.com/#author" },
+          "targetProduct": { "@id": "https://tunnelite.com/#software" }
+        }
+      ]
+    }
+    </script>
+
     <style>
+        /* ==========================================================
+           Design tokens
+           Type scale: 12 / 13 / 14 / 15 / 16 / 17 / 18 px + fluid h1/h2
+           Spacing: multiples of 4px (8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96)
+           Radii: 16 (cards, terminal) / 12 (code, chips) / 10 (buttons) / 8 (small)
+           ========================================================== */
         :root {
-            --primary-color: #4a90e2;
-            --secondary-color: #f5a623;
-            --background-color: #f4f7fa;
-            --text-color: #333;
+            /* surfaces */
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --surface-2: #f1f5f9;
+            --border: rgba(15, 23, 42, .08);
+            --border-strong: rgba(15, 23, 42, .16);
+            /* text */
+            --text: #0f172a;
+            --muted: #475569;
+            /* accent (blue-600 / blue-700 / cyan-600) */
+            --accent: #2563eb;
+            --accent-hover: #1d4ed8;
+            --accent-soft: rgba(37, 99, 235, .08);
+            --accent-line: rgba(37, 99, 235, .25);
+            --teal: #0891b2;
+            /* success (emerald) */
+            --success: #059669;
+            --success-strong: #047857;
+            --success-soft: rgba(16, 185, 129, .1);
+            --success-line: rgba(16, 185, 129, .35);
+            /* dark blocks: terminal + code */
+            --code-bg: #0b1120;
+            --code-edge: #1e293b;
+            --code-line: #334155;
+            --code-border: rgba(148, 163, 184, .2);
+            --code-text: #e2e8f0;
+            --code-muted: #94a3b8;
+            --code-dim: #64748b;
+            --code-amber: #fbbf24;
+            --code-green: #34d399;
+            /* shadows */
+            --shadow-sm: 0 1px 2px rgba(15, 23, 42, .05);
+            --shadow-md: 0 10px 30px -14px rgba(15, 23, 42, .45);
+            --shadow-lg: 0 30px 70px -30px rgba(15, 23, 42, .55);
+            /* radii */
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --radius-btn: 10px;
+            --radius-sm: 8px;
+            /* type scale */
+            --fs-12: .75rem;
+            --fs-13: .8125rem;
+            --fs-14: .875rem;
+            --fs-15: .9375rem;
+            --fs-17: 1.0625rem;
+            --fs-18: 1.125rem;
+            --font: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
         }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: 80px;
+            -webkit-text-size-adjust: 100%;
+        }
+
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.6;
-            color: var(--text-color);
-            background-color: var(--background-color);
             margin: 0;
-            padding: 0;
-        }
-        header {
-            background-color: #f8f9fa;
-            padding: 1rem 0;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 1rem;
+            font-family: var(--font);
+            font-size: 16px;
+            line-height: 1.6;
+            color: var(--text);
+            background: var(--bg);
+            -webkit-font-smoothing: antialiased;
+            text-rendering: optimizeLegibility;
         }
 
-        nav {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        p { margin: 0; }
+        svg { display: block; }
+        ::selection { background: rgba(37, 99, 235, .18); }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
+        .container { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+        .skip-link {
+            position: absolute; left: -999px; top: 8px; z-index: 100;
+            background: var(--accent); color: #fff; padding: 8px 12px; border-radius: var(--radius-sm);
+        }
+        .skip-link:focus { left: 8px; }
+
+        /* ---------- Header ---------- */
+        .site-header {
+            position: sticky; top: 0; z-index: 50;
+            background: rgba(248, 250, 252, .8);
+            -webkit-backdrop-filter: saturate(160%) blur(14px);
+            backdrop-filter: saturate(160%) blur(14px);
+            border-bottom: 1px solid var(--border);
+        }
+        .nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; height: 64px; }
         .logo {
-            font-size: 1.5rem;
-            font-weight: bold;
+            display: inline-flex; align-items: center; gap: 10px;
+            font-weight: 700; font-size: var(--fs-17); letter-spacing: -.02em; color: var(--text);
         }
-
-        .nav-links {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
+        .logo:hover { text-decoration: none; }
+        .logo-mark {
+            width: 28px; height: 28px; border-radius: var(--radius-sm);
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, .06), 0 6px 16px -6px rgba(37, 99, 235, .55);
         }
-
-            .nav-links a {
-                text-decoration: none;
-                color: #333;
-                font-size: 1rem;
-                transition: color 0.3s ease;
-            }
-
-                .nav-links a:hover {
-                    color: #007bff;
-                }
-
-        .github-logo {
-            display: inline-block;
-            vertical-align: middle;
-            width: 24px;
-            height: 24px;
-            fill: currentColor;
+        .nav-links { display: flex; align-items: center; gap: 4px; }
+        .nav-links a {
+            color: var(--muted); font-size: var(--fs-14); font-weight: 500;
+            padding: 8px 12px; border-radius: var(--radius-sm);
+            transition: color .15s, background .15s;
         }
+        .nav-links a:hover { color: var(--text); background: rgba(15, 23, 42, .05); text-decoration: none; }
 
-        .nav-links a[aria-label="GitHub repository"] {
-            display: flex;
-            align-items: center;
-            height: 100%;
-            padding: 0;
+        /* ---------- Buttons ---------- */
+        .btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 12px 20px; border-radius: var(--radius-btn);
+            font-weight: 600; font-size: var(--fs-15); line-height: 1; white-space: nowrap;
+            border: 1px solid transparent; cursor: pointer;
+            transition: transform .15s, box-shadow .15s, background .15s, border-color .15s;
         }
-        .hero {
-            text-align: center;
-            padding: 80px 0;
+        .btn:hover { text-decoration: none; transform: translateY(-1px); }
+        .btn svg { width: 18px; height: 18px; flex: none; }
+        .btn-primary {
+            background: var(--accent); color: #fff;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, .12), 0 10px 30px -10px rgba(37, 99, 235, .6);
+        }
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 1px 2px rgba(15, 23, 42, .12), 0 14px 34px -10px rgba(37, 99, 235, .7);
+        }
+        .btn-ghost { background: var(--surface); border-color: var(--border-strong); color: var(--text); box-shadow: var(--shadow-sm); }
+        .btn-ghost:hover { background: var(--surface-2); border-color: rgba(15, 23, 42, .28); }
+        .btn-sm { padding: 8px 14px; font-size: var(--fs-14); }
+        .btn-sm svg { width: 16px; height: 16px; }
+
+        /* ---------- Hero ---------- */
+        .hero { position: relative; overflow: hidden; padding: 96px 0; }
+        .hero::before {
+            content: ""; position: absolute; inset: 0; pointer-events: none;
+            background:
+                radial-gradient(800px 420px at 12% -10%, rgba(59, 130, 246, .16), transparent 60%),
+                radial-gradient(700px 400px at 95% 10%, rgba(34, 211, 238, .14), transparent 60%);
+        }
+        .hero::after {
+            content: ""; position: absolute; inset: 0; pointer-events: none;
+            background-image:
+                linear-gradient(rgba(15, 23, 42, .06) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(15, 23, 42, .06) 1px, transparent 1px);
+            background-size: 48px 48px;
+            -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 20%, transparent 75%);
+            mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 20%, transparent 75%);
+        }
+        .hero-grid {
+            position: relative;
+            display: grid; grid-template-columns: 1.05fr .95fr; gap: 64px; align-items: center;
+        }
+        .badge {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 6px 12px 6px 8px; border-radius: 999px;
+            border: 1px solid var(--success-line); background: var(--success-soft);
+            color: var(--success-strong); font-size: var(--fs-13); font-weight: 600; letter-spacing: .01em;
+        }
+        .badge .dot {
+            width: 8px; height: 8px; border-radius: 50%; background: #10b981;
+            box-shadow: 0 0 0 4px rgba(16, 185, 129, .18);
         }
         h1 {
-            font-size: 48px;
-            margin-bottom: 20px;
+            margin: 20px 0 16px;
+            font-size: clamp(2.5rem, 5.2vw, 3.75rem); line-height: 1.06;
+            letter-spacing: -.035em; font-weight: 800;
         }
-        .subtitle {
-            font-size: 24px;
-            color: #666;
-            margin-bottom: 40px;
+        .grad {
+            background: linear-gradient(92deg, var(--accent) 0%, var(--teal) 100%);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
         }
-        .cta-button {
-            display: inline-block;
-            background-color: var(--primary-color);
-            color: #fff;
-            padding: 12px 24px;
-            border-radius: 4px;
-            text-decoration: none;
-            font-weight: bold;
-            transition: background-color 0.3s ease;
+        .lead { font-size: var(--fs-18); line-height: 1.55; color: var(--muted); max-width: 52ch; margin: 0 0 32px; }
+        .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }
+        .hero-install {
+            display: inline-flex; align-items: center; gap: 12px; max-width: 100%;
+            padding: 8px 8px 8px 16px; border-radius: var(--radius-md);
+            border: 1px solid var(--code-edge); background: var(--code-bg);
+            box-shadow: var(--shadow-md);
+            font-family: var(--mono); font-size: var(--fs-14);
         }
-        .cta-button:hover {
-            background-color: #3a7bc8;
+        .hero-install code { white-space: nowrap; overflow: auto; color: var(--code-text); }
+
+        /* ---------- Terminal ---------- */
+        .terminal {
+            background: var(--code-bg); color: var(--code-text);
+            border: 1px solid var(--code-edge); border-radius: var(--radius-lg); overflow: hidden;
+            box-shadow: var(--shadow-lg), 0 20px 60px -20px rgba(37, 99, 235, .25);
+            font-family: var(--mono); font-size: var(--fs-13); line-height: 1.7;
         }
-        .features {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 40px;
-            margin: 80px 0;
+        .terminal-bar {
+            display: flex; align-items: center; gap: 8px;
+            padding: 12px 16px; border-bottom: 1px solid var(--code-border);
+            background: rgba(255, 255, 255, .03);
         }
+        .terminal-bar span { width: 12px; height: 12px; border-radius: 50%; }
+        .terminal-bar span:nth-child(1) { background: #ff5f57; }
+        .terminal-bar span:nth-child(2) { background: #febc2e; }
+        .terminal-bar span:nth-child(3) { background: #28c840; }
+        .terminal-bar em { margin: 0 auto; font-style: normal; color: var(--code-muted); font-size: var(--fs-12); }
+        .terminal-body { padding: 20px; min-height: 300px; }
+        .line {
+            white-space: pre-wrap; word-break: break-all;
+            opacity: 0; transform: translateY(4px);
+            animation: rise .45s ease forwards;
+            animation-delay: calc(var(--i) * .5s + .3s);
+        }
+        @keyframes rise { to { opacity: 1; transform: none; } }
+        .prompt { color: var(--code-amber); user-select: none; }
+        .ts { color: var(--code-amber); }
+        .ok { color: var(--code-green); }
+        .dim { color: var(--code-dim); }
+        .tbl { margin: 12px 0 16px; border: 1px solid var(--code-line); border-radius: var(--radius-sm); max-width: 420px; white-space: normal; }
+        .tbl-head { text-align: center; color: var(--code-green); font-weight: 600; padding: 4px 12px; border-bottom: 1px solid var(--code-line); }
+        .tbl-row { padding: 2px 12px; }
+        .tbl-row:first-of-type { padding-top: 6px; }
+        .tbl-row:last-child { padding-bottom: 6px; }
+        .cursor {
+            display: inline-block; width: 9px; height: 1.1em; background: var(--code-text);
+            vertical-align: text-bottom; animation: blink 1s steps(2) infinite;
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+
+        /* ---------- Sections ---------- */
+        .section { padding: 80px 0; border-top: 1px solid var(--border); }
+        .section-head { max-width: 720px; margin-bottom: 40px; }
+        .section-head h2 {
+            margin: 0 0 12px;
+            font-size: clamp(1.75rem, 3vw, 2.25rem); line-height: 1.15;
+            letter-spacing: -.03em; font-weight: 700;
+        }
+        .section-head h2:last-child { margin-bottom: 0; }
+        .section-head p { color: var(--muted); font-size: var(--fs-17); line-height: 1.6; }
+        .section-head p + p { margin-top: 8px; }
+        .narrow { max-width: 760px; }
+
+        /* Features */
+        .features-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
         .feature {
-            text-align: center;
-            padding: 20px;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 24px; border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            background: var(--surface);
+            box-shadow: var(--shadow-sm);
+            transition: border-color .2s, transform .2s, box-shadow .2s;
         }
-        .feature h3 {
-            color: var(--primary-color);
+        .feature:hover {
+            border-color: rgba(37, 99, 235, .35); transform: translateY(-2px);
+            box-shadow: 0 20px 40px -24px rgba(37, 99, 235, .35);
         }
-        .installation, .usage, .self-hosting {
-            background-color: #fff;
-            border-radius: 8px;
-            padding: 40px;
-            margin-bottom: 40px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        .feature-icon {
+            width: 40px; height: 40px; border-radius: var(--radius-btn); margin-bottom: 16px;
+            display: grid; place-items: center;
+            background: var(--accent-soft); border: 1px solid rgba(37, 99, 235, .18); color: var(--accent);
         }
-        pre {
-            background-color: #f1f1f1;
-            padding: 20px;
-            border-radius: 4px;
-            overflow-x: auto;
+        .feature-icon svg { width: 20px; height: 20px; }
+        .feature h3 { margin: 0 0 8px; font-size: var(--fs-17); line-height: 1.35; font-weight: 600; letter-spacing: -.01em; }
+        .feature p { color: var(--muted); font-size: var(--fs-15); line-height: 1.6; }
+        .feature p + p { margin-top: 12px; font-size: var(--fs-14); }
+
+        /* Code blocks */
+        .code-block {
+            border: 1px solid var(--code-edge); border-radius: var(--radius-md); background: var(--code-bg); overflow: hidden;
+            box-shadow: var(--shadow-md);
         }
-        footer {
-            background-color: #333;
-            color: #fff;
-            text-align: center;
-            padding: 20px 0;
-            margin-top: 80px;
+        .code-head {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--code-border);
+            background: rgba(255, 255, 255, .03);
         }
-        .copy-button {
-            background-color: var(--secondary-color);
-            border: none;
-            color: white;
-            padding: 5px 10px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 14px;
-            margin: 4px 2px;
-            cursor: pointer;
-            border-radius: 4px;
+        .code-label { margin: 0; font-size: var(--fs-12); font-weight: 600; color: var(--code-muted); letter-spacing: .04em; text-transform: uppercase; }
+        .code-block pre {
+            margin: 0; padding: 16px 20px; overflow-x: auto;
+            font-family: var(--mono); font-size: var(--fs-14); line-height: 1.6; color: var(--code-text);
         }
-        .github-link {
-            display: inline-block;
-            margin-top: 20px;
-            color: var(--primary-color);
-            text-decoration: none;
-            font-weight: bold;
+        .code-block code { font-family: inherit; }
+        .copy-btn {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 6px 10px; border-radius: var(--radius-sm);
+            border: 1px solid var(--code-border); background: rgba(255, 255, 255, .04);
+            color: var(--code-muted); font: inherit; font-size: var(--fs-13); font-weight: 600; line-height: 1.2; cursor: pointer;
+            transition: color .15s, background .15s, border-color .15s;
         }
-        .github-link:hover {
-            text-decoration: underline;
+        .copy-btn:hover { color: var(--code-text); border-color: rgba(148, 163, 184, .4); background: rgba(255, 255, 255, .09); }
+        .copy-btn svg { width: 15px; height: 15px; }
+        .copy-btn .ico-check { display: none; }
+        .copy-btn.copied { color: var(--code-green); border-color: rgba(52, 211, 153, .45); background: rgba(52, 211, 153, .12); }
+        .copy-btn.copied .ico-copy { display: none; }
+        .copy-btn.copied .ico-check { display: block; }
+        .install-list { display: grid; gap: 16px; max-width: 760px; }
+        .inline {
+            font-family: var(--mono); font-size: .9em; padding: 2px 6px; border-radius: 6px;
+            background: rgba(15, 23, 42, .06); border: 1px solid var(--border); color: var(--text);
         }
-        .copy-notification {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background-color: var(--primary-color);
-            color: white;
-            padding: 10px 20px;
-            border-radius: 4px;
-            opacity: 0;
-            transition: opacity 0.3s ease-in-out;
+        .note { color: var(--muted); font-size: var(--fs-15); margin: 16px 0 0; }
+
+        /* Self-hosting */
+        .selfhost-grid { display: grid; grid-template-columns: 1.25fr .75fr; gap: 20px; align-items: start; }
+        .card {
+            padding: 32px; border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            background: var(--surface);
+            box-shadow: var(--shadow-sm);
         }
-        .copy-notification.show {
-            opacity: 1;
+        .card p { margin: 0 0 16px; }
+        .card-title { font-weight: 600; }
+        .steps { list-style: none; margin: 0 0 24px; padding: 0; counter-reset: step; }
+        .steps li { position: relative; padding: 0 0 20px 44px; min-height: 28px; counter-increment: step; }
+        .steps li:last-child { padding-bottom: 0; }
+        .steps li::before {
+            content: counter(step);
+            position: absolute; left: 0; top: -1px; width: 28px; height: 28px; border-radius: 50%;
+            display: grid; place-items: center;
+            font-size: var(--fs-13); font-weight: 700; color: var(--accent-hover);
+            background: var(--accent-soft); border: 1px solid var(--accent-line);
         }
-
-        @media (max-width: 768px) {
-            .container {
-                padding: 0 1.5rem;
-            }
-
-            .hero {
-                padding: 40px 0;
-            }
-
-            h1 {
-                font-size: 36px;
-            }
-
-            .subtitle {
-                font-size: 20px;
-            }
-
-            .features {
-                grid-template-columns: 1fr;
-                gap: 20px;
-            }
-
-            .installation, .usage, .self-hosting {
-                padding: 20px;
-            }
-
-            pre {
-                font-size: 14px;
-                padding: 15px;
-            }
+        .steps li:not(:last-child)::after {
+            content: ""; position: absolute; left: 13.5px; top: 29px; bottom: 2px; width: 1px;
+            background: var(--border-strong);
         }
-
-        @media (max-width: 480px) {
-            .nav-links {
-                flex-direction: column;
-                gap: 0.5rem;
-            }
-
-                .nav-links a {
-                    padding: 0.5rem 0;
-                }
-
-            h1 {
-                font-size: 28px;
-            }
-
-            .subtitle {
-                font-size: 18px;
-            }
-
-            .cta-button {
-                padding: 10px 20px;
-                font-size: 16px;
-            }
+        .requirements h3 { margin: 0 0 8px; font-size: var(--fs-17); line-height: 1.35; font-weight: 600; letter-spacing: -.01em; }
+        .checklist { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 12px; }
+        .checklist li { position: relative; padding-left: 32px; }
+        .checklist li::before {
+            content: ""; position: absolute; left: 0; top: 3px; width: 20px; height: 20px; border-radius: 6px;
+            background: var(--success-soft); border: 1px solid var(--success-line);
         }
+        .checklist li::after {
+            content: ""; position: absolute; left: 7px; top: 6px; width: 5px; height: 9px;
+            border: solid var(--success); border-width: 0 2px 2px 0; transform: rotate(45deg);
+        }
+        .muted { color: var(--muted); font-size: var(--fs-14); line-height: 1.6; }
+        .card .muted:last-child { margin-bottom: 0; }
 
-        @media (max-width: 768px) {
+        /* ---------- Footer ---------- */
+        .site-footer {
+            border-top: 1px solid var(--border); padding: 48px 0;
+            background: var(--surface-2);
+        }
+        .footer-grid { display: flex; justify-content: space-between; gap: 32px; flex-wrap: wrap; }
+        .footer-brand .logo { margin-bottom: 12px; }
+        .footer-brand p { margin: 4px 0 0; color: var(--muted); font-size: var(--fs-14); line-height: 1.6; }
+        .footer-links { display: flex; gap: 8px 24px; flex-wrap: wrap; align-content: flex-start; }
+        .footer-links a {
+            display: inline-flex; align-items: center; gap: 8px;
+            color: var(--muted); font-size: var(--fs-14); font-weight: 500;
+            transition: color .15s;
+        }
+        .footer-links a:hover { color: var(--text); text-decoration: none; }
+        .footer-links svg { width: 16px; height: 16px; flex: none; }
 
-            header {
-                display: none;
-            }
-            .copy-button {
-                display: block;
-                width: 100%;
-                margin-top: 10px;
-            }
+        /* ---------- Toast ---------- */
+        .toast {
+            position: fixed; left: 50%; bottom: 24px; z-index: 60;
+            transform: translate(-50%, 12px);
+            padding: 10px 16px; border-radius: var(--radius-btn);
+            background: var(--surface); border: 1px solid var(--success-line); color: var(--text);
+            font-size: var(--fs-14); font-weight: 500;
+            box-shadow: 0 10px 30px -10px rgba(15, 23, 42, .3);
+            opacity: 0; pointer-events: none;
+            transition: opacity .25s, transform .25s;
+        }
+        .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-            .copy-notification {
-                bottom: 10px;
-                right: 10px;
-                left: 10px;
-                text-align: center;
-            }
+        /* ---------- Responsive ---------- */
+        @media (max-width: 1000px) {
+            .hero { padding: 64px 0; }
+            .hero-grid { grid-template-columns: 1fr; gap: 40px; }
+            .terminal-body { min-height: 0; }
+            .features-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 860px) {
+            .nav-links { display: none; }
+        }
+        @media (max-width: 760px) {
+            .selfhost-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 600px) {
+            .section { padding: 64px 0; }
+            .section-head { margin-bottom: 32px; }
+            .features-grid { grid-template-columns: 1fr; }
+            .card { padding: 24px; }
+            .hero-actions .btn { flex: 1; justify-content: center; }
+            .btn-sm span { display: none; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior: auto; }
+            .line { animation: none; opacity: 1; transform: none; }
+            .cursor { animation: none; }
+            .btn:hover, .feature:hover { transform: none; }
         }
     </style>
 </head>
 <body>
-    <header>
-        <nav class="container">
-            <div class="logo"></div>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+        <nav class="container nav" aria-label="Main navigation">
+            <a href="#top" class="logo" aria-label="Tunnelite home">
+                <svg class="logo-mark" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <defs><linearGradient id="lg-nav" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+                    <rect width="64" height="64" rx="14" fill="url(#lg-nav)"/>
+                    <path d="M20 17H50L47.3 26H38.6L32 48H22L28.6 26H17.3Z" fill="#fff" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+                </svg>
+                <span>Tunnelite</span>
+            </a>
             <div class="nav-links">
                 <a href="#features">Features</a>
                 <a href="#installation">Installation</a>
                 <a href="#usage">Usage</a>
                 <a href="#self-hosting">Self-Hosting</a>
-                <a href="https://webhooks.tunnelite.com" target="_blank">Webhook Tester</a>
-                <a href="https://github.com/cristipufu/tunnelite" target="_blank" aria-label="GitHub repository">
-                    <svg class="github-logo" viewBox="0 0 16 16" width="24" height="24" aria-hidden="true">
-                        <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
-                    </svg>
-                </a>
+                <a href="https://webhooks.tunnelite.com" target="_blank" rel="noopener">Webhook Tester</a>
             </div>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                <span>GitHub</span>
+            </a>
         </nav>
     </header>
 
-    <main class="container">
-        <section class="hero">
-            <h1>Tunnelite</h1>
-            <p class="subtitle">Secure tunneling to your local applications</p>
-            <a href="#installation" class="cta-button">Get Started</a>
-            <p>Open-source and free to use</p>
-            <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer" class="github-link">View on GitHub</a>
+    <main id="main">
+        <section class="hero" id="top">
+            <div class="container hero-grid">
+                <div class="hero-copy">
+                    <span class="badge"><span class="dot" aria-hidden="true"></span>Open-source and free to use</span>
+                    <h1>Secure tunneling to your <span class="grad">local applications</span></h1>
+                    <p class="lead">Tunnelite is an open-source, secure tunneling solution for exposing local web applications to the internet. A powerful ngrok alternative for developers.</p>
+                    <div class="hero-actions">
+                        <a href="#installation" class="btn btn-primary">
+                            Get Started
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                        </a>
+                        <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer" class="btn btn-ghost">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                            View on GitHub
+                        </a>
+                    </div>
+                    <div class="hero-install">
+                        <code><span class="prompt">$</span> dotnet tool install --global Tunnelite</code>
+                        <button type="button" class="copy-btn" data-copy="dotnet tool install --global Tunnelite" aria-label="Copy install command">
+                            <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                            <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="hero-demo" aria-hidden="true">
+                    <div class="terminal">
+                        <div class="terminal-bar"><span></span><span></span><span></span><em>tunnelite</em></div>
+                        <div class="terminal-body">
+                            <div class="line" style="--i:0"><span class="prompt">$</span> tunnelite http://localhost:3000</div>
+                            <div class="line tbl" style="--i:1">
+                                <div class="tbl-head">Connected</div>
+                                <div class="tbl-row">Local URL: http://localhost:3000</div>
+                                <div class="tbl-row">Public URL: https://k7x2m9qa.tunnelite.com</div>
+                            </div>
+                            <div class="line dim" style="--i:2">Press 'c' to clear, 'q' to quit</div>
+                            <div class="line" style="--i:3"><span class="ts">12:04:31</span> <span class="ok">[GET]</span>: http://localhost:3000/</div>
+                            <div class="line" style="--i:4"><span class="ts">12:04:32</span> <span class="ok">[GET]</span>: http://localhost:3000/api/orders</div>
+                            <div class="line" style="--i:5"><span class="ts">12:04:35</span> <span class="ok">[POST]</span>: http://localhost:3000/api/webhooks</div>
+                            <div class="line" style="--i:6"><span class="cursor"></span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </section>
 
-        <section id="features" class="features">
-            <div class="feature">
-                <h3>Expose Local Apps</h3>
-                <p>Share your locally-hosted web applications for testing or demos.</p>
-            </div>
-            <div class="feature">
-                <h3>Test and Debug Webhooks</h3>
-                <p>Easily test webhook integrations by exposing local endpoints. </p>
-                <span>Try our <a href="https://webhooks.tunnelite.com" target="_blank">webhook testing tool</a> to inspect and debug incoming requests.</span>
-            </div>
-            <div class="feature">
-                <h3>Hackathon Ready</h3>
-                <p>Quickly share dev builds during hackathons and collaborative coding sessions.</p>
-            </div>
-            <div class="feature">
-                <h3>Secure Access</h3>
-                <p>Provide internet access to services behind firewalls without exposing incoming ports.</p>
+        <section id="features" class="section" aria-labelledby="features-title">
+            <div class="container">
+                <div class="section-head">
+                    <h2 id="features-title">Features</h2>
+                </div>
+                <div class="features-grid">
+                    <article class="feature">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+                        </div>
+                        <h3>Expose Local Apps</h3>
+                        <p>Share your locally-hosted web applications for testing or demos.</p>
+                    </article>
+                    <article class="feature">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+                        </div>
+                        <h3>Test and Debug Webhooks</h3>
+                        <p>Easily test webhook integrations by exposing local endpoints.</p>
+                        <p>Try our <a href="https://webhooks.tunnelite.com" target="_blank" rel="noopener">webhook testing tool</a> to inspect and debug incoming requests.</p>
+                    </article>
+                    <article class="feature">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>
+                        </div>
+                        <h3>Hackathon Ready</h3>
+                        <p>Quickly share dev builds during hackathons and collaborative coding sessions.</p>
+                    </article>
+                    <article class="feature">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>
+                        </div>
+                        <h3>Secure Access</h3>
+                        <p>Provide internet access to services behind firewalls without exposing incoming ports.</p>
+                    </article>
+                </div>
             </div>
         </section>
 
-        <section id="installation" class="installation">
-            <h2>Installation</h2>
-            <p>To install Tunnelite as a global tool, use the following command:</p>
-            <h3>.NET CLI</h3>
-            <pre><code>dotnet tool install --global Tunnelite</code></pre>
-            <button class="copy-button" onclick="copyToClipboard('dotnet tool install --global Tunnelite')">Copy</button>
-            <h3>NUKE</h3>
-            <pre><code>nuke :add-package Tunnelite</code></pre>
-            <button class="copy-button" onclick="copyToClipboard('nuke :add-package Tunnelite')">Copy</button>
-            <h3>Cake</h3>
-            <pre><code>#tool dotnet:?package=Tunnelite</code></pre>
-            <button class="copy-button" onclick="copyToClipboard('#tool dotnet:?package=Tunnelite')">Copy</button>
+        <section id="installation" class="section" aria-labelledby="installation-title">
+            <div class="container">
+                <div class="section-head">
+                    <h2 id="installation-title">Installation</h2>
+                    <p>To install Tunnelite as a global tool, use the following command:</p>
+                </div>
+                <div class="install-list">
+                    <div class="code-block">
+                        <div class="code-head">
+                            <h3 class="code-label">.NET CLI</h3>
+                            <button type="button" class="copy-btn" data-copy="dotnet tool install --global Tunnelite" aria-label="Copy .NET CLI command">
+                                <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                                <span class="copy-text">Copy</span>
+                            </button>
+                        </div>
+                        <pre><code><span class="prompt">$</span> dotnet tool install --global Tunnelite</code></pre>
+                    </div>
+                    <div class="code-block">
+                        <div class="code-head">
+                            <h3 class="code-label">NUKE</h3>
+                            <button type="button" class="copy-btn" data-copy="nuke :add-package Tunnelite" aria-label="Copy NUKE command">
+                                <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                                <span class="copy-text">Copy</span>
+                            </button>
+                        </div>
+                        <pre><code><span class="prompt">$</span> nuke :add-package Tunnelite</code></pre>
+                    </div>
+                    <div class="code-block">
+                        <div class="code-head">
+                            <h3 class="code-label">Cake</h3>
+                            <button type="button" class="copy-btn" data-copy="#tool dotnet:?package=Tunnelite" aria-label="Copy Cake directive">
+                                <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                                <span class="copy-text">Copy</span>
+                            </button>
+                        </div>
+                        <pre><code>#tool dotnet:?package=Tunnelite</code></pre>
+                    </div>
+                </div>
+            </div>
         </section>
 
-        <section id="usage" class="usage">
-            <h2>Usage</h2>
-            <p>Once installed, you can use the tunnelite command to create a tunnel to your local application.</p>
-            <pre><code>tunnelite http://localhost:3000</code></pre>
-            <button class="copy-button" onclick="copyToClipboard('tunnelite http://localhost:3000')">Copy</button>
-            <p>This command returns a public URL with an auto-generated subdomain.</p>
+        <section id="usage" class="section" aria-labelledby="usage-title">
+            <div class="container">
+                <div class="section-head">
+                    <h2 id="usage-title">Usage</h2>
+                    <p>Once installed, you can use the <code class="inline">tunnelite</code> command to create a tunnel to your local application.</p>
+                </div>
+                <div class="narrow">
+                    <div class="code-block">
+                        <div class="code-head">
+                            <h3 class="code-label">Terminal</h3>
+                            <button type="button" class="copy-btn" data-copy="tunnelite http://localhost:3000" aria-label="Copy usage command">
+                                <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                                <span class="copy-text">Copy</span>
+                            </button>
+                        </div>
+                        <pre><code><span class="prompt">$</span> tunnelite http://localhost:3000</code></pre>
+                    </div>
+                    <p class="note">This command returns a public URL with an auto-generated subdomain.</p>
+                </div>
+            </div>
         </section>
 
-        <section id="self-hosting" class="self-hosting">
-            <h2>Self-Hosting</h2>
-            <p>Tunnelite allows you to self-host the server, giving you full control over your tunneling infrastructure. This feature is perfect for organizations that require enhanced security or customization.</p>
-            <p>To self-host Tunnelite:</p>
-            <ol>
-                <li>Clone the <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer">repository</a></li>
-                <li>Configure your app server settings</li>
-                <li>Deploy the app server on your own infrastructure</li>
-            </ol>
-            <p>Once your self-hosted server is set up, you can connect to it using the following command:</p>
-            <pre><code>tunnelite http://localhost:3000 --publicUrl yourServerUrl</code></pre>
-            <button class="copy-button" onclick="copyToClipboard('tunnelite http://localhost:3000 --publicUrl yourServerUrl')">Copy</button>
-            
-            <h3>Requirements</h3>
-            <p>To successfully self-host Tunnelite, you'll need:</p>
-            <ul>
-                <li>SSL wildcard certificate for your domain</li>
-                <li>Wildcard DNS record pointing to your server's IP address</li>
-            </ul>
-            <p>These requirements ensure that Tunnelite can generate secure subdomains for your tunnels and route traffic correctly to your self-hosted server.</p>
+        <section id="self-hosting" class="section" aria-labelledby="self-hosting-title">
+            <div class="container">
+                <div class="section-head">
+                    <h2 id="self-hosting-title">Self-Hosting</h2>
+                    <p>Tunnelite allows you to self-host the server, giving you full control over your tunneling infrastructure. This feature is perfect for organizations that require enhanced security or customization.</p>
+                </div>
+                <div class="selfhost-grid">
+                    <div class="card">
+                        <p class="card-title">To self-host Tunnelite:</p>
+                        <ol class="steps">
+                            <li>Clone the <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer">repository</a></li>
+                            <li>Configure your app server settings</li>
+                            <li>Deploy the app server on your own infrastructure</li>
+                        </ol>
+                        <p>Once your self-hosted server is set up, you can connect to it using the following command:</p>
+                        <div class="code-block">
+                            <div class="code-head">
+                                <h3 class="code-label">Terminal</h3>
+                                <button type="button" class="copy-btn" data-copy="tunnelite http://localhost:3000 --publicUrl yourServerUrl" aria-label="Copy self-hosting command">
+                                    <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                    <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                                    <span class="copy-text">Copy</span>
+                                </button>
+                            </div>
+                            <pre><code><span class="prompt">$</span> tunnelite http://localhost:3000 --publicUrl yourServerUrl</code></pre>
+                        </div>
+                    </div>
+                    <aside class="card requirements">
+                        <h3>Requirements</h3>
+                        <p>To successfully self-host Tunnelite, you'll need:</p>
+                        <ul class="checklist">
+                            <li>SSL wildcard certificate for your domain</li>
+                            <li>Wildcard DNS record pointing to your server's IP address</li>
+                        </ul>
+                        <p class="muted">These requirements ensure that Tunnelite can generate secure subdomains for your tunnels and route traffic correctly to your self-hosted server.</p>
+                    </aside>
+                </div>
+            </div>
         </section>
     </main>
 
-    <footer>
-        <p>&copy; 2024 Tunnelite. All rights reserved.</p>
-        <p>Tunnelite is open-source software. <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer" class="github-link">View the source on GitHub</a></p>
+    <footer class="site-footer">
+        <div class="container footer-grid">
+            <div class="footer-brand">
+                <a href="#top" class="logo" aria-label="Tunnelite home">
+                    <svg class="logo-mark" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <defs><linearGradient id="lg-footer" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+                        <rect width="64" height="64" rx="14" fill="url(#lg-footer)"/>
+                        <path d="M20 17H50L47.3 26H38.6L32 48H22L28.6 26H17.3Z" fill="#fff" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+                    </svg>
+                    <span>Tunnelite</span>
+                </a>
+                <p>&copy; 2026 Tunnelite. All rights reserved.</p>
+                <p>Tunnelite is open-source software. <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer">View the source on GitHub</a></p>
+            </div>
+            <nav class="footer-links" aria-label="Footer">
+                <a href="https://github.com/cristipufu/tunnelite" target="_blank" rel="noopener noreferrer">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    GitHub
+                </a>
+                <a href="https://www.nuget.org/packages/Tunnelite" target="_blank" rel="noopener noreferrer">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="6.5" cy="6.5" r="3"/><rect x="12" y="3" width="9" height="9" rx="2"/><rect x="3" y="12" width="9" height="9" rx="2"/><rect x="12" y="12" width="9" height="9" rx="2"/></svg>
+                    NuGet
+                </a>
+                <a href="https://webhooks.tunnelite.com" target="_blank" rel="noopener">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2"/><path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06"/><path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8"/></svg>
+                    Webhook Tester
+                </a>
+                <a href="/llms.txt">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+                    llms.txt
+                </a>
+            </nav>
+        </div>
     </footer>
 
-    <div id="copyNotification" class="copy-notification">Copied to clipboard!</div>
+    <div id="copyNotification" class="toast" role="status" aria-live="polite">Copied to clipboard!</div>
 
     <script>
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(function() {
-                showNotification();
-            }, function(err) {
-                console.error('Could not copy text: ', err);
-            });
-        }
+        (function () {
+            var toast = document.getElementById('copyNotification');
+            var toastTimer;
 
-        function showNotification() {
-            const notification = document.getElementById('copyNotification');
-            notification.classList.add('show');
-            setTimeout(() => {
-                notification.classList.remove('show');
-            }, 2000);
-        }
+            function showNotification() {
+                toast.classList.add('show');
+                clearTimeout(toastTimer);
+                toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 2000);
+            }
+
+            function fallbackCopy(text) {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } catch (err) { console.error('Could not copy text: ', err); }
+                document.body.removeChild(ta);
+            }
+
+            document.addEventListener('click', function (e) {
+                var btn = e.target.closest('[data-copy]');
+                if (!btn) return;
+                var text = btn.getAttribute('data-copy');
+                var label = btn.querySelector('.copy-text');
+
+                function done() {
+                    btn.classList.add('copied');
+                    if (label) label.textContent = 'Copied';
+                    showNotification();
+                    setTimeout(function () {
+                        btn.classList.remove('copied');
+                        if (label) label.textContent = 'Copy';
+                    }, 2000);
+                }
+
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+                } else {
+                    fallbackCopy(text);
+                    done();
+                }
+            });
+        })();
     </script>
 </body>
 </html>

@@ -1,0 +1,28 @@
+# Tunnelite
+
+> Tunnelite is an open-source .NET tool that sets up a secure connection between a public web address and an application running on your local machine, making your local app accessible from the internet. It is free to use, MIT-licensed, self-hostable, and a lightweight alternative to ngrok.
+
+Install it as a .NET global tool with `dotnet tool install --global Tunnelite`, then run `tunnelite http://localhost:3000` to get a public HTTPS URL with an auto-generated subdomain. The managed server at tunnelite.com supports HTTP(S), WebSocket (ws/wss) and Server-Sent Events tunneling; TCP tunneling is available when you self-host the server.
+
+Typical use cases: exposing locally-hosted web apps for testing or demos, testing and debugging webhook integrations, sharing dev builds during hackathons, and giving internet access to services behind firewalls without opening inbound ports.
+
+## Documentation
+
+- [Full documentation](https://tunnelite.com/llms-full.txt): Installation, usage, CLI reference, supported protocols, how it works, self-hosting, SDK and ASP.NET Core integration
+- [README](https://github.com/cristipufu/tunnelite#readme): Project README with architecture diagrams
+
+## Source code and packages
+
+- [GitHub repository](https://github.com/cristipufu/tunnelite): MIT-licensed source for the CLI, SDK, ASP.NET Core integration and server
+- [Tunnelite on NuGet](https://www.nuget.org/packages/Tunnelite): The `tunnelite` command-line tool
+- [Tunnelite.Sdk on NuGet](https://www.nuget.org/packages/Tunnelite.Sdk): .NET library with HttpTunnelClient and TcpTunnelClient
+- [Tunnelite.AspNetCore on NuGet](https://www.nuget.org/packages/Tunnelite.AspNetCore): `app.UseTunnelite()` middleware that tunnels an ASP.NET Core app on startup
+
+## Tools
+
+- [Webhook Tester](https://webhooks.tunnelite.com): Free tool to inspect and debug incoming webhook requests
+
+## Optional
+
+- [Website](https://tunnelite.com): Landing page
+- [License](https://github.com/cristipufu/tunnelite/blob/master/LICENSE): MIT License
