@@ -11,8 +11,6 @@ jobs:
   test:
     name: Build and test
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # pushes the test-count badge data to the "badges" branch on master
 
     steps:
       - uses: actions/checkout@v4
@@ -39,39 +37,6 @@ jobs:
         with:
           name: test-results
           path: TestResults
-
-      # The README "tests" badge reads badges/tests.json (shields.io endpoint format).
-      - name: Test count for the README badge
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          counters=$(grep -o '<Counters [^/]*/>' TestResults/tests.trx | head -1)
-          total=$(sed -n 's/.* total="\([0-9]*\)".*/\1/p' <<<"$counters")
-          passed=$(sed -n 's/.* passed="\([0-9]*\)".*/\1/p' <<<"$counters")
-          failed=$(sed -n 's/.* failed="\([0-9]*\)".*/\1/p' <<<"$counters")
-          if [[ "${failed:-0}" == "0" && "$passed" == "$total" ]]; then
-            message="$passed passed"; color=brightgreen
-          else
-            message="$failed failed / $total"; color=red
-          fi
-          mkdir -p badge
-          printf '{"schemaVersion":1,"label":"tests","message":"%s","color":"%s"}\n' "$message" "$color" > badge/tests.json
-          cat badge/tests.json
-
-      - name: Publish the badge data
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
-        shell: bash
-        run: |
-          set -euo pipefail
-          [ -f badge/tests.json ] || exit 0
-          cd badge
-          git init -q -b badges
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tests.json
-          git commit -q -m "tests badge: $(cat tests.json)"
-          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" badges
 
   native-aot:
     name: NativeAOT client

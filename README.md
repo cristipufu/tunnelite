@@ -1,7 +1,6 @@
 # ⚡Tunnelite
 
 [![CI](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&label=CI&logo=github)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcristipufu%2Ftunnelite%2Fbadges%2Ftests.json&logo=xunit)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
 [![CD](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/deploy.yml?branch=master&label=CD&logo=microsoftazure)](https://github.com/cristipufu/tunnelite/actions/workflows/deploy.yml)
 [![NuGet](https://img.shields.io/nuget/v/Tunnelite?logo=nuget&label=NuGet)](https://www.nuget.org/packages/Tunnelite/)
 [![NuGet downloads](https://img.shields.io/nuget/dt/Tunnelite?logo=nuget&label=downloads)](https://www.nuget.org/packages/Tunnelite/)
