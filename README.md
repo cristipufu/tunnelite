@@ -1,6 +1,10 @@
 # ⚡Tunnelite
 
-[![CI](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml/badge.svg)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&label=CI&logo=github)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcristipufu%2Ftunnelite%2Fbadges%2Ftests.json&logo=xunit)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
+[![CD](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/deploy.yml?branch=master&label=CD&logo=microsoftazure)](https://github.com/cristipufu/tunnelite/actions/workflows/deploy.yml)
+[![NuGet](https://img.shields.io/nuget/v/Tunnelite?logo=nuget&label=NuGet)](https://www.nuget.org/packages/Tunnelite/)
+[![NuGet downloads](https://img.shields.io/nuget/dt/Tunnelite?logo=nuget&label=downloads)](https://www.nuget.org/packages/Tunnelite/)
 
 Tunnelite is a .NET tool that lets you set up a secure connection between a public web address and an application running on your local machine. It effectively makes your local app accessible from the internet.
 
