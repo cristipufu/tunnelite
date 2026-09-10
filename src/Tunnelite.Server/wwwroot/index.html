@@ -143,16 +143,17 @@
             --success-strong: #047857;
             --success-soft: rgba(16, 185, 129, .1);
             --success-line: rgba(16, 185, 129, .35);
-            /* dark blocks: terminal + code */
-            --code-bg: #0b1120;
-            --code-edge: #1e293b;
-            --code-line: #334155;
-            --code-border: rgba(148, 163, 184, .2);
-            --code-text: #e2e8f0;
-            --code-muted: #94a3b8;
-            --code-dim: #64748b;
-            --code-amber: #fbbf24;
-            --code-green: #34d399;
+            /* command blocks: terminal + code (light) */
+            --code-bg: #ffffff;
+            --code-head: rgba(15, 23, 42, .03);
+            --code-edge: rgba(15, 23, 42, .16);
+            --code-line: rgba(15, 23, 42, .12);
+            --code-border: rgba(15, 23, 42, .08);
+            --code-text: #0f172a;
+            --code-muted: #475569;
+            --code-dim: #94a3b8;
+            --code-prompt: #2563eb;
+            --code-ok: #059669;
             /* shadows */
             --shadow-sm: 0 1px 2px rgba(15, 23, 42, .05);
             --shadow-md: 0 10px 30px -14px rgba(15, 23, 42, .45);
@@ -312,19 +313,21 @@
         .terminal {
             background: var(--code-bg); color: var(--code-text);
             border: 1px solid var(--code-edge); border-radius: var(--radius-lg); overflow: hidden;
-            box-shadow: var(--shadow-lg), 0 20px 60px -20px rgba(37, 99, 235, .25);
+            box-shadow: var(--shadow-lg), 0 20px 60px -20px rgba(37, 99, 235, .18);
             font-family: var(--mono); font-size: var(--fs-13); line-height: 1.7;
         }
         .terminal-bar {
             display: flex; align-items: center; gap: 8px;
             padding: 12px 16px; border-bottom: 1px solid var(--code-border);
-            background: rgba(255, 255, 255, .03);
+            background: var(--code-head);
         }
-        .terminal-bar span { width: 12px; height: 12px; border-radius: 50%; }
-        .terminal-bar span:nth-child(1) { background: #ff5f57; }
-        .terminal-bar span:nth-child(2) { background: #febc2e; }
-        .terminal-bar span:nth-child(3) { background: #28c840; }
         .terminal-bar em { margin: 0 auto; font-style: normal; color: var(--code-muted); font-size: var(--fs-12); }
+        /* macOS-style window dots, shared by the hero terminal and command blocks */
+        .dots { display: flex; align-items: center; gap: 8px; flex: none; }
+        .dots span { width: 12px; height: 12px; border-radius: 50%; }
+        .dots span:nth-child(1) { background: #ff5f57; }
+        .dots span:nth-child(2) { background: #febc2e; }
+        .dots span:nth-child(3) { background: #28c840; }
         .terminal-body { padding: 20px; min-height: 300px; }
         .line {
             white-space: pre-wrap; word-break: break-all;
@@ -333,12 +336,12 @@
             animation-delay: calc(var(--i) * .5s + .3s);
         }
         @keyframes rise { to { opacity: 1; transform: none; } }
-        .prompt { color: var(--code-amber); user-select: none; }
-        .ts { color: var(--code-amber); }
-        .ok { color: var(--code-green); }
+        .prompt { color: var(--code-prompt); font-weight: 600; user-select: none; }
+        .ts { color: var(--code-muted); }
+        .ok { color: var(--code-ok); font-weight: 600; }
         .dim { color: var(--code-dim); }
         .tbl { margin: 12px 0 16px; border: 1px solid var(--code-line); border-radius: var(--radius-sm); max-width: 420px; white-space: normal; }
-        .tbl-head { text-align: center; color: var(--code-green); font-weight: 600; padding: 4px 12px; border-bottom: 1px solid var(--code-line); }
+        .tbl-head { text-align: center; color: var(--code-ok); font-weight: 600; padding: 4px 12px; border-bottom: 1px solid var(--code-line); }
         .tbl-row { padding: 2px 12px; }
         .tbl-row:first-of-type { padding-top: 6px; }
         .tbl-row:last-child { padding-bottom: 6px; }
@@ -392,7 +395,7 @@
         .code-head {
             display: flex; align-items: center; justify-content: space-between; gap: 12px;
             padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--code-border);
-            background: rgba(255, 255, 255, .03);
+            background: var(--code-head);
         }
         .code-label { margin: 0; font-size: var(--fs-12); font-weight: 600; color: var(--code-muted); letter-spacing: .04em; text-transform: uppercase; }
         .code-block pre {
@@ -403,14 +406,14 @@
         .copy-btn {
             display: inline-flex; align-items: center; gap: 6px;
             padding: 6px 10px; border-radius: var(--radius-sm);
-            border: 1px solid var(--code-border); background: rgba(255, 255, 255, .04);
+            border: 1px solid var(--code-line); background: var(--code-bg);
             color: var(--code-muted); font: inherit; font-size: var(--fs-13); font-weight: 600; line-height: 1.2; cursor: pointer;
             transition: color .15s, background .15s, border-color .15s;
         }
-        .copy-btn:hover { color: var(--code-text); border-color: rgba(148, 163, 184, .4); background: rgba(255, 255, 255, .09); }
+        .copy-btn:hover { color: var(--code-text); border-color: rgba(15, 23, 42, .24); background: rgba(15, 23, 42, .04); }
         .copy-btn svg { width: 15px; height: 15px; }
         .copy-btn .ico-check { display: none; }
-        .copy-btn.copied { color: var(--code-green); border-color: rgba(52, 211, 153, .45); background: rgba(52, 211, 153, .12); }
+        .copy-btn.copied { color: var(--success); border-color: var(--success-line); background: var(--success-soft); }
         .copy-btn.copied .ico-copy { display: none; }
         .copy-btn.copied .ico-check { display: block; }
         .install-list { display: grid; gap: 16px; max-width: 760px; }
@@ -585,7 +588,7 @@
 
                 <div class="hero-demo" aria-hidden="true">
                     <div class="terminal">
-                        <div class="terminal-bar"><span></span><span></span><span></span><em>tunnelite</em></div>
+                        <div class="terminal-bar"><div class="dots"><span></span><span></span><span></span></div><em>tunnelite</em></div>
                         <div class="terminal-body">
                             <div class="line" style="--i:0"><span class="prompt">$</span> tunnelite http://localhost:3000</div>
                             <div class="line tbl" style="--i:1">
@@ -706,7 +709,7 @@
                 <div class="narrow">
                     <div class="code-block">
                         <div class="code-head">
-                            <h3 class="code-label">Terminal</h3>
+                            <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
                             <button type="button" class="copy-btn" data-copy="tunnelite http://localhost:3000" aria-label="Copy usage command">
                                 <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                                 <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
@@ -737,7 +740,7 @@
                         <p>Once your self-hosted server is set up, you can connect to it using the following command:</p>
                         <div class="code-block">
                             <div class="code-head">
-                                <h3 class="code-label">Terminal</h3>
+                                <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
                                 <button type="button" class="copy-btn" data-copy="tunnelite http://localhost:3000 --publicUrl yourServerUrl" aria-label="Copy self-hosting command">
                                     <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                                     <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
