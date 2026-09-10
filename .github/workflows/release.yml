@@ -1,0 +1,111 @@
+name: Release client
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # NativeAOT cannot cross-compile, so every RID needs a runner of its own.
+          - { os: ubuntu-latest,    rid: linux-x64 }
+          - { os: ubuntu-24.04-arm, rid: linux-arm64 }
+          - { os: macos-13,         rid: osx-x64 }
+          - { os: macos-latest,     rid: osx-arm64 }
+          - { os: windows-latest,   rid: win-x64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Publish
+        shell: bash
+        run: >
+          dotnet publish src/Tunnelite.Client
+          -c Release
+          -r ${{ matrix.rid }}
+          -p:PublishAot=true
+          -o publish
+
+      - name: Stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="staging/tunnelite-${{ matrix.rid }}"
+          mkdir -p "$staging" dist
+          # The binary is renamed rather than built as "tunnelite": passing
+          # -p:AssemblyName to the publish above makes the AOT link fail with
+          # "Failed to load type 'Tunnelite.Sdk.ITunnelClient'".
+          if [ -f publish/Tunnelite.Client.exe ]; then
+            cp publish/Tunnelite.Client.exe "$staging/tunnelite.exe"
+          else
+            cp publish/Tunnelite.Client "$staging/tunnelite"
+            chmod +x "$staging/tunnelite"
+          fi
+          cp LICENSE README.md "$staging/"
+
+      - name: Archive (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -czf "dist/tunnelite-${{ matrix.rid }}.tar.gz" -C staging "tunnelite-${{ matrix.rid }}"
+
+      - name: Archive (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "staging/tunnelite-${{ matrix.rid }}" -DestinationPath "dist/tunnelite-${{ matrix.rid }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tunnelite-${{ matrix.rid }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    # A manual run builds and uploads artifacts but publishes nothing.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum tunnelite-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" dist/* \
+              --repo "${{ github.repository }}" \
+              --title "$tag" \
+              --generate-notes
+          fi
