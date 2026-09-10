@@ -43,6 +43,8 @@ Update an existing installation:
 
     dotnet tool update --global Tunnelite
 
+Standalone binaries: every GitHub release (https://github.com/cristipufu/tunnelite/releases/latest) also ships a single self-contained executable, built with NativeAOT, that needs no .NET runtime: tunnelite-linux-x64.tar.gz, tunnelite-linux-arm64.tar.gz, tunnelite-osx-x64.tar.gz, tunnelite-osx-arm64.tar.gz and tunnelite-win-x64.zip, plus a SHA256SUMS file.
+
 ## Usage
 
 Create a tunnel to a local HTTP application:

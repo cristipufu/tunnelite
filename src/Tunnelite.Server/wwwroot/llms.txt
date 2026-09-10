@@ -15,6 +15,7 @@ Typical use cases: exposing locally-hosted web apps for testing or demos, testin
 
 - [GitHub repository](https://github.com/cristipufu/tunnelite): MIT-licensed source for the CLI, SDK, ASP.NET Core integration and server
 - [Tunnelite on NuGet](https://www.nuget.org/packages/Tunnelite): The `tunnelite` command-line tool
+- [GitHub Releases](https://github.com/cristipufu/tunnelite/releases/latest): Standalone `tunnelite` executables for Linux, macOS and Windows, no .NET runtime needed
 - [Tunnelite.Sdk on NuGet](https://www.nuget.org/packages/Tunnelite.Sdk): .NET library with HttpTunnelClient and TcpTunnelClient
 - [Tunnelite.AspNetCore on NuGet](https://www.nuget.org/packages/Tunnelite.AspNetCore): `app.UseTunnelite()` middleware that tunnels an ASP.NET Core app on startup
 
