@@ -1,4 +1,4 @@
-name: Release client
+name: Release
 
 on:
   push:
@@ -72,8 +72,73 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  nuget:
+    name: NuGet packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted publishing: the GitHub OIDC token is exchanged for a short-lived NuGet API key,
+      # so no long-lived key is stored in the repository.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Version from tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            version="${{ github.ref_name }}"
+            version="${version#v}"
+          else
+            version="0.0.0-ci.${{ github.run_number }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Packing version $version"
+
+      - name: Test
+        run: dotnet test test/Tunnelite.Tests -c Release
+
+      - name: Pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          for project in src/Tunnelite.Sdk src/Tunnelite.AspNetCore src/Tunnelite.Client; do
+            dotnet pack "$project" -c Release -p:Version=${{ steps.version.outputs.version }} -o packages
+          done
+          ls -la packages
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: packages/*
+          if-no-files-found: error
+
+      # A manual run packs and uploads artifacts but publishes nothing.
+      - name: Log in to NuGet
+        if: startsWith(github.ref, 'refs/tags/')
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: cristipufu
+
+      - name: Push to NuGet
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: >
+          dotnet nuget push "packages/*.nupkg"
+          --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
   release:
-    needs: build
+    needs: [build, nuget]
     # A manual run builds and uploads artifacts but publishes nothing.
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -91,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum tunnelite-* > SHA256SUMS
+          sha256sum tunnelite-* *.nupkg > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish release
