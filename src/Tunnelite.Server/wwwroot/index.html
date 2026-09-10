@@ -414,6 +414,16 @@
         .copy-btn.copied .ico-copy { display: none; }
         .copy-btn.copied .ico-check { display: block; }
         .install-list { display: grid; gap: 16px; max-width: 760px; }
+        .install-standalone {
+            display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+            max-width: 760px; margin-top: 20px; padding: 20px 24px;
+            border: 1px solid var(--border); border-radius: var(--radius-lg);
+            background: var(--surface); box-shadow: var(--shadow-sm);
+        }
+        .install-standalone > div { min-width: 0; flex: 1 1 320px; }
+        .install-standalone h3 { margin: 0 0 4px; font-size: var(--fs-17); line-height: 1.35; font-weight: 600; letter-spacing: -.01em; }
+        .install-standalone p { color: var(--muted); font-size: var(--fs-15); line-height: 1.6; }
+        .install-standalone .btn { flex: none; }
         .inline {
             font-family: var(--mono); font-size: .9em; padding: 2px 6px; border-radius: 6px;
             background: rgba(15, 23, 42, .06); border: 1px solid var(--border); color: var(--text);
@@ -673,6 +683,16 @@
                         </div>
                         <pre><code>#tool dotnet:?package=Tunnelite</code></pre>
                     </div>
+                </div>
+                <div class="install-standalone">
+                    <div>
+                        <h3>Standalone binaries</h3>
+                        <p>Every release also ships a single self-contained executable for Linux, macOS and Windows that needs no .NET runtime installed.</p>
+                    </div>
+                    <a class="btn btn-ghost" href="https://github.com/cristipufu/tunnelite/releases/latest" target="_blank" rel="noopener noreferrer">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+                        Download from GitHub Releases
+                    </a>
                 </div>
             </div>
         </section>
