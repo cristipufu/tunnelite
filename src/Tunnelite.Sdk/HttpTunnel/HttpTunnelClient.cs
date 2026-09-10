@@ -165,8 +165,9 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 localRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(httpConnection.ContentType);
             }
 
-            // Send the request to the local server and get the response
-            using var localResponse = await LocalHttpClient.SendAsync(localRequest);
+            // Send the request to the local server; start forwarding as soon as the headers are in instead of
+            // buffering the whole body first.
+            using var localResponse = await LocalHttpClient.SendAsync(localRequest, HttpCompletionOption.ResponseHeadersRead);
 
             // Prepare the request back to the public server
             using var publicRequest = new HttpRequestMessage(HttpMethod.Post, requestUrl);
