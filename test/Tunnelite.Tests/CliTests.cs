@@ -28,6 +28,26 @@ public sealed class CliFactAttribute : FactAttribute
 public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
 {
     [CliFact]
+    public async Task The_cli_binary_reports_its_version()
+    {
+        var cli = Environment.GetEnvironmentVariable(CliFactAttribute.EnvironmentVariable)!;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        using var process = Process.Start(new ProcessStartInfo(cli, "--version")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        })!;
+        var stdout = (await process.StandardOutput.ReadToEndAsync(cts.Token)).Trim();
+        var stderr = await process.StandardError.ReadToEndAsync(cts.Token);
+        await process.WaitForExitAsync(cts.Token);
+
+        Assert.True(process.ExitCode == 0, $"--version exited with {process.ExitCode}: {stderr}");
+        Assert.Matches(@"^\d+\.\d+\.\d+", stdout);
+    }
+
+    [CliFact]
     public async Task The_cli_binary_tunnels_http_sse_and_websockets()
     {
         var cli = Environment.GetEnvironmentVariable(CliFactAttribute.EnvironmentVariable)!;

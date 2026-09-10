@@ -30,6 +30,20 @@ jobs:
         with:
           dotnet-version: '10.x'
 
+      - name: Version from tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            version="${{ github.ref_name }}"
+            version="${version#v}"
+          else
+            version="0.0.0-ci.${{ github.run_number }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
+
       - name: Publish
         shell: bash
         # InvariantGlobalization keeps the binary from requiring ICU at runtime: without it
@@ -42,6 +56,7 @@ jobs:
           -r ${{ matrix.rid }}
           -p:PublishAot=true
           -p:InvariantGlobalization=true
+          -p:Version=${{ steps.version.outputs.version }}
           -o publish
 
       - name: Stage
