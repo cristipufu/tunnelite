@@ -162,13 +162,13 @@ public class Program
 
         while (true)
         {
-            if (Console.KeyAvailable)
+            if (!Console.IsInputRedirected && Console.KeyAvailable)
             {
                 var key = Console.ReadKey(true);
                 switch (key.KeyChar)
                 {
                     case 'c':
-                        AnsiConsole.Clear();
+                        ClearScreen();
                         AnsiConsole.Write(statusTable);
                         WriteHelp();
                         break;
@@ -183,7 +183,7 @@ public class Program
 
     private static Table WriteStatusTable(string localUrl, string? tunnelUrl, string color, string currentStatus)
     {
-        AnsiConsole.Clear();
+        ClearScreen();
 
         var table = new Table()
             .Border(TableBorder.Rounded)
@@ -196,6 +196,15 @@ public class Program
         WriteHelp();
 
         return table;
+    }
+
+    private static void ClearScreen()
+    {
+        // Console.Clear() throws when output is redirected (CI, a parent process, a log file).
+        if (!Console.IsOutputRedirected)
+        {
+            AnsiConsole.Clear();
+        }
     }
 
     private static void WriteHelp()

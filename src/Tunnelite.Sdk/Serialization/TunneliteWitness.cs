@@ -18,6 +18,10 @@ namespace Tunnelite.Sdk;
 [GenerateShapeFor<WsChunk>]
 [GenerateShapeFor<byte[]>]
 [GenerateShapeFor<string>]
+// Non-generic InvokeAsync asks the protocol to deserialize the completion as System.Object. The server
+// answers a Task-returning hub method with a null result, so without this shape every upload stream
+// (SSE, WebSocket, TCP) ended with "does not support type 'System.Object'".
+[GenerateShapeFor<object>]
 internal partial class TunneliteWitness;
 
 /// <summary>

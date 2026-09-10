@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      - name: Integration tests (HTTP, SSE, WebSocket, TCP, legacy clients) and CLI end-to-end
+        env:
+          TUNNELITE_CLI: ${{ github.workspace }}/src/Tunnelite.Client/bin/Release/net10.0/Tunnelite.Client
+        run: dotnet test test/Tunnelite.Tests -c Release --no-build --logger "trx;LogFileName=tests.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+
+  native-aot:
+    name: NativeAOT client
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Publish the CLI with NativeAOT
+        run: dotnet publish src/Tunnelite.Client -c Release -r linux-x64 -p:PublishAot=true -o aot
+
+      - name: Build the tests
+        run: dotnet build test/Tunnelite.Tests -c Release
+
+      - name: CLI end-to-end tests against the AOT binary
+        env:
+          TUNNELITE_CLI: ${{ github.workspace }}/aot/Tunnelite.Client
+        run: dotnet test test/Tunnelite.Tests -c Release --no-build --filter "Category=Cli" --logger "trx;LogFileName=aot-tests.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aot-test-results
+          path: TestResults

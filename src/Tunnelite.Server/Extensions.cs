@@ -28,6 +28,11 @@ public static class Extensions
         var signalRBuilder = builder.Services.AddSignalR(hubOptions =>
         {
             hubOptions.EnableDetailedErrors = true;
+
+            // Stream items carry up to TunnelProtocol.ChunkSize bytes of payload (older clients send 32 KB), plus
+            // the MessagePack envelope. The SignalR default of 32 KB rejected those messages and tore the whole hub
+            // connection down, which surfaced as WebSocket resets for any message larger than the chunk size.
+            hubOptions.MaximumReceiveMessageSize = 256 * 1024;
         }).AddMessagePackProtocol();
 
         if (!string.IsNullOrEmpty(signalRConnectionString))

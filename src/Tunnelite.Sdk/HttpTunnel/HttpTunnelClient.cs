@@ -11,7 +11,7 @@ using System.Runtime.CompilerServices;
 
 namespace Tunnelite.Sdk;
 
-public class HttpTunnelClient : ITunnelClient
+public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 {
     public event Func<Task>? Connected;
     public event Action<string, string>? LogRequest;
@@ -38,6 +38,7 @@ public class HttpTunnelClient : ITunnelClient
 
     private HttpTunnelResponse? _currentTunnel = null;
     private readonly HttpTunnelRequest Tunnel;
+    private bool _disposed;
 
     public HttpTunnelClient(HttpTunnelRequest tunnel, LogLevel? logLevel)
     {
@@ -96,13 +97,35 @@ public class HttpTunnelClient : ITunnelClient
 
         Connection.Closed += async (error) =>
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             await Task.Delay(new Random().Next(0, 5) * 1000);
+
+            if (_disposed)
+            {
+                return;
+            }
 
             if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
             {
                 _currentTunnel = await RegisterTunnelAsync(tunnel);
             }
         };
+    }
+
+    /// <summary>
+    /// Closes the tunnel and stops reconnecting.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+
+        await Connection.DisposeAsync();
+
+        GC.SuppressFinalize(this);
     }
 
     public async Task ConnectAsync()
@@ -218,18 +241,20 @@ public class HttpTunnelClient : ITunnelClient
     {
         try
         {
-            await foreach (var chunk in Connection.StreamAsync<WsChunk>("StreamIncomingWsAsync", wsConnection, cancellationToken: cancellationToken))
+            // StreamIncomingWsV2Async carries the EndOfMessage flag; the original StreamIncomingWsAsync is
+            // still served for clients built before it existed.
+            await foreach (var chunk in Connection.StreamAsync<WsChunk>("StreamIncomingWsV2Async", wsConnection, cancellationToken: cancellationToken))
             {
-                if (webSocket.State == WebSocketState.Open)
+                if (chunk.Type == WebSocketMessageType.Close)
                 {
-                    if (chunk.Type == WebSocketMessageType.Close)
+                    if (webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                     {
                         await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
                     }
-                    else
-                    {
-                        await webSocket.SendAsync(chunk.Data, chunk.Type, true, cancellationToken);
-                    }
+                }
+                else if (webSocket.State == WebSocketState.Open)
+                {
+                    await webSocket.SendAsync(chunk.Data, chunk.Type, chunk.EndOfMessage, cancellationToken);
                 }
                 else
                 {
@@ -243,29 +268,31 @@ public class HttpTunnelClient : ITunnelClient
         }
     }
 
-    private async Task StreamOutgoingWsAsync(WebSocket localWebSocket, WsConnection wsConnection, CancellationToken cancellationToken)
+    private Task StreamOutgoingWsAsync(WebSocket localWebSocket, WsConnection wsConnection, CancellationToken cancellationToken)
     {
-        await Connection.InvokeAsync("StreamOutgoingWsAsync", StreamLocalWsAsync(localWebSocket, wsConnection, cancellationToken), wsConnection, cancellationToken: cancellationToken);
+        return Connection.InvokeAsync("StreamOutgoingWsAsync", StreamLocalWsAsync(localWebSocket, wsConnection, cancellationToken), wsConnection, cancellationToken: cancellationToken);
     }
 
     private async IAsyncEnumerable<WsChunk> StreamLocalWsAsync(WebSocket webSocket, WsConnection wsConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        const int chunkSize = 32 * 1024;
-
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(TunnelProtocol.ChunkSize);
 
         try
         {
             while (webSocket.State == WebSocketState.Open)
             {
-                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+                // Rent may hand back a bigger array; never read more than one chunk at a time.
+                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer, 0, TunnelProtocol.ChunkSize), cancellationToken);
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    // Forward the close so the public side gets a proper close handshake instead of a reset.
+                    yield return new WsChunk([], WebSocketMessageType.Close);
                     break;
                 }
 
-                yield return new WsChunk(buffer[..result.Count], result.MessageType);
+                // Copy: the buffer is reused by the next ReceiveAsync before SignalR has serialized this item.
+                yield return new WsChunk(buffer[..result.Count], result.MessageType, result.EndOfMessage);
             }
         }
         finally
@@ -333,15 +360,14 @@ public class HttpTunnelClient : ITunnelClient
         SseConnection sseConnection,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        const int chunkSize = 32 * 1024;
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(TunnelProtocol.ChunkSize);
 
         try
         {
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
 
             int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
+            while ((bytesRead = await stream.ReadAsync(buffer, 0, TunnelProtocol.ChunkSize, cancellationToken)) > 0)
             {
                 yield return buffer[..bytesRead];
             }
@@ -403,6 +429,11 @@ public class HttpTunnelClient : ITunnelClient
             }
             catch
             {
+                if (_disposed)
+                {
+                    return false;
+                }
+
                 LogError?.Invoke($"[HTTP] Cannot connect to the public server on {Tunnel.PublicUrl}.");
 
                 await Task.Delay(5000, token);
