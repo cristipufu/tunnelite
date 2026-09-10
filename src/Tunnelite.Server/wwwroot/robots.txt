@@ -1,0 +1,9 @@
+# Tunnelite - https://tunnelite.com
+User-agent: *
+Allow: /
+
+# Machine-readable overview for AI assistants and agents:
+# https://tunnelite.com/llms.txt
+# https://tunnelite.com/llms-full.txt
+
+Sitemap: https://tunnelite.com/sitemap.xml
