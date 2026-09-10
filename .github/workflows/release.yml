@@ -19,7 +19,7 @@ jobs:
           # NativeAOT cannot cross-compile, so every RID needs a runner of its own.
           - { os: ubuntu-latest,    rid: linux-x64 }
           - { os: ubuntu-24.04-arm, rid: linux-arm64 }
-          - { os: macos-13,         rid: osx-x64 }
+          - { os: macos-15-intel,   rid: osx-x64 }
           - { os: macos-latest,     rid: osx-arm64 }
           - { os: windows-latest,   rid: win-x64 }
 
@@ -137,22 +137,47 @@ jobs:
           path: packages/*
           if-no-files-found: error
 
+      # Rerunning a release (say, to rebuild the binaries) must not fail on packages that already went out:
+      # nuget.org versions are immutable, so only the packages not yet published are pushed.
+      - name: Check what is already on nuget.org
+        if: startsWith(github.ref, 'refs/tags/')
+        id: nuget-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          pending=()
+          for id in Tunnelite Tunnelite.Sdk Tunnelite.AspNetCore; do
+            lower=$(tr '[:upper:]' '[:lower:]' <<<"$id")
+            # A 404 (never published) or a network error just means "push it"; the push itself still skips duplicates.
+            if curl -sS "https://api.nuget.org/v3-flatcontainer/$lower/index.json" | grep -qF "\"$version\""; then
+              echo "$id $version is already on nuget.org, skipping"
+            else
+              pending+=("packages/$id.$version.nupkg")
+            fi
+          done
+          echo "pending=${pending[*]:-}" >> "$GITHUB_OUTPUT"
+          echo "To push: ${pending[*]:-nothing}"
+
       # A manual run packs and uploads artifacts but publishes nothing.
       - name: Log in to NuGet
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.nuget-check.outputs.pending != ''
         id: nuget-login
         uses: NuGet/login@v1
         with:
           user: cristipufu
 
       - name: Push to NuGet
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.nuget-check.outputs.pending != ''
         shell: bash
-        run: >
-          dotnet nuget push "packages/*.nupkg"
-          --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
-          --source https://api.nuget.org/v3/index.json
-          --skip-duplicate
+        run: |
+          set -euo pipefail
+          for package in ${{ steps.nuget-check.outputs.pending }}; do
+            dotnet nuget push "$package" \
+              --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
 
   release:
     needs: [build, nuget]
