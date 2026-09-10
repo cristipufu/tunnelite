@@ -203,6 +203,39 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
     }
 
     [Fact]
+    public async Task WebSocket_subprotocol_is_negotiated_with_the_local_app()
+    {
+        // Vite's HMR client asks for "vite-hmr" and gives up unless the server confirms it; the local app only
+        // accepts the connection when it is asked for. Both sides of the tunnel have to pass it through.
+        using var cts = new CancellationTokenSource(TestData.Timeout);
+        using var socket = new ClientWebSocket();
+        socket.Options.AddSubProtocol("vite-hmr");
+
+        await socket.ConnectAsync(new Uri(host.PublicUrl.Replace("http://", "ws://") + "/ws"), cts.Token);
+
+        Assert.Equal("vite-hmr", socket.SubProtocol);
+
+        await socket.SendAsync(Encoding.UTF8.GetBytes("subprotocol?"), WebSocketMessageType.Text, true, cts.Token);
+        var (data, _) = await TestData.ReceiveMessageAsync(socket, cts.Token);
+
+        Assert.Equal("vite-hmr", Encoding.UTF8.GetString(data));
+    }
+
+    [Fact]
+    public async Task WebSocket_without_a_subprotocol_stays_without_one()
+    {
+        using var cts = new CancellationTokenSource(TestData.Timeout);
+        using var socket = await ConnectWebSocketAsync("/ws", cts.Token);
+
+        Assert.Null(socket.SubProtocol);
+
+        await socket.SendAsync(Encoding.UTF8.GetBytes("subprotocol?"), WebSocketMessageType.Text, true, cts.Token);
+        var (data, _) = await TestData.ReceiveMessageAsync(socket, cts.Token);
+
+        Assert.Equal("(none)", Encoding.UTF8.GetString(data));
+    }
+
+    [Fact]
     public async Task WebSocket_close_from_the_public_client_completes_the_handshake_without_errors()
     {
         var failuresBefore = host.ClientFailures.Count;

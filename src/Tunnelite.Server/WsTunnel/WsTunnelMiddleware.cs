@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR;
 using Tunnelite.Server.HttpTunnel;
 
 namespace Tunnelite.Server.WsTunnel;
@@ -10,6 +10,8 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
     private readonly WsRequestsQueue _requestsQueue = requestsQueue;
     private readonly IHubContext<HttpTunnelHub> _hubContext = hubContext;
     private readonly ILogger<WsTunnelMiddleware> _logger = logger;
+
+    private const int MaxSubProtocols = 8;
 
     public async Task InvokeAsync(HttpContext context)
     {
@@ -59,9 +61,14 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
 
         var requestId = Guid.NewGuid();
 
+        // Browsers drop the connection when a subprotocol they asked for isn't confirmed (Vite's HMR client asks
+        // for "vite-hmr"), so confirm the first one here and pass the whole list on to the tunnel client, which
+        // requests the same from the local app. The list is attacker-controlled input from the public side; cap it.
+        var subProtocols = context.WebSockets.WebSocketRequestedProtocols.Take(MaxSubProtocols).ToArray();
+
         try
         {
-            using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            using var webSocket = await context.WebSockets.AcceptWebSocketAsync(subProtocols.FirstOrDefault());
 
             _logger.LogInformation("WebSocket connection accepted: {requestId}", requestId);
 
@@ -71,6 +78,7 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
             {
                 RequestId = requestId,
                 Path = $"{ConvertHttpToWsUri(tunnel.LocalUrl)}{path}{context.Request.QueryString}",
+                SubProtocols = subProtocols.Length > 0 ? subProtocols : null,
             });
 
             await completionTask;

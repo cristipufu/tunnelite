@@ -77,7 +77,8 @@ public sealed class LocalApp : IAsyncDisposable
             }
         });
 
-        // Echo every frame back exactly as received: same type, same end-of-message flag.
+        // Echo every frame back exactly as received: same type, same end-of-message flag. Accepts the first
+        // subprotocol the client asks for (like Vite's HMR server does) and reports it when asked "subprotocol?".
         app.Map("/ws", async (HttpContext context) =>
         {
             if (!context.WebSockets.IsWebSocketRequest)
@@ -86,7 +87,7 @@ public sealed class LocalApp : IAsyncDisposable
                 return;
             }
 
-            using var socket = await context.WebSockets.AcceptWebSocketAsync();
+            using var socket = await context.WebSockets.AcceptWebSocketAsync(context.WebSockets.WebSocketRequestedProtocols.FirstOrDefault());
             var buffer = new byte[64 * 1024];
 
             while (socket.State == WebSocketState.Open)
@@ -97,6 +98,14 @@ public sealed class LocalApp : IAsyncDisposable
                 {
                     await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "echo done", CancellationToken.None);
                     break;
+                }
+
+                if (result.MessageType == WebSocketMessageType.Text && result.EndOfMessage
+                    && System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count) == "subprotocol?")
+                {
+                    var answer = System.Text.Encoding.UTF8.GetBytes(socket.SubProtocol ?? "(none)");
+                    await socket.SendAsync(answer, WebSocketMessageType.Text, true, context.RequestAborted);
+                    continue;
                 }
 
                 await socket.SendAsync(new ArraySegment<byte>(buffer, 0, result.Count), result.MessageType, result.EndOfMessage, context.RequestAborted);
