@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.SignalR.Client;
 using Nerdbank.MessagePack;
 using Nerdbank.MessagePack.SignalR;
 using Microsoft.Extensions.DependencyInjection;
@@ -216,6 +216,12 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         try
         {
             using var webSocket = new ClientWebSocket();
+
+            // Ask the local app for the same subprotocols the public client asked for (e.g. Vite's "vite-hmr").
+            foreach (var subProtocol in wsConnection.SubProtocols ?? [])
+            {
+                webSocket.Options.AddSubProtocol(subProtocol);
+            }
 
             await webSocket.ConnectAsync(new Uri(wsConnection.Path), cts.Token);
 
