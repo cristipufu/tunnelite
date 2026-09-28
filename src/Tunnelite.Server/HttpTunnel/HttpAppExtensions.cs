@@ -151,9 +151,11 @@ public static class HttpAppExtensions
 
                 // Copy headers from the tunneling client's request to the deferred response
 
+                // Ordinal-insensitive on purpose: header names arrive lowercased from any client that
+                // normalises them, which is every browser's fetch and every HTTP/2 client.
                 foreach (var header in context.Request.Headers)
                 {
-                    if (header.Key.StartsWith("X-TR-"))
+                    if (header.Key.StartsWith("X-TR-", StringComparison.OrdinalIgnoreCase))
                     {
                         var headerKey = header.Key[5..]; // Remove "X-TR-" prefix
 
@@ -163,7 +165,7 @@ public static class HttpAppExtensions
                         }
                     }
 
-                    if (header.Key.StartsWith("X-TC-"))
+                    if (header.Key.StartsWith("X-TC-", StringComparison.OrdinalIgnoreCase))
                     {
                         var headerKey = header.Key[5..]; // Remove "X-TR-" prefix
 

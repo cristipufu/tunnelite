@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.SignalR.Client;
+﻿using Microsoft.AspNetCore.SignalR.Client;
 using Nerdbank.MessagePack;
 using Nerdbank.MessagePack.SignalR;
 using Microsoft.Extensions.DependencyInjection;
@@ -152,7 +152,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             // Copy headers from public response to local request
             foreach (var (key, value) in publicResponse.Headers)
             {
-                if (key.StartsWith("X-TR-"))
+                if (key.StartsWith("X-TR-", StringComparison.OrdinalIgnoreCase))
                 {
                     localRequest.Headers.TryAddWithoutValidation(key[5..], value);
                 }
