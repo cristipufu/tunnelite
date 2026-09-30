@@ -370,5 +370,9 @@ public static class HttpAppExtensions
             .Select(s => s[random.Next(s.Length)]).ToArray());
     }
 
-    static readonly string[] NotAllowedHeaders = ["Connection", "Transfer-Encoding", "Keep-Alive", "Upgrade", "Proxy-Connection"];
+    // Case-insensitive for the same reason the prefixes above are: these names arrive lowercased from
+    // any client that normalises them, and a hop-by-hop header that slips the filter lands on the
+    // response.
+    static readonly HashSet<string> NotAllowedHeaders = new(StringComparer.OrdinalIgnoreCase)
+        { "Connection", "Transfer-Encoding", "Keep-Alive", "Upgrade", "Proxy-Connection" };
 }
