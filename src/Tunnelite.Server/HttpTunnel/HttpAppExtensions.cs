@@ -260,7 +260,8 @@ public static class HttpAppExtensions
             {
                 tunnel = tunnelStore.Tunnels.FirstOrDefault().Value;
             }
-            else if (subdomain.Equals("www", StringComparison.OrdinalIgnoreCase))
+            else if (context.Request.Host.Host.Length > 4
+                && context.Request.Host.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
             {
                 var apexHost = context.Request.Host.Host[4..];
                 var hostHeader = context.Request.Host.Port is int port

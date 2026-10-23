@@ -63,6 +63,17 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
     }
 
     [Fact]
+    public async Task Bare_www_host_without_apex_does_not_throw()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.Host = "www";
+
+        using var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Post_body_headers_and_status_round_trip()
     {
         var payload = TestData.Bytes(300_000);
