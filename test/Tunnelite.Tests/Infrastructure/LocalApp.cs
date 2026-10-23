@@ -47,6 +47,10 @@ public sealed class LocalApp : IAsyncDisposable
 
         app.MapGet("/hello", () => "hello from local app");
 
+        app.MapGet("/robots.txt", () => "User-agent: *\nDisallow: /local-secret");
+
+        app.MapGet("/favicon.ico", () => "local-favicon");
+
         app.MapGet("/status/{code:int}", (int code) => Results.StatusCode(code));
 
         app.MapGet("/large", (int bytes) => Results.Bytes(TestData.Bytes(bytes), "application/octet-stream"));

@@ -21,6 +21,59 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
     }
 
     [Fact]
+    public async Task Landing_site_files_do_not_shadow_the_local_app_on_tunnels()
+    {
+        Assert.Equal("User-agent: *\nDisallow: /local-secret", await _client.GetStringAsync("/robots.txt"));
+        Assert.Equal("local-favicon", await _client.GetStringAsync("/favicon.ico"));
+    }
+
+    [Theory]
+    [InlineData("/", HttpStatusCode.OK, "text/html")]
+    [InlineData("/robots.txt", HttpStatusCode.OK, "text/plain")]
+    [InlineData("/sitemap.xml", HttpStatusCode.OK, "application/xml")]
+    [InlineData("/favicon.ico", HttpStatusCode.OK, "image/x-icon")]
+    [InlineData("/nonexistent-page", HttpStatusCode.NotFound, "text/html")]
+    public async Task Root_domain_serves_landing_site_and_returns_404_for_unknown_paths(
+        string path,
+        HttpStatusCode expectedStatus,
+        string expectedMediaType)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Host = "tunnelite.com";
+
+        using var response = await _client.SendAsync(request);
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        Assert.Equal(expectedMediaType, response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Www_subdomain_redirects_permanently_to_apex_domain()
+    {
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var noRedirectClient = new HttpClient(handler) { BaseAddress = new Uri(host.PublicUrl), Timeout = TestData.Timeout };
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/some-path?foo=bar");
+        request.Headers.Host = "www.tunnelite.com";
+
+        using var response = await noRedirectClient.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.MovedPermanently, response.StatusCode);
+        Assert.Equal("http://tunnelite.com/some-path?foo=bar", response.Headers.Location?.ToString());
+    }
+
+    [Fact]
+    public async Task Bare_www_host_without_apex_does_not_throw()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.Host = "www";
+
+        using var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Post_body_headers_and_status_round_trip()
     {
         var payload = TestData.Bytes(300_000);
@@ -300,5 +353,29 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
         var failures = host.ClientFailures.Skip(countBefore).ToList();
 
         Assert.True(failures.Count == 0, "The SDK reported failures:\n" + string.Join("\n", failures));
+    }
+}
+
+public class SubdomainReservationTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
+{
+    private readonly HttpClient _client = new() { BaseAddress = new Uri(host.PublicUrl), Timeout = TestData.Timeout };
+
+    [Theory]
+    [InlineData("www")]
+    [InlineData("tunnelite")]
+    [InlineData("webhooks")]
+    [InlineData("localhost")]
+    public async Task Reserved_subdomains_cannot_be_claimed_by_clients(string reserved)
+    {
+        using var response = await _client.PostAsync(
+            "/tunnelite/tunnel",
+            new StringContent(
+                $$"""{"clientId":"{{Guid.NewGuid()}}","localUrl":"http://localhost:3000","subdomain":"{{reserved}}"}""",
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain($"\"subdomain\":\"{reserved}\"", body, StringComparison.OrdinalIgnoreCase);
     }
 }
