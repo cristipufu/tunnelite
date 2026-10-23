@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Tunnelite.Server.HttpTunnel;
@@ -32,9 +32,7 @@ public static class HttpAppExtensions
                 else
                 {
                     // reserved
-                    if (payload.Subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-                        payload.Subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase) ||
-                        payload.Subdomain.Equals("webhooks", StringComparison.OrdinalIgnoreCase))
+                    if (ReservedSubdomains.Contains(payload.Subdomain))
                     {
                         payload.Subdomain = RandomSubdomain();
                     }
@@ -262,7 +260,18 @@ public static class HttpAppExtensions
             {
                 tunnel = tunnelStore.Tunnels.FirstOrDefault().Value;
             }
-            else if (subdomain.Equals("tunnelite"))
+            else if (subdomain.Equals("www", StringComparison.OrdinalIgnoreCase))
+            {
+                var apexHost = context.Request.Host.Host[4..];
+                var hostHeader = context.Request.Host.Port is int port
+                    ? new HostString(apexHost, port)
+                    : new HostString(apexHost);
+                var targetUrl = $"{context.Request.Scheme}://{hostHeader}{context.Request.PathBase}{context.Request.Path}{context.Request.QueryString}";
+
+                context.Response.Redirect(targetUrl, permanent: true);
+                return;
+            }
+            else if (subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase))
             {
                 await LandingSiteAsync(app, context, path);
 
@@ -315,6 +324,14 @@ public static class HttpAppExtensions
         }
     }
 
+    static readonly HashSet<string> ReservedSubdomains = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "localhost",
+        "tunnelite",
+        "webhooks",
+        "www",
+    };
+
     // Files that belong to the landing site. They are only served on the root domain (tunnelite.com),
     // never on tunnel subdomains, so they can't shadow a tunneled application's own robots.txt, llms.txt, etc.
     static readonly Dictionary<string, string> LandingSiteFiles = new(StringComparer.OrdinalIgnoreCase)
@@ -325,6 +342,7 @@ public static class HttpAppExtensions
         ["llms-full.txt"] = "text/plain; charset=utf-8",
         ["og-image.png"] = "image/png",
         ["apple-touch-icon.png"] = "image/png",
+        ["favicon.ico"] = "image/x-icon",
         // previews of the error pages shown on tunnel subdomains
         ["404.html"] = "text/html; charset=utf-8",
         ["500.html"] = "text/html; charset=utf-8",
@@ -332,6 +350,14 @@ public static class HttpAppExtensions
 
     static async Task LandingSiteAsync(WebApplication app, HttpContext context, string path)
     {
+        if (string.IsNullOrEmpty(path))
+        {
+            var filePath = Path.Combine(app.Environment.WebRootPath, "index.html");
+            context.Response.ContentType = "text/html; charset=utf-8";
+            await context.Response.SendFileAsync(filePath);
+            return;
+        }
+
         if (LandingSiteFiles.TryGetValue(path, out var contentType))
         {
             var sitePath = Path.Combine(app.Environment.WebRootPath, path.ToLowerInvariant());
@@ -341,9 +367,7 @@ public static class HttpAppExtensions
             return;
         }
 
-        var filePath = Path.Combine(app.Environment.WebRootPath, "index.html");
-        context.Response.ContentType = "text/html; charset=utf-8";
-        await context.Response.SendFileAsync(filePath);
+        await NotFoundAsync(app, context);
     }
 
     static async Task NotFoundAsync(WebApplication app, HttpContext context)

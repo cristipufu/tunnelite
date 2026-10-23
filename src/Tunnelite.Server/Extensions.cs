@@ -1,4 +1,4 @@
-﻿using Tunnelite.Server.HttpTunnel;
+using Tunnelite.Server.HttpTunnel;
 using Tunnelite.Server.SseTunnel;
 using Tunnelite.Server.TcpTunnel;
 using Tunnelite.Server.WsTunnel;
@@ -42,14 +42,5 @@ public static class Extensions
                 opt.ConnectionString = signalRConnectionString;
             });
         }
-    }
-
-    public static void UseFavicon(this WebApplication app)
-    {
-        app.MapGet("/favicon.ico", async context =>
-        {
-            context.Response.ContentType = "image/x-icon";
-            await context.Response.SendFileAsync("wwwroot/favicon.ico");
-        });
     }
 }

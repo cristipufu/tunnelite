@@ -22,10 +22,6 @@ public static class TunneliteServer
 
         var app = builder.Build();
 
-        app.UseStaticFiles();
-
-        app.UseFavicon();
-
         app.UseHttpsRedirection();
 
         app.UseWsTunneling();
