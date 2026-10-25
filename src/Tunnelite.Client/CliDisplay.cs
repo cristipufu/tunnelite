@@ -24,8 +24,6 @@ internal sealed record CliView(string Status, string? PublicUrl = null, Terminal
 internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool paired, bool live, TextWriter? plainOutput = null)
 {
     private readonly TextWriter _output = plainOutput ?? Console.Out;
-    private static readonly Style Muted = new(Color.Grey);
-    private static readonly Style Accent = new(Color.DeepSkyBlue1);
     private CliView _view = new("Connecting");
     internal CliActivity Activity { get; } = new();
     private long _printedRequests, _printedFailures, _printedError, _viewRevision;
@@ -111,6 +109,7 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         _output.Write("\u001b[?1049h");
         try
         {
+            console.Clear();
             while (!running.IsCompleted)
             {
                 var width = console.Profile.Width;
@@ -163,94 +162,7 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         }
     }
 
-    internal IRenderable Render()
-    {
-        var view = View;
-        var content = Details(view);
-        IRenderable body = content;
-        if (view.Panel != DevicePanel.Closed) body = DeviceList(view);
-        else if (view.Status == "Connected" && view.Qr is { } qr && (view.QrExpires is null || view.QrExpires > DateTimeOffset.UtcNow))
-        {
-            var qrContent = new Rows(new Text(qr.Graphic, new Style(Color.Black, Color.White)),
-                new Text(paired ? "Scan to pair this browser" : "Scan to open on your phone", Muted));
-            if (console.Profile.Width >= qr.Width + 38)
-            {
-                var columns = new Grid();
-                columns.AddColumn(new GridColumn { Width = console.Profile.Width - qr.Width - 4, Padding = new Padding(0, 0, 3, 0) });
-                columns.AddColumn(new GridColumn { Width = qr.Width, Padding = new Padding(0) });
-                columns.AddRow(content, qrContent);
-                body = columns;
-            }
-            else body = new Rows(content, Text.Empty, qrContent);
-
-            // Never crop the QR itself: a partial code looks valid but cannot be scanned.
-            var options = new RenderOptions(console.Profile.Capabilities, new Size(console.Profile.Width, console.Profile.Height));
-            // Measure directly: the console pipeline contains the active live-display hook.
-            if (qr.Width > console.Profile.Width || Frame(body).Render(options, console.Profile.Width).Count(s => s.IsLineBreak) >= console.Profile.Height)
-                body = new Rows(content, new Text("Resize the terminal to show the QR, or open the URL above.", Muted));
-        }
-        return Frame(body);
-    }
-
-    private IRenderable Frame(IRenderable body)
-    {
-        var header = new Grid();
-        var statusWidth = Math.Min(18, Math.Max(1, console.Profile.Width / 2));
-        header.AddColumn(new GridColumn { Width = Math.Max(1, console.Profile.Width - statusWidth), Padding = new Padding(0) });
-        header.AddColumn(new GridColumn { Width = statusWidth, Padding = new Padding(0), Alignment = Justify.Right });
-        var status = View.Status;
-        header.AddRow(new Text("TUNNELITE", new Style(Color.DeepSkyBlue1, decoration: Decoration.Bold)),
-            new Text((console.Profile.Capabilities.Unicode ? "● " : "* ") + status, new Style(status == "Connected" ? Color.Green : Color.Yellow)));
-        return new Rows(header, Text.Empty, body, Text.Empty, new Text(Help(), Muted));
-    }
-
-    private IRenderable Details(CliView view)
-    {
-        var compact = console.Profile.Height < 24;
-        var rows = new List<IRenderable>();
-        void Address(string label, string value)
-        {
-            if (!compact) rows.Add(new Text(label, Muted));
-            rows.Add(new Text(TerminalText.Clean(value, 2048)).Fold());
-        }
-        Address("LOCAL", localUrl);
-        Address("PUBLIC", view.PublicUrl ?? "Waiting for the relay...");
-        rows.Add(new Text(paired ? "Paired browsers only" : "Public link · anyone with the URL", Muted));
-        if (paired && view.Status == "Connected" && view.PairingUrl is not null) Address("PAIRING LINK", view.PairingUrl);
-        if (!compact) rows.Add(Text.Empty);
-        rows.Add(new Text("ACTIVITY", Accent));
-        var activity = Activity.Snapshot();
-        rows.Add(new Text($"Requests {activity.Requests}   Proxy errors {activity.Failures}", Muted));
-        rows.Add(new Text("Latest  " + activity.Latest).Ellipsis());
-        foreach (var error in activity.Errors.TakeLast(compact ? 1 : CliActivity.RecentErrorLimit))
-            rows.Add(new Text(error.Message, new Style(Color.Red)).Ellipsis());
-        if (view.Notice.Length > 0) rows.Add(new Text(view.Notice, Muted).Ellipsis());
-        if (paired && view.Status == "Connected" && view.QrExpires is { } expires)
-        {
-            var remaining = expires - DateTimeOffset.UtcNow;
-            rows.Add(new Text(remaining > TimeSpan.Zero ? $"Pairing code: one browser · expires in {remaining:mm\\:ss}"
-                : "Pairing code expired · press p for a new code", Muted));
-        }
-        return new Rows(rows);
-    }
-
-    private IRenderable DeviceList(CliView view)
-    {
-        var devices = view.Devices ?? [];
-        var rows = new List<IRenderable> { new Text(view.Panel == DevicePanel.Revoke ? "REVOKE A DEVICE" : "PAIRED DEVICES", Accent), Text.Empty };
-        if (devices.Count == 0) rows.Add(new Text("No paired devices yet.", Muted));
-        var start = Math.Max(0, view.SelectedDevice - 3);
-        var count = Math.Min(6, Math.Max(1, (console.Profile.Height - 10) / 2));
-        foreach (var (device, index) in devices.Select((device, index) => (device, index)).Skip(start).Take(count))
-        {
-            var selected = view.Panel == DevicePanel.Revoke && index == view.SelectedDevice;
-            rows.Add(new Text((selected ? "> " : "  ") + TerminalText.Clean(device.Name), selected ? Accent : Style.Plain));
-            rows.Add(new Text($"  {device.Id} · expires {device.ExpiresAt:yyyy-MM-dd}", Muted));
-        }
-        if (devices.Count > count) rows.Add(new Text($"{Math.Max(0, view.SelectedDevice + 1)} of {devices.Count} · Up/Down to scroll", Muted));
-        if (view.Notice.Length > 0) rows.Add(new Text(view.Notice, Muted));
-        return new Rows(rows);
-    }
+    internal IRenderable Render() => CliDashboardRenderer.Render(console, localUrl, paired, View, Activity.Snapshot());
 
     private string Help() => View.Panel switch
     {

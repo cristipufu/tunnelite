@@ -9,7 +9,9 @@ tunnelite serve http://localhost:3000 --name my-website
 
 ## Live terminal view
 
-ANSI terminals show a dashboard with the connection state, local and public URLs, access mode, and QR code when requested. It uses a separate terminal screen and restores the shell screen and cursor on exit.
+ANSI terminals show an inset dashboard with a bounded content width, a connection card, and a QR code when requested. The public URL is emphasized, URLs support terminal hyperlinks, and keyboard controls use visible keycaps. Wide windows keep comfortable outer gutters instead of stretching content to the edges. Smaller windows use a compact layout.
+
+The dashboard resets the alternate screen's cursor origin before drawing and restores the shell screen and cursor on exit.
 
 Requests update the latest-request row and request count in place. The request count measures requests received, including WebSocket connections and SSE requests. Proxy errors count failures forwarding traffic; an HTTP error returned by your application is still a normal forwarded response.
 

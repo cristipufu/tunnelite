@@ -19,6 +19,25 @@ public class CliDisplayTests
     }
 
     [Theory]
+    [InlineData(120, 40)]
+    [InlineData(180, 50)]
+    public void Dashboard_has_outer_gutters_a_top_inset_and_a_bounded_content_width(int width, int height)
+    {
+        var (display, console, output) = Create(width, height);
+        display.SetView(new("Connected", "https://example.tunnelite.com",
+            TerminalQr.Create("https://example.tunnelite.com", true)));
+        console.Write(display.Render());
+        var lines = output.ToString().Split('\n').Select(line => line.TrimEnd('\r')).ToArray();
+        var drawn = lines.Select((line, row) => (line, row)).Where(item => !string.IsNullOrWhiteSpace(item.line)).ToArray();
+        Assert.InRange(drawn[0].row, 2, 3);
+        var left = drawn.Min(item => item.line.TakeWhile(char.IsWhiteSpace).Count());
+        var right = drawn.Max(item => item.line.TrimEnd().Length - 1);
+        Assert.True(left >= 4, output.ToString());
+        Assert.True(right < width - 4, output.ToString());
+        Assert.True(right - left + 1 <= 112, output.ToString());
+    }
+
+    [Theory]
     [InlineData(120, 40, true)]
     [InlineData(35, 12, false)]
     [InlineData(80, 16, false)]
@@ -31,7 +50,7 @@ public class CliDisplayTests
         var rendered = output.ToString();
         Assert.Equal(visible, rendered.Contains("Scan to open on your phone"));
         Assert.Equal(!visible, rendered.Contains("Resize the terminal"));
-        Assert.Contains("q Quit", rendered);
+        Assert.Matches(@"q\s+Quit", rendered);
         Assert.DoesNotContain("Revoke", rendered);
     }
 
@@ -48,7 +67,7 @@ public class CliDisplayTests
         Assert.DoesNotContain("\u001b[2J", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("\u001b", TerminalText.Clean("error\u001b[2J\r\n"), StringComparison.Ordinal);
         Assert.DoesNotContain("\u202e", rendered, StringComparison.Ordinal);
-        Assert.Contains("p New QR", rendered);
+        Assert.Matches(@"p\s+New QR", rendered);
     }
 
     [Fact]
@@ -58,7 +77,7 @@ public class CliDisplayTests
         var link = "https://example.tunnelite.com/_tunnelite/pair#code=" + new string('a', 43);
         display.SetView(new("Connected", "https://example.tunnelite.com", TerminalQr.Create(link, true), PairingUrl: link));
         console.Write(display.Render());
-        Assert.Contains(link, output.ToString().Replace("\r", "").Replace("\n", ""));
+        Assert.Contains(link, System.Text.RegularExpressions.Regex.Replace(output.ToString(), @"\s+", ""));
     }
 
     [Fact]
