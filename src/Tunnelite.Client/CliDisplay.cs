@@ -7,7 +7,18 @@ namespace Tunnelite.Client;
 internal enum DevicePanel { Closed, List, Revoke }
 internal sealed record CliView(string Status, string? PublicUrl = null, TerminalQr? Qr = null,
     string Notice = "", DevicePanel Panel = DevicePanel.Closed, int SelectedDevice = 0,
-    IReadOnlyList<PairedDevice>? Devices = null, DateTimeOffset? QrExpires = null, string? PairingUrl = null);
+    IReadOnlyList<PairedDevice>? Devices = null, DateTimeOffset? QrExpires = null, string? PairingUrl = null)
+{
+    internal CliView WithDevices(IReadOnlyList<PairedDevice> devices)
+    {
+        if (ReferenceEquals(Devices, devices)) return this;
+        var selected = SelectedDevice >= 0 && SelectedDevice < (Devices?.Count ?? 0) ? Devices![SelectedDevice].Id : (Guid?)null;
+        // Enrollment can remove expired records. Keep selection attached to its device, never its old row number.
+        var index = selected is null ? SelectedDevice : devices.Select((device, index) => (device, index))
+            .Where(item => item.device.Id == selected).Select(item => item.index).DefaultIfEmpty(-1).First();
+        return this with { Devices = devices, SelectedDevice = index };
+    }
+}
 
 /// <summary>Only the command loop changes the view. Transport callbacks publish text without writing to the console.</summary>
 internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool paired, bool live, TextWriter? plainOutput = null)
@@ -181,19 +192,22 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         return Frame(body);
     }
 
-    private IRenderable Frame(IRenderable body) => new Rows(
-        new Text("TUNNELITE", new Style(Color.DeepSkyBlue1, decoration: Decoration.Bold)),
-        Text.Empty, body, Text.Empty, new Text(Help(), Muted));
+    private IRenderable Frame(IRenderable body)
+    {
+        var header = new Grid();
+        var statusWidth = Math.Min(18, Math.Max(1, console.Profile.Width / 2));
+        header.AddColumn(new GridColumn { Width = Math.Max(1, console.Profile.Width - statusWidth), Padding = new Padding(0) });
+        header.AddColumn(new GridColumn { Width = statusWidth, Padding = new Padding(0), Alignment = Justify.Right });
+        var status = View.Status;
+        header.AddRow(new Text("TUNNELITE", new Style(Color.DeepSkyBlue1, decoration: Decoration.Bold)),
+            new Text((console.Profile.Capabilities.Unicode ? "● " : "* ") + status, new Style(status == "Connected" ? Color.Green : Color.Yellow)));
+        return new Rows(header, Text.Empty, body, Text.Empty, new Text(Help(), Muted));
+    }
 
     private IRenderable Details(CliView view)
     {
         var compact = console.Profile.Height < 24;
-        var statusColor = view.Status == "Connected" ? Color.Green : Color.Yellow;
-        var rows = new List<IRenderable>
-        {
-            new Text((console.Profile.Capabilities.Unicode ? "● " : "* ") + view.Status, new Style(statusColor)),
-        };
-        if (!compact) rows.Add(Text.Empty);
+        var rows = new List<IRenderable>();
         void Address(string label, string value)
         {
             if (!compact) rows.Add(new Text(label, Muted));
@@ -207,8 +221,8 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         rows.Add(new Text("ACTIVITY", Accent));
         var activity = Activity.Snapshot();
         rows.Add(new Text($"Requests {activity.Requests}   Proxy errors {activity.Failures}", Muted));
-        rows.Add(new Text(activity.Latest).Ellipsis());
-        foreach (var error in activity.Errors.TakeLast(compact ? 1 : 3))
+        rows.Add(new Text("Latest  " + activity.Latest).Ellipsis());
+        foreach (var error in activity.Errors.TakeLast(compact ? 1 : CliActivity.RecentErrorLimit))
             rows.Add(new Text(error.Message, new Style(Color.Red)).Ellipsis());
         if (view.Notice.Length > 0) rows.Add(new Text(view.Notice, Muted).Ellipsis());
         if (paired && view.Status == "Connected" && view.QrExpires is { } expires)
@@ -233,11 +247,15 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
             rows.Add(new Text((selected ? "> " : "  ") + TerminalText.Clean(device.Name), selected ? Accent : Style.Plain));
             rows.Add(new Text($"  {device.Id} · expires {device.ExpiresAt:yyyy-MM-dd}", Muted));
         }
-        if (devices.Count > count) rows.Add(new Text($"{view.SelectedDevice + 1} of {devices.Count} · Up/Down to scroll", Muted));
+        if (devices.Count > count) rows.Add(new Text($"{Math.Max(0, view.SelectedDevice + 1)} of {devices.Count} · Up/Down to scroll", Muted));
         if (view.Notice.Length > 0) rows.Add(new Text(view.Notice, Muted));
         return new Rows(rows);
     }
 
-    private string Help() => View.Panel == DevicePanel.Revoke ? "Up/Down Select  Enter Revoke  Esc Cancel  q Quit"
-        : paired ? "q Quit  p New QR  d Devices  r Revoke  c Clear activity" : "q Quit  c Clear activity";
+    private string Help() => View.Panel switch
+    {
+        DevicePanel.Revoke => "Up/Down Select  Enter Revoke  Esc Cancel  q Quit",
+        DevicePanel.List => "Up/Down Scroll  Esc Back  r Revoke  q Quit",
+        _ => paired ? "q Quit  p New QR  d Devices  r Revoke  c Clear activity" : "q Quit  c Clear activity",
+    };
 }

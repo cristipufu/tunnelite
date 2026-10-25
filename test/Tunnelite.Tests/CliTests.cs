@@ -48,6 +48,31 @@ public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
     }
 
     [CliFact]
+    public async Task The_cli_can_quit_while_its_initial_connection_is_retrying()
+    {
+        var info = new ProcessStartInfo(Environment.GetEnvironmentVariable(CliFactAttribute.EnvironmentVariable)!)
+        {
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+        };
+        foreach (var argument in new[] { host.App.Url, "--publicUrl", "http://127.0.0.1:1" }) info.ArgumentList.Add(argument);
+        using var process = new Process { StartInfo = info };
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        process.OutputDataReceived += (_, args) => { if (args.Data?.Contains("Connecting") == true) ready.TrySetResult(); };
+        process.Start();
+        process.BeginOutputReadLine();
+        var errors = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await ready.Task.WaitAsync(TestData.Timeout);
+            await process.StandardInput.WriteLineAsync("q");
+            await process.StandardInput.FlushAsync();
+            await process.WaitForExitAsync().WaitAsync(TestData.Timeout);
+            Assert.True(process.ExitCode == 0, await errors);
+        }
+        finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+    }
+
+    [CliFact]
     public async Task The_cli_binary_tunnels_http_sse_and_websockets()
     {
         var cli = Environment.GetEnvironmentVariable(CliFactAttribute.EnvironmentVariable)!;

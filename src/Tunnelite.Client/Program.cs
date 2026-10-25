@@ -123,7 +123,7 @@ public class Program
             if (access is not null)
             {
                 var devices = access.State.Devices;
-                display.SetView(display.View with { Devices = devices, SelectedDevice = Math.Clamp(display.View.SelectedDevice, 0, Math.Max(0, devices.Count - 1)) });
+                display.SetView(display.View.WithDevices(devices));
             }
             string? action = null;
             if (input?.IsCompleted == true)
@@ -169,8 +169,9 @@ public class Program
                 }
                 if (action == "select" && display.View.Panel == DevicePanel.Revoke && access is not null)
                 {
-                    var devices = access.State.Devices;
-                    if (display.View.SelectedDevice < devices.Count) action = "revoke " + devices[display.View.SelectedDevice].Id;
+                    var devices = display.View.Devices ?? [];
+                    if (display.View.SelectedDevice >= 0 && display.View.SelectedDevice < devices.Count)
+                        action = "revoke " + devices[display.View.SelectedDevice].Id;
                 }
                 if (action?.StartsWith("revoke ", StringComparison.Ordinal) == true && access is not null)
                 {

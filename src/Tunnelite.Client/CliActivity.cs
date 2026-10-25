@@ -8,6 +8,7 @@ internal sealed record ActivitySnapshot(long Requests, long Failures, string Lat
 /// <summary>Request callbacks do bounded in-memory work; only the renderer writes terminal output.</summary>
 internal sealed class CliActivity
 {
+    internal const int RecentErrorLimit = 3;
     private readonly ConcurrentQueue<CliError> _errors = new();
     private long _requests, _failures, _sequence, _revision;
     private string _latest = "Waiting for requests";
@@ -29,7 +30,7 @@ internal sealed class CliActivity
     internal void Error(string message)
     {
         _errors.Enqueue(new(Interlocked.Increment(ref _sequence), TerminalText.Clean(message, 240)));
-        while (_errors.Count > 3) _errors.TryDequeue(out _);
+        while (_errors.Count > RecentErrorLimit) _errors.TryDequeue(out _);
         Interlocked.Increment(ref _revision);
     }
 

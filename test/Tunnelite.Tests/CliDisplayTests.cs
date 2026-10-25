@@ -73,6 +73,18 @@ public class CliDisplayTests
     }
 
     [Fact]
+    public void Enrollment_changes_cannot_switch_the_device_selected_for_revocation()
+    {
+        var first = new Tunnelite.Sdk.PairedDevice(Guid.NewGuid(), "First", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(30), "hash");
+        var second = first with { Id = Guid.NewGuid(), Name = "Second" };
+        var view = new CliView("Connected", Panel: DevicePanel.Revoke, SelectedDevice: 1, Devices: [first, second]);
+        view = view.WithDevices([second, first]);
+        Assert.Equal(second.Id, view.Devices![view.SelectedDevice].Id);
+        view = view.WithDevices([first]);
+        Assert.Equal(-1, view.SelectedDevice);
+    }
+
+    [Fact]
     public void An_expired_pairing_code_is_hidden_until_the_user_generates_another()
     {
         var (display, console, output) = Create(140, 50, paired: true);
