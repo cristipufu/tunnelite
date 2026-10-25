@@ -10,24 +10,27 @@ internal sealed record CliView(string Status, string? PublicUrl = null, Terminal
     IReadOnlyList<PairedDevice>? Devices = null, DateTimeOffset? QrExpires = null, string? PairingUrl = null);
 
 /// <summary>Only the command loop changes the view. Transport callbacks publish text without writing to the console.</summary>
-internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool paired, bool live)
+internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool paired, bool live, TextWriter? plainOutput = null)
 {
-    private readonly TextWriter _output = Console.Out;
+    private readonly TextWriter _output = plainOutput ?? Console.Out;
     private static readonly Style Muted = new(Color.Grey);
     private static readonly Style Accent = new(Color.DeepSkyBlue1);
     private CliView _view = new("Connecting");
-    private string _latest = "Waiting for requests";
-    private string _error = "";
-    private string _printedError = "";
-    private string _printedLatest = "";
+    internal CliActivity Activity { get; } = new();
+    private long _printedRequests, _printedFailures, _printedError, _viewRevision;
     private long _lastPlainUpdate;
 
     internal bool Live { get; } = live;
     internal CliView View => Volatile.Read(ref _view);
-    internal void SetView(CliView view) => Volatile.Write(ref _view, view);
-    internal void Request(string method, string path) => Volatile.Write(ref _latest, TerminalText.Request(method, path));
-    internal void Error(string message) => Volatile.Write(ref _error, TerminalText.Clean(message, 240));
-    internal void ClearActivity() { Volatile.Write(ref _latest, "Waiting for requests"); Volatile.Write(ref _error, ""); }
+    internal void SetView(CliView view)
+    {
+        if (View == view) return;
+        Volatile.Write(ref _view, view);
+        Interlocked.Increment(ref _viewRevision);
+    }
+    internal void Request(string method, string path) => Activity.Request(method, path);
+    internal void Error(string message) => Activity.Error(message);
+    internal void ClearActivity() => Activity.Clear();
 
     internal void Notice(string message)
     {
@@ -103,10 +106,16 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
                 var height = console.Profile.Height;
                 await console.Live(Render()).AutoClear(true).Overflow(VerticalOverflow.Crop).StartAsync(async context =>
                 {
+                    (long, long, long)? rendered = null;
                     while (!running.IsCompleted && width == console.Profile.Width && height == console.Profile.Height)
                     {
-                        context.UpdateTarget(Render());
-                        context.Refresh();
+                        var revision = (Volatile.Read(ref _viewRevision), Activity.Revision, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                        if (rendered != revision)
+                        {
+                            context.UpdateTarget(Render());
+                            context.Refresh();
+                            rendered = revision;
+                        }
                         await Task.WhenAny(running, Task.Delay(200, lifetime.Token));
                         lifetime.Token.ThrowIfCancellationRequested();
                     }
@@ -129,12 +138,18 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
     {
         if (Live || (!force && Environment.TickCount64 - _lastPlainUpdate < 1000)) return;
         _lastPlainUpdate = Environment.TickCount64;
-        var latest = Volatile.Read(ref _latest);
-        var error = Volatile.Read(ref _error);
-        if (latest != _printedLatest && latest != "Waiting for requests")
-        { _output.WriteLine("Latest request: " + latest); _printedLatest = latest; }
-        if (error != _printedError && error.Length > 0)
-        { _output.WriteLine("Error: " + error); _printedError = error; }
+        var activity = Activity.Snapshot();
+        if (activity.Requests != _printedRequests || activity.Failures != _printedFailures)
+        {
+            _output.WriteLine($"Requests: {activity.Requests} | Proxy errors: {activity.Failures} | Latest: {activity.Latest}");
+            _printedRequests = activity.Requests;
+            _printedFailures = activity.Failures;
+        }
+        foreach (var error in activity.Errors.Where(e => e.Sequence > _printedError))
+        {
+            _output.WriteLine("Error: " + error.Message);
+            _printedError = Math.Max(_printedError, error.Sequence);
+        }
     }
 
     internal IRenderable Render()
@@ -190,9 +205,11 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         if (paired && view.Status == "Connected" && view.PairingUrl is not null) Address("PAIRING LINK", view.PairingUrl);
         if (!compact) rows.Add(Text.Empty);
         rows.Add(new Text("ACTIVITY", Accent));
-        rows.Add(new Text(Volatile.Read(ref _latest)).Ellipsis());
-        var error = Volatile.Read(ref _error);
-        if (error.Length > 0) rows.Add(new Text(error, new Style(Color.Red)).Ellipsis());
+        var activity = Activity.Snapshot();
+        rows.Add(new Text($"Requests {activity.Requests}   Proxy errors {activity.Failures}", Muted));
+        rows.Add(new Text(activity.Latest).Ellipsis());
+        foreach (var error in activity.Errors.TakeLast(compact ? 1 : 3))
+            rows.Add(new Text(error.Message, new Style(Color.Red)).Ellipsis());
         if (view.Notice.Length > 0) rows.Add(new Text(view.Notice, Muted).Ellipsis());
         if (paired && view.Status == "Connected" && view.QrExpires is { } expires)
         {

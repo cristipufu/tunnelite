@@ -81,7 +81,7 @@ public class Program
                 Access = access!, AllowUntrustedLocalCertificates = insecureLocal ? true : null,
             }, logLevel);
         client.LogRequest += display.Request;
-        client.LogFailedRequest += (method, path) => display.Error("Failed: " + TerminalText.Request(method, path));
+        client.LogFailedRequest += display.Activity.Failure;
         client.LogError += display.Error;
         client.LogException += exception => display.Error(exception.Message);
         var readyVersion = 0;

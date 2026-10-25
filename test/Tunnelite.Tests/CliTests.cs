@@ -117,10 +117,17 @@ public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
 
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cts.Token);
 
-            // Let the CLI process the stream completions, then make sure it printed no exception.
-            await Task.Delay(1000, cts.Token);
+            // A browser's asset burst updates one summary instead of producing one log line per request.
+            await Task.WhenAll(Enumerable.Range(0, 30).Select(index => http.GetStringAsync($"/hello?asset={index}", cts.Token)));
+            await process.StandardInput.WriteLineAsync("q");
+            await process.StandardInput.FlushAsync(cts.Token);
+            await process.WaitForExitAsync(cts.Token);
+            Assert.Equal(0, process.ExitCode);
             var log = string.Join("\n", output);
             Assert.DoesNotContain("Exception", log);
+            Assert.DoesNotContain("\u001b", log, StringComparison.Ordinal);
+            Assert.Contains("Requests: 33 | Proxy errors: 0", log);
+            Assert.True(output.Count(line => line.StartsWith("Requests:", StringComparison.Ordinal)) < 15, log);
         }
         finally
         {
