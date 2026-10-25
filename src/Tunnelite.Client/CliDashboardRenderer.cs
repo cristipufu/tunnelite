@@ -71,8 +71,25 @@ internal static class CliDashboardRenderer
         var top = screenHeight >= 32 ? 2 : screenHeight >= 18 ? 1 : 0;
         var availableHeight = Math.Max(1, screenHeight - top - 1);
         var options = new RenderOptions(console.Profile.Capabilities, new Size(width, availableHeight));
-        int MeasureHeight(IRenderable item, int itemWidth) =>
-            item.Render(options, itemWidth).Count(segment => segment.IsLineBreak) + 1;
+        int MeasureHeight(IRenderable item, int itemWidth)
+        {
+            var lines = 1;
+            var endedWithBreak = false;
+            foreach (var segment in item.Render(options, itemWidth))
+            {
+                if (segment.IsLineBreak)
+                {
+                    lines++;
+                    endedWithBreak = true;
+                }
+                else
+                {
+                    endedWithBreak = false;
+                }
+            }
+
+            return endedWithBreak ? Math.Max(1, lines - 1) : lines;
+        }
 
         var qrAvailable = view.Status == "Connected"
             && view.Panel == DevicePanel.Closed
@@ -89,6 +106,12 @@ internal static class CliDashboardRenderer
         if (MeasureHeight(frame, width) > availableHeight && spacious)
         {
             spacious = false;
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, animationFrame, MeasureHeight);
+        }
+        if (qrAvailable && MeasureHeight(frame, width) > availableHeight && top > 0)
+        {
+            top = 0;
+            availableHeight = Math.Max(1, screenHeight - 1);
             frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, animationFrame, MeasureHeight);
         }
         if (qrAvailable && MeasureHeight(frame, width) > availableHeight)
@@ -133,7 +156,7 @@ internal static class CliDashboardRenderer
 
         var header = Header(view, width, spacious, paired, unicode, animationFrame);
         var footer = new Padder(Legend(view.Panel, paired, width, unicode), new Padding(spacious ? 2 : 0, 0));
-        return screenHeight < 26
+        return !spacious || screenHeight < 26
             ? new Rows(header, card, footer)
             : new Rows(header, Text.Empty, card, Text.Empty, footer);
     }
@@ -160,7 +183,7 @@ internal static class CliDashboardRenderer
             var detailsWidth = innerWidth - qr.Width - gap;
             var details = Details(localUrl, paired, view, activity, detailsWidth, spacious, minimal, QrHeight(qr, spacious), measureHeight);
             var columns = new Grid();
-            columns.AddColumn(new GridColumn { Width = detailsWidth + gap, Padding = new Padding(0, 0, gap, 0) });
+            columns.AddColumn(new GridColumn { Width = detailsWidth, Padding = new Padding(0, 0, gap, 0) });
             columns.AddColumn(new GridColumn { Width = qr.Width, Padding = new Padding(0) });
             columns.AddRow(details, qrContent);
             body = columns;

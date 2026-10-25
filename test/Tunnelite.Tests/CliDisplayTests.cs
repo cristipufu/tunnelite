@@ -141,4 +141,18 @@ public class CliDisplayTests
         Assert.NotEqual("● ", CliTheme.StatusPrefix("Connecting", unicode: true, animationFrame: 1));
         Assert.NotEqual("* ", CliTheme.StatusPrefix("Reconnecting", unicode: false, animationFrame: 1));
     }
+
+    [Fact]
+    public void Paired_qr_fits_in_a_standard_26_row_terminal()
+    {
+        var (display, console, output) = Create(100, 26, paired: true);
+        var publicUrl = "https://p-8f3c1cd768f8c84f489d7f7da3a82d35.tunnelite.com";
+        var pairingUrl = publicUrl + "/_tunnelite/pair#code=" + new string('a', 43);
+        var qr = TerminalQr.Create(pairingUrl, unicode: true);
+        display.SetView(new("Connected", publicUrl, qr, PairingUrl: pairingUrl));
+        console.Write(display.Render());
+        var rendered = output.ToString();
+        Assert.Contains("Scan to pair this browser", rendered);
+        Assert.DoesNotContain("Resize the terminal", rendered);
+    }
 }
