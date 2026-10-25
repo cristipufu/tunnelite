@@ -88,7 +88,8 @@ public sealed class PairedAccess : IDisposable
                 return Response(HttpStatusCode.Unauthorized, "Pairing code expired or already used. Scan a new QR code.");
             var now = _clock.GetUtcNow();
             var token = ViewerTicket.Encode(RandomNumberGenerator.GetBytes(32));
-            var device = new PairedDevice(Guid.NewGuid(), string.IsNullOrWhiteSpace(request.Name) ? "Phone" : request.Name[..Math.Min(64, request.Name.Length)],
+            var name = new string((request.Name ?? "Phone").Where(c => !char.IsControl(c)).Take(64).ToArray());
+            var device = new PairedDevice(Guid.NewGuid(), string.IsNullOrWhiteSpace(name) ? "Phone" : name,
                 now, now.AddDays(30), ViewerTicket.Hash(token));
             var updated = new PairedAccessState { Devices = State.Devices.Where(d => d.ExpiresAt > now).Append(device).ToArray() };
             if (updated.Devices.Count > 32) return Response(HttpStatusCode.Conflict, "Remove a paired device before adding another.");

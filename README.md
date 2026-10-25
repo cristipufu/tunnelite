@@ -104,6 +104,28 @@ This command returns a public URL with an auto-generated subdomain.
 
 While the tunnel is running, press `c` to clear the screen and `q` to quit.
 
+### Pair a phone with a desktop app
+
+```bash
+tunnelite serve http://127.0.0.1:2584 --name desktop
+# Equivalent paired mode on the original command:
+tunnelite http://127.0.0.1:2584 --pair --name desktop
+```
+
+Scan the terminal QR code with the phone's camera. The browser pairs once and opens the local app's web UI. The desktop must already serve a web UI/API; Tunnelite provides access to it. No phone-side VPN or Tunnelite app is required.
+
+The code expires after five minutes and can enroll one browser. Press `p` for another code, `d` to list devices, and `r` to revoke a device. Revocation closes that device's active SSE/WebSocket streams. Browser sessions expire after 30 days. Redirected stdin also accepts `pair`, `devices`, `revoke <device-id>`, and `q` as lines.
+
+`--name` selects a **local desktop profile**, not a custom public hostname. Its secret derives a stable `p-<id>.tunnelite.com` address that the relay can verify after a restart. Identity and device records live only on the desktop, under its application-data directory. Use `--identity-file <path>` to select a file explicitly. Unix profile files have owner-only permissions, and one CLI process can open a profile at a time. Keep the file to retain the address and paired browsers; losing it requires pairing again.
+
+The relay needs **no disk, database, or external storage**: its connection maps and browser-verification keys are in memory. The desktop re-registers them on reconnect. Deploy the updated relay before using paired mode; protected clients refuse relays that do not advertise support. The existing single-node SignalR deployment is supported.
+
+Public HTTPS terminates at the relay, which can read the traffic. Paired mode adds access control; it does not provide end-to-end encryption that hides traffic from the relay. Use HTTPS for the relay; HTTP is accepted only on loopback for local development.
+
+For an ordinary public URL with a terminal QR code, use `tunnelite http://localhost:3000 --qr`.
+
+Windows Terminal, PowerShell, cmd, macOS and Linux terminals are supported. The QR renderer detects Unicode and ANSI support, uses a text fallback for older consoles, and preserves a copyable URL when output is redirected or the terminal is too narrow. On Windows, desktop profiles use the current user's application-data folder and its inherited access controls.
+
 ## 🔍 How It Works
 
 Tunnelite creates a bridge between your local application and the internet using a WebSocket connection. It streams incoming data from a public URL directly to your local server, making your local app accessible from anywhere.
@@ -222,6 +244,30 @@ app.UseTunnelite(); // prints the public URL once the tunnel is connected
 
 app.Run();
 ```
+
+For an embedded desktop app, register a host-owned background service before building the app:
+
+```csharp
+using Tunnelite.AspNetCore;
+using Tunnelite.Sdk;
+
+// Load the same identity and device state from your desktop application's storage on each launch.
+var identity = new TunnelIdentity(savedDesktopSecret);
+using var access = new PairedAccess(identity, savedDeviceState, saveDeviceStateAsync);
+builder.Services.AddTunnelite(options =>
+{
+    options.Access = access;
+    options.OnReady = (client, cancellationToken) =>
+    {
+        ShowPairingQr(client.CreatePairingUrl());
+        return Task.CompletedTask;
+    };
+});
+```
+
+`OnReady` runs after registration and reconnects. Render its URL using the host application's QR library. `access.State.Devices` lists enrolled browsers; `await access.RevokeAsync(deviceId)` revokes one. The asynchronous save callback runs before enrollment or revocation is acknowledged. `PairedAccessState` contains token hashes, not browser tokens. The host service starts after the local HTTP server and disposes the tunnel during shutdown. `PublicUrl` and `LocalUrl` can be configured in the same options.
+
+Applications can also instantiate `HttpTunnelClient` directly with `HttpTunnelRequest.Access`. Use `await using` for the client and `ConnectAsync(cancellationToken)` for cancellable startup. Keep the local web server bound to loopback, and allow the public tunnel hostname in any host validation performed by your app.
 
 ## 🧪 Tests
 

@@ -41,7 +41,7 @@ public class SseTunnelMiddleware(
 
         if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
         {
-            tunnel = _tunnelStore.Tunnels.FirstOrDefault().Value;
+            tunnel = _tunnelStore.Tunnels.Values.FirstOrDefault(t => _tunnelStore.Connections.ContainsKey(t.ClientId));
         }
         else if (subdomain.Equals("tunnelite"))
         {

@@ -98,6 +98,8 @@ public static class HttpAppExtensions
                 {
                     TunnelUrl = tunnelUrl,
                     payload.Subdomain,
+                    ProtectedEndpoint = EndpointIdentity.IsProtected(payload.ClientId),
+                    payload.RequirePairing,
                 });
             }
             catch (Exception ex)
@@ -291,7 +293,7 @@ public static class HttpAppExtensions
 
             if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
             {
-                tunnel = tunnelStore.Tunnels.FirstOrDefault().Value;
+                tunnel = tunnelStore.Tunnels.Values.FirstOrDefault(t => tunnelStore.Connections.ContainsKey(t.ClientId));
             }
             else if (context.Request.Host.Host.Length > 4
                 && context.Request.Host.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))

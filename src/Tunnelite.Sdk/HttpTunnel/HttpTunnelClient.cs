@@ -509,6 +509,9 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 response.EnsureSuccessStatusCode();
 
                 tunnelResponse = await response.Content.ReadFromJsonAsync(TunneliteJsonContext.Default.HttpTunnelResponse);
+                if (Tunnel.OwnerToken is not null && (tunnelResponse?.ProtectedEndpoint != true
+                    || (Tunnel.RequirePairing && !tunnelResponse.RequirePairing)))
+                    throw new InvalidOperationException("This relay must be upgraded to support protected endpoints and pairing.");
                 tunnel.Subdomain = tunnelResponse?.Subdomain ?? tunnel.Subdomain;
 
                 if (!response.IsSuccessStatusCode)
