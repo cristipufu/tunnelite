@@ -17,8 +17,9 @@ Scan the QR with the phone's camera. The browser enrolls once and opens the app.
 While the CLI runs:
 
 - `p`: replace the pairing code and show a new QR.
-- `d`: list paired devices and their IDs.
-- `r`: select a device to revoke. Its active streams close too.
+- `d`: open the device panel; use Up/Down to scroll and Esc to return.
+- `r`: select a device with Up/Down and press Enter to revoke it. Esc cancels. Its active streams close too.
+- `c`: reset the activity counters and clear recent errors.
 - `q`: close the tunnel and exit.
 
 Redirected stdin accepts one command per line: `pair`, `devices`, `revoke <device-id>`, and `q`.

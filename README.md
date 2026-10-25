@@ -116,7 +116,7 @@ This command returns a public URL with an auto-generated subdomain.
 | `--qr` | Display a QR code that opens the public URL. Anyone with that URL can access the site. |
 | `--insecure-local` | Explicitly allow an untrusted HTTPS development certificate on a loopback target. Relay certificates are always verified. |
 
-While the tunnel is running, press `c` to clear the screen and `q` to quit.
+Interactive terminals show a live dashboard: requests update one activity entry instead of scrolling past. Press `c` to reset activity or `q` to quit. See [CLI controls](docs/cli.md) for device management and plain-text output.
 
 ### Test your local website from your phone
 
