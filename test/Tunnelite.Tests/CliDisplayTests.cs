@@ -12,6 +12,8 @@ public class CliDisplayTests
         {
             Out = new AnsiConsoleOutput(output), Ansi = AnsiSupport.No,
             ColorSystem = ColorSystemSupport.NoColors, Interactive = InteractionSupport.No,
+            // CI profile enrichers otherwise re-enable ANSI, so string lengths include escape sequences.
+            Enrichment = new ProfileEnrichment { UseDefaultEnrichers = false },
         });
         console.Profile.Width = width;
         console.Profile.Height = height;
