@@ -175,7 +175,13 @@ public static class HttpAppExtensions
                 }
 
                 // Stream the body from the tunneling client's request to the deferred response
-                await context.Request.Body.CopyToAsync(deferredHttpContext.Response.Body);
+                var buffer = new byte[16 * 1024];
+                int read;
+                while ((read = await context.Request.Body.ReadAsync(buffer, deferredHttpContext.RequestAborted)) != 0)
+                {
+                    await deferredHttpContext.Response.Body.WriteAsync(buffer.AsMemory(0, read), deferredHttpContext.RequestAborted);
+                    await deferredHttpContext.Response.Body.FlushAsync(deferredHttpContext.RequestAborted);
+                }
 
                 // Complete the deferred response
                 await requestsQueue.CompleteAsync(requestId);
@@ -297,7 +303,8 @@ public static class HttpAppExtensions
 
             var requestId = Guid.NewGuid();
 
-            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: TimeSpan.FromSeconds(30), context.RequestAborted);
+            var streaming = context.Request.Headers.Accept.Any(h => h?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
+            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), context.RequestAborted);
 
             await hubContext.Clients.Client(connectionId).SendAsync("NewHttpConnection", new HttpConnection
             {

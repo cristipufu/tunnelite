@@ -59,6 +59,13 @@ public class SseTunnelMiddleware(
             return;
         }
 
+        // New clients stream the full HTTP response, preserving authentication, errors and resume headers.
+        if (tunnel.ProtocolVersion >= 2)
+        {
+            await _next(context);
+            return;
+        }
+
         if (!_tunnelStore.Connections.TryGetValue(tunnel.ClientId, out var connectionId))
         {
             await _next(context);

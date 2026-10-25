@@ -11,6 +11,7 @@ public class HttpConnection
 
 public class WsConnection
 {
+    public Dictionary<string, string[]> Headers { get; set; }
     public Guid RequestId { get; set; }
     public string Path { get; set; }
 

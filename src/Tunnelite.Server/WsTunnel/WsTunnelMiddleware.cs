@@ -79,6 +79,7 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
                 RequestId = requestId,
                 Path = $"{ConvertHttpToWsUri(tunnel.LocalUrl)}{path}{context.Request.QueryString}",
                 SubProtocols = subProtocols.Length > 0 ? subProtocols : null,
+                Headers = context.Request.Headers.ToDictionary(h => h.Key, h => h.Value.Select(v => v ?? "").ToArray()),
             });
 
             await completionTask;

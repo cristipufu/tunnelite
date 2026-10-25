@@ -16,6 +16,7 @@ public class HttpTunnelStore
 
 public class HttpTunnelRequest
 {
+    public int ProtocolVersion { get; set; }
     public string? Subdomain { get; set; }
 
     public Guid ClientId { get; set; }

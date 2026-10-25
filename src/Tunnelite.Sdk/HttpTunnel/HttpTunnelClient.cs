@@ -32,8 +32,13 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     private static readonly HttpClientHandler LocalHttpClientHandler = new()
     {
         ServerCertificateCustomValidationCallback = (message, cert, chain, sslPolicyErrors) => true,
+        UseCookies = false,
+        AllowAutoRedirect = false,
     };
-    private static readonly HttpClient ServerHttpClient = new();
+    private static readonly HttpClient ServerHttpClient = new(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false })
+    {
+        Timeout = Timeout.InfiniteTimeSpan,
+    };
     private static readonly HttpClient LocalHttpClient = new(LocalHttpClientHandler);
 
     private HttpTunnelResponse? _currentTunnel = null;
@@ -195,7 +200,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             }
 
             // Set the content of the public request to stream from the local response
-            publicRequest.Content = new StreamContent(await localResponse.Content.ReadAsStreamAsync());
+            publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync());
 
             // Send the response back to the public server
             using var response = await ServerHttpClient.SendAsync(publicRequest);
@@ -224,6 +229,12 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 webSocket.Options.AddSubProtocol(subProtocol);
             }
 
+            foreach (var (name, values) in wsConnection.Headers ?? [])
+            {
+                if (!IsWebSocketTransportHeader(name))
+                    webSocket.Options.SetRequestHeader(name, string.Join(", ", values));
+            }
+
             await webSocket.ConnectAsync(new Uri(wsConnection.Path), cts.Token);
 
             var incomingTask = StreamIncomingWsAsync(webSocket, wsConnection, cts.Token);
@@ -243,6 +254,11 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             Log?.Invoke($"[WS] Connection {wsConnection.RequestId} closed.");
         }
     }
+
+    private static bool IsWebSocketTransportHeader(string name) =>
+        name.StartsWith("Sec-WebSocket-", StringComparison.OrdinalIgnoreCase)
+        || new[] { "Host", "Connection", "Upgrade", "Content-Length", "Transfer-Encoding", "Keep-Alive", "Proxy-Connection" }
+            .Contains(name, StringComparer.OrdinalIgnoreCase);
 
     private async Task StreamIncomingWsAsync(WebSocket webSocket, WsConnection wsConnection, CancellationToken cancellationToken)
     {
