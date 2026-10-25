@@ -26,7 +26,13 @@
 </p>
 
 <p align="center">
-  <sub>macOS · Linux · Windows &nbsp;/&nbsp; HTTP · WebSockets · Server-Sent Events</sub>
+  <a href="#installation"><img src="https://img.shields.io/badge/Windows-0078d4?style=flat-square" alt="Windows supported" height="22"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/macOS-334155?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="macOS supported" height="22"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/Linux-fcc624?style=flat-square&amp;logo=linux&amp;logoColor=black" alt="Linux supported" height="22"></a>
+</p>
+
+<p align="center">
+  <sub>HTTP · WebSockets · Server-Sent Events</sub>
 </p>
 
 ---
@@ -105,23 +111,50 @@ This command returns a public URL with an auto-generated subdomain.
 | `<localUrl>` | The local URL to tunnel to. Use `http://` or `https://` for web applications, or `tcp://host:port` for raw TCP (self-hosted servers only). |
 | `--publicUrl <url>` | The tunnel server to connect to. Defaults to `https://tunnelite.com`. |
 | `--log <level>` | Client log verbosity: `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical`. |
-| `--pair` | Require QR pairing for an HTTP(S) tunnel. |
-| `--name <name>` | Select a local profile for paired mode (default: `default`). |
+| `--name <name>` | Optional label for a saved paired-tunnel setup on your computer (default: `default`). Does not choose the public hostname. |
 | `--identity-file <path>` | Use an explicit desktop profile file in paired mode. |
-| `--qr` | Display a QR code for a public tunnel. |
+| `--qr` | Display a QR code that opens the public URL. Anyone with that URL can access the site. |
 | `--insecure-local` | Explicitly allow an untrusted HTTPS development certificate on a loopback target. Relay certificates are always verified. |
 
 While the tunnel is running, press `c` to clear the screen and `q` to quit.
 
-### Pair a phone with a desktop app
+### Test your local website from your phone
 
 ```bash
-tunnelite serve http://127.0.0.1:2584 --name desktop
+tunnelite http://localhost:3000 --qr
 ```
 
-Scan the QR code with your phone to open the app. Press `p` for a new code, `d` to list paired devices, or `r` to revoke access. Use the same profile name on later launches to keep the address and paired devices.
+Start your website on your computer, then run the command above, replacing `3000` with your website's port. Scan the QR code with your phone's camera and open the link. Your website opens in the phone's browser. Keep your website and Tunnelite running on your computer.
 
-You can also use `tunnelite http://localhost:3000 --pair`. For a public tunnel with a QR code, use `--qr`.
+Your phone doesn't need Tunnelite installed or the same Wi-Fi connection. **Anyone with the public URL can open the site.**
+
+If your dev server rejects the tunnel's hostname, see [dev-server host settings](docs/paired-access.md#development-servers-with-host-checks).
+
+### Only allow phones or browsers you pair
+
+If you want access restricted to paired browsers, run this instead:
+
+```bash
+tunnelite serve http://localhost:3000
+```
+
+Scan the QR code to authorize your phone's browser and open the website. Other browsers cannot access it without pairing.
+
+While Tunnelite is running:
+
+- Press `p` to create a fresh QR code for another browser.
+- Press `d` to see paired devices.
+- Press `r` to remove a device's access.
+
+### Optional: save separate setups
+
+Tunnelite automatically saves the address and paired devices on your computer. To keep separate setups for different projects, give each one a name:
+
+```bash
+tunnelite serve http://localhost:3000 --name my-website
+```
+
+`my-website` is just a local profile label. It does **not** name your website or choose its public URL. Use that same name next time to reuse its address and paired devices.
 
 See [paired access](docs/paired-access.md) for profile options and device management.
 
