@@ -34,6 +34,7 @@
 	
   <ItemGroup>
     <ProjectReference Include="..\Tunnelite.Sdk\Tunnelite.Sdk.csproj" />
+    <InternalsVisibleTo Include="Tunnelite.Tests" />
   </ItemGroup>
 
 </Project>

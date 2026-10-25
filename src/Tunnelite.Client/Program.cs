@@ -1,4 +1,3 @@
-﻿using QRCoder;
 using System.CommandLine.Invocation;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
@@ -10,9 +9,6 @@ namespace Tunnelite.Client;
 
 public class Program
 {
-    private static ITunnelClient? Client;
-    private static readonly Guid ClientId = Guid.NewGuid();
-
     public static async Task<int> Main(string[] args)
     {
         var root = new RootCommand("CLI tool to create a tunnel to a local server.");
@@ -47,7 +43,7 @@ public class Program
             catch (OperationCanceledException) { }
             catch (Exception exception)
             {
-                AnsiConsole.MarkupLine("[red]" + Markup.Escape(exception.Message) + "[/]");
+                AnsiConsole.Write(new Text(TerminalText.Clean(exception.Message) + Environment.NewLine, new Style(Color.Red)));
                 invocation.ExitCode = 1;
             }
         });
@@ -66,245 +62,139 @@ public class Program
         if (!pair && identityFile is not null) throw new ArgumentException("--identity-file requires serve or --pair.");
         await using var profile = pair ? await DesktopProfile.OpenAsync(identityFile, profileName, publicUrl, cancellationToken) : null;
         using var access = profile is null ? null : new PairedAccess(profile.Identity, profile.Access, profile.SaveAsync);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var live = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Ansi && !logLevel.HasValue
+            && Environment.GetEnvironmentVariable("TERM") != "dumb";
+        var console = live ? AnsiConsole.Console : AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.No, ColorSystem = ColorSystemSupport.NoColors, Interactive = InteractionSupport.No,
+        });
+        var display = new CliDisplay(console, localUrl, pair, live);
+        ITunnelClient client = uri.Scheme == "tcp"
+            ? new TcpTunnelClient(new TcpTunnelRequest
+            {
+                ClientId = Guid.NewGuid(), LocalUrl = localUrl, PublicUrl = publicUrl, Host = uri.Host, LocalPort = uri.Port,
+            }, logLevel)
+            : new HttpTunnelClient(new HttpTunnelRequest
+            {
+                ClientId = Guid.NewGuid(), LocalUrl = localUrl, PublicUrl = publicUrl,
+                Access = access!, AllowUntrustedLocalCertificates = insecureLocal ? true : null,
+            }, logLevel);
+        client.LogRequest += display.Request;
+        client.LogFailedRequest += (method, path) => display.Error("Failed: " + TerminalText.Request(method, path));
+        client.LogError += display.Error;
+        client.LogException += exception => display.Error(exception.Message);
+        var readyVersion = 0;
+        client.Connected += () => { Interlocked.Increment(ref readyVersion); return Task.CompletedTask; };
+        var connecting = client is HttpTunnelClient http ? http.ConnectAsync(lifetime.Token) : client.ConnectAsync().WaitAsync(lifetime.Token);
         try
         {
-            await AnsiConsole.Status().StartAsync("Initializing tunnel...", async status =>
-            {
-                status.Spinner(Spinner.Known.Dots);
-                if (uri.Scheme == "tcp") await InitializeTcpTunnel(localUrl, publicUrl, uri, logLevel, status);
-                else await InitializeHttpTunnel(localUrl, publicUrl, logLevel, status, access, insecureLocal, cancellationToken);
-            });
-            await RunMainLoop(localUrl, access, qr, cancellationToken);
+            await display.RunAsync(token => RunMainLoop(client, connecting, display, access, qr,
+                () => Volatile.Read(ref readyVersion), token), lifetime.Token);
         }
         finally
         {
-            if (Client is IAsyncDisposable disposable) await disposable.DisposeAsync();
-            Client = null;
+            await lifetime.CancelAsync();
+            if (client is IAsyncDisposable disposable) await disposable.DisposeAsync();
+            try { await connecting; }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
         }
     }
 
-    private static async Task InitializeTcpTunnel(string localUrl, string publicUrl, Uri uri, LogLevel? logLevel, StatusContext ctx)
+    private static async Task RunMainLoop(ITunnelClient client, Task connecting, CliDisplay display,
+        PairedAccess? access, bool qr, Func<int> readyVersion, CancellationToken cancellationToken)
     {
-        var tcpTunnel = new TcpTunnelRequest
+        var initialReady = false;
+        var observedVersion = -1;
+        var lineInput = Console.IsInputRedirected;
+        Task<string?>? input = lineInput ? Task.Run(Console.ReadLine) : null;
+        while (true)
         {
-            ClientId = ClientId,
-            LocalUrl = localUrl,
-            PublicUrl = publicUrl,
-            Host = uri.Host,
-            LocalPort = uri.Port,
-        };
-
-        ctx.Status("Connecting to TCP tunnel...");
-
-        Client = new TcpTunnelClient(tcpTunnel, logLevel);
-
-        AddLogging(Client);
-
-        await Client.ConnectAsync();
-
-        ctx.Status("TCP tunnel established.");
-    }
-
-    private static async Task InitializeHttpTunnel(string localUrl, string publicUrl, LogLevel? logLevel, StatusContext ctx, PairedAccess? access, bool insecureLocal, CancellationToken cancellationToken)
-    {
-        var httpTunnel = new HttpTunnelRequest
-        {
-            Access = access!,
-            AllowUntrustedLocalCertificates = insecureLocal ? true : null,
-            ClientId = ClientId,
-            LocalUrl = localUrl,
-            PublicUrl = publicUrl,
-        };
-
-        ctx.Status("Connecting to HTTP tunnel...");
-
-        Client = new HttpTunnelClient(httpTunnel, logLevel);
-
-        AddLogging(Client);
-
-        await ((HttpTunnelClient)Client).ConnectAsync(cancellationToken);
-
-        ctx.Status("HTTP tunnel established.");
-    }
-
-    private static async Task RunMainLoop(string localUrl, PairedAccess? access, bool qr, CancellationToken cancellationToken)
-    {
-        if (Client is null) return;
-        var table = WriteStatusTable(localUrl, Client.TunnelUrl, "green", "Connected");
-        ShowQr(access, qr);
-        Client.Connected += () =>
-        {
-            table = WriteStatusTable(localUrl, Client.TunnelUrl, "green", "Connected");
-            ShowQr(access, qr);
-            return Task.CompletedTask;
-        };
-        Client.Connection.Reconnecting += _ =>
-        {
-            table = WriteStatusTable(localUrl, Client.TunnelUrl, "yellow", "Reconnecting");
-            return Task.CompletedTask;
-        };
-        Client.Connection.Closed += _ =>
-        {
-            table = WriteStatusTable(localUrl, Client.TunnelUrl, "red", "Disconnected");
-            return Task.CompletedTask;
-        };
-        // Console's synchronized reader can block inside ReadLineAsync on Windows and Unix.
-        Task<string?>? input = Console.IsInputRedirected ? Task.Run(Console.ReadLine) : null;
-        while (!cancellationToken.IsCancellationRequested)
-        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!initialReady && connecting.IsCompleted) { await connecting; initialReady = true; }
+            var status = initialReady ? client.Connection.State == HubConnectionState.Connected && client.TunnelUrl is not null
+                ? "Connected" : "Reconnecting" : "Connecting";
+            if (status != display.View.Status) display.SetView(display.View with { Status = status, Qr = null });
+            if (status == "Connected" && (observedVersion != readyVersion() || display.View.PublicUrl != client.TunnelUrl))
+            {
+                RefreshQr(client, display, access, qr);
+                observedVersion = readyVersion();
+            }
+            if (access is not null)
+            {
+                var devices = access.State.Devices;
+                display.SetView(display.View with { Devices = devices, SelectedDevice = Math.Clamp(display.View.SelectedDevice, 0, Math.Max(0, devices.Count - 1)) });
+            }
             string? action = null;
             if (input?.IsCompleted == true)
             {
                 action = await input;
                 input = action is null ? null : Task.Run(Console.ReadLine);
             }
-            else if (!Console.IsInputRedirected && Console.KeyAvailable)
+            else if (!lineInput)
             {
-                action = Console.ReadKey(true).KeyChar.ToString();
-                if (action == "r" && access is not null && access.State.Devices.Count > 0)
+                try
+                {
+                    if (Console.KeyAvailable)
+                    {
+                        var key = Console.ReadKey(intercept: true);
+                        action = key.Key switch
+                        {
+                            ConsoleKey.UpArrow => "up", ConsoleKey.DownArrow => "down",
+                            ConsoleKey.Escape => "back", ConsoleKey.Enter => "select",
+                            _ => key.KeyChar.ToString().ToLowerInvariant(),
+                        };
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or InvalidOperationException or PlatformNotSupportedException)
+                { lineInput = true; input = Task.Run(Console.ReadLine); }
+            }
+            action = action?.Trim();
+            if (action is "q" or "quit") return;
+            try
+            {
+                if (action is "c" or "clear") { display.ClearActivity(); display.Notice("Activity cleared."); }
+                if (action is "p" or "pair" && (access is not null || qr)) RefreshQr(client, display, access, qr);
+                if (action == "back") display.SetView(display.View with { Panel = DevicePanel.Closed, Notice = "" });
+                if (action is "d" or "devices" && access is not null)
+                    display.ShowDevices(display.View.Panel == DevicePanel.List ? DevicePanel.Closed : DevicePanel.List, access.State.Devices);
+                if (action == "r" && access is not null) display.ShowDevices(DevicePanel.Revoke, access.State.Devices);
+                if (action is "up" or "down" && display.View.Panel != DevicePanel.Closed)
+                {
+                    var view = display.View;
+                    var count = view.Devices?.Count ?? 0;
+                    var selected = Math.Clamp(view.SelectedDevice + (action == "up" ? -1 : 1), 0, Math.Max(0, count - 1));
+                    display.SetView(view with { SelectedDevice = selected });
+                    if (!display.Live && count > 0) display.Notice("Selected: " + TerminalText.Clean(view.Devices![selected].Name));
+                }
+                if (action == "select" && display.View.Panel == DevicePanel.Revoke && access is not null)
                 {
                     var devices = access.State.Devices;
-                    for (var index = 0; index < devices.Count; index++)
-                        Console.WriteLine($"{index + 1}. {devices[index].Name} ({devices[index].Id})");
-                    Console.Write("Device number to revoke (Enter to cancel): ");
-                    var selected = await Task.Run(Console.ReadLine).WaitAsync(cancellationToken);
-                    action = int.TryParse(selected, out var number) && number > 0 && number <= devices.Count
-                        ? "revoke " + devices[number - 1].Id : null;
+                    if (display.View.SelectedDevice < devices.Count) action = "revoke " + devices[display.View.SelectedDevice].Id;
+                }
+                if (action?.StartsWith("revoke ", StringComparison.Ordinal) == true && access is not null)
+                {
+                    if (Guid.TryParse(action[7..].Trim(), out var id))
+                    {
+                        await access.RevokeAsync(id, cancellationToken);
+                        display.SetView(display.View with { Panel = DevicePanel.List, Devices = access.State.Devices });
+                        display.Notice("Device access revoked.");
+                    }
+                    else display.Notice("Use revoke <device-id>.");
                 }
             }
-            if (action is "q" or "quit") return;
-            if (action is "c" or "clear") { ClearScreen(); AnsiConsole.Write(table); WriteHelp(); }
-            if (action is "p" or "pair") ShowQr(access, qr);
-            if (action is "d" or "devices")
-                foreach (var device in access?.State.Devices ?? []) AnsiConsole.WriteLine($"{device.Id}  {device.Name}  expires {device.ExpiresAt:u}");
-            if (action?.StartsWith("revoke ", StringComparison.Ordinal) == true && access is not null)
-            {
-                if (Guid.TryParse(action[7..].Trim(), out var id)) { await access.RevokeAsync(id, cancellationToken); AnsiConsole.WriteLine("Device access revoked."); }
-                else AnsiConsole.WriteLine("Use revoke <device-id>.");
-            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            { display.Error(exception.Message); display.Notice("Could not complete that action. Try again."); }
+            display.RefreshPlain();
             await Task.Delay(100, cancellationToken);
         }
     }
 
-    private static void ShowQr(PairedAccess? access, bool qr)
+    private static void RefreshQr(ITunnelClient client, CliDisplay display, PairedAccess? access, bool qr)
     {
-        if (Client?.TunnelUrl is null || (access is null && !qr)) return;
-        var url = access is null ? Client.TunnelUrl : ((HttpTunnelClient)Client).CreatePairingUrl();
-        if (url is null) return;
-        Console.WriteLine((access is null ? "Public URL: " : "Pairing URL: ") + url);
-        if (access is not null) AnsiConsole.WriteLine("This code expires in five minutes and can pair one device. Press p for a new code.");
-        if (!Console.IsOutputRedirected)
-        {
-            try { RenderQr(url); }
-            catch (Exception exception) when (exception is IOException or PlatformNotSupportedException or InvalidOperationException)
-            {
-                Console.WriteLine("This terminal cannot render the QR code. Open the URL above.");
-            }
-        }
-    }
-
-    private static void RenderQr(string url)
-    {
-        using var data = QRCodeGenerator.GenerateQrCode(url, QRCodeGenerator.ECCLevel.M);
-        using var code = new AsciiQRCode(data);
-        var graphic = AnsiConsole.Profile.Capabilities.Unicode
-            ? code.GetGraphicSmall(invert: true)
-            : code.GetGraphic(1, darkColorString: "##", whiteSpaceString: "  ");
-        var width = graphic.Split('\n')[0].Length;
-        if (width > AnsiConsole.Profile.Width)
-        {
-            Console.WriteLine($"Widen the terminal to {width} columns to display the QR code, or open the URL above.");
-            return;
-        }
-        if (AnsiConsole.Profile.Capabilities.Ansi)
-            AnsiConsole.Write(new Text(graphic + Environment.NewLine, new Style(Color.Black, Color.White)));
-        else
-        {
-            var foreground = Console.ForegroundColor;
-            var background = Console.BackgroundColor;
-            try
-            {
-                Console.ForegroundColor = ConsoleColor.Black;
-                Console.BackgroundColor = ConsoleColor.White;
-                Console.WriteLine(graphic);
-            }
-            finally
-            {
-                Console.ResetColor();
-                if ((uint)foreground <= 15) Console.ForegroundColor = foreground;
-                if ((uint)background <= 15) Console.BackgroundColor = background;
-            }
-        }
-    }
-
-    private static Table WriteStatusTable(string localUrl, string? tunnelUrl, string color, string currentStatus)
-    {
-        ClearScreen();
-
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .AddColumn(new TableColumn(new Markup($"[{color}]{currentStatus}[/]")).Centered())
-            .AddRow(Markup.Escape($"Local URL: {localUrl}"))
-            .AddRow(Markup.Escape($"Public URL: {tunnelUrl}"));
-
-        AnsiConsole.Write(table);
-
-        WriteHelp();
-
-        return table;
-    }
-
-    private static void ClearScreen()
-    {
-        // Console.Clear() throws when output is redirected (CI, a parent process, a log file).
-        if (!Console.IsOutputRedirected)
-        {
-            AnsiConsole.Clear();
-        }
-    }
-
-    private static void WriteHelp()
-    {
-        AnsiConsole.MarkupLine("\n[grey]c: clear · q: quit · p: new pairing QR · d: devices · r: revoke[/]");
-        AnsiConsole.WriteLine();
-    }
-
-    private static void Log(string log)
-    {
-        string entry = $"[yellow] {DateTimeOffset.Now:HH:mm:ss}[/]: {Markup.Escape(log)}";
-        AnsiConsole.MarkupLine(entry);
-    }
-
-    private static void LogRequest(string method, string path)
-    {
-        string entry = $"[green] {DateTimeOffset.Now:HH:mm:ss} [[{method}]][/]: {Markup.Escape(path)}";
-        AnsiConsole.MarkupLine(entry);
-    }
-
-    private static void LogFailedRequest(string method, string path)
-    {
-        string entry = $"[red] {DateTimeOffset.Now:HH:mm:ss} [[{method}]][/]: {Markup.Escape(path)}";
-        AnsiConsole.MarkupLine(entry);
-    }
-
-    private static void LogError(string message)
-    {
-        string entry = $"[red] {DateTimeOffset.Now:HH:mm:ss}[/]: {Markup.Escape(message)}";
-        AnsiConsole.MarkupLine(entry);
-    }
-
-    private static void LogException(Exception ex)
-    {
-        // The rich exception widget reads assembly file metadata that is unavailable in NativeAOT binaries.
-        AnsiConsole.Write(new Text(ex.ToString() + Environment.NewLine, new Style(Color.Red)));
-    }
-
-    private static void AddLogging(ITunnelClient client)
-    {
-        client.Log += Log;
-        client.LogRequest += LogRequest;
-        client.LogFailedRequest += LogFailedRequest;
-        client.LogError += LogError;
-        client.LogException += LogException;
+        var url = client.TunnelUrl;
+        if (url is null) { display.Notice("The tunnel is reconnecting. Try again when connected."); return; }
+        var qrUrl = access is not null ? ((HttpTunnelClient)client).CreatePairingUrl() : qr ? url : null;
+        display.Ready(url, qrUrl);
     }
 }
