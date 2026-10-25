@@ -3,8 +3,9 @@ using System.Collections.Concurrent;
 namespace Tunnelite.Server;
 
 /// <summary>
-/// Shared flat-keyed pending-stream registry for WebSocket and SSE tunnel connections.
-/// Flat <c>(ClientId, RequestId)</c> keys release all per-client state when the last stream completes.
+/// Per-client pending-stream registry for WebSocket and SSE tunnel connections.
+/// Partitioning by <c>ClientId</c> isolates concurrent tenants on a multi-client server, while empty
+/// per-client dictionaries are pruned automatically so disconnected clients leave no state behind.
 /// </summary>
 public abstract class StreamRequestsQueue<TResource>(Action<TResource> abort) where TResource : class
 {
@@ -15,7 +16,7 @@ public abstract class StreamRequestsQueue<TResource>(Action<TResource> abort) wh
         public required TaskCompletionSource Completion { get; init; }
     }
 
-    private readonly ConcurrentDictionary<(Guid ClientId, Guid RequestId), PendingStream> _pending = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, PendingStream>> _pendingByClient = new();
 
     public virtual Task WaitForCompletionAsync(Guid clientId, Guid requestId, TResource resource, string? connectionId = null)
     {
@@ -25,7 +26,8 @@ public abstract class StreamRequestsQueue<TResource>(Action<TResource> abort) wh
             Resource = resource,
             Completion = new(TaskCreationOptions.RunContinuationsAsynchronously),
         };
-        if (!_pending.TryAdd((clientId, requestId), entry))
+        var clientStreams = _pendingByClient.GetOrAdd(clientId, static _ => new());
+        if (!clientStreams.TryAdd(requestId, entry))
         {
             throw new InvalidOperationException("The stream request is already pending.");
         }
@@ -34,13 +36,18 @@ public abstract class StreamRequestsQueue<TResource>(Action<TResource> abort) wh
     }
 
     protected TResource? Get(Guid clientId, Guid requestId) =>
-        _pending.TryGetValue((clientId, requestId), out var entry) ? entry.Resource : null;
+        _pendingByClient.TryGetValue(clientId, out var clientStreams)
+        && clientStreams.TryGetValue(requestId, out var entry)
+            ? entry.Resource
+            : null;
 
     public virtual Task CompleteAsync(Guid clientId, Guid requestId)
     {
-        if (_pending.TryRemove((clientId, requestId), out var entry))
+        if (_pendingByClient.TryGetValue(clientId, out var clientStreams)
+            && clientStreams.TryRemove(requestId, out var entry))
         {
             entry.Completion.TrySetResult();
+            PruneIfEmpty(clientId, clientStreams);
         }
 
         return Task.CompletedTask;
@@ -52,25 +59,38 @@ public abstract class StreamRequestsQueue<TResource>(Action<TResource> abort) wh
 
     private Task CompleteMatchingAsync(Guid clientId, string? connectionId)
     {
-        foreach (var entry in _pending)
+        if (!_pendingByClient.TryGetValue(clientId, out var clientStreams))
         {
-            if (entry.Key.ClientId != clientId
-                || (connectionId is not null && entry.Value.ConnectionId != connectionId)
-                || !_pending.TryRemove(entry))
+            return Task.CompletedTask;
+        }
+
+        foreach (var (requestId, entry) in clientStreams)
+        {
+            if ((connectionId is not null && entry.ConnectionId != connectionId)
+                || !clientStreams.TryRemove(requestId, out var removed))
             {
                 continue;
             }
 
             try
             {
-                abort(entry.Value.Resource);
+                abort(removed.Resource);
             }
             finally
             {
-                entry.Value.Completion.TrySetResult();
+                removed.Completion.TrySetResult();
             }
         }
 
+        PruneIfEmpty(clientId, clientStreams);
         return Task.CompletedTask;
+    }
+
+    private void PruneIfEmpty(Guid clientId, ConcurrentDictionary<Guid, PendingStream> clientStreams)
+    {
+        if (clientStreams.IsEmpty)
+        {
+            _pendingByClient.TryRemove(KeyValuePair.Create(clientId, clientStreams));
+        }
     }
 }

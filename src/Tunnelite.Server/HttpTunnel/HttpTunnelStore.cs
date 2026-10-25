@@ -13,18 +13,31 @@ public class HttpTunnelStore
     public ConcurrentDictionary<Guid, HttpTunnelSession> Connections { get; } = new();
 
     /// <summary>
-    /// True only when the request targets a bare <c>localhost</c> host header over a loopback connection.
-    /// Prevents <c>localhost.tunnelite.com</c> or spoofed remote <c>Host: localhost</c> headers from
-    /// matching arbitrary customer tunnels.
+    /// True only when the request targets a bare <c>localhost</c> host header over a direct loopback connection
+    /// (without reverse-proxy forwarding headers). Prevents <c>localhost.tunnelite.com</c> or spoofed remote
+    /// <c>Host: localhost</c> headers from matching customer tunnels on a multi-tenant server.
     /// </summary>
     public static bool IsLoopbackHost(HttpContext context) =>
         context.Request.Host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+        && !context.Request.Headers.ContainsKey("X-Forwarded-For")
+        && !context.Request.Headers.ContainsKey("X-Forwarded-Host")
+        && !context.Request.Headers.ContainsKey("X-ARR-SSL")
         && (context.Connection.RemoteIpAddress is null || IPAddress.IsLoopback(context.Connection.RemoteIpAddress));
 
     public HttpTunnelRequest? ResolveTunnel(HttpContext context)
     {
         if (IsLoopbackHost(context))
-            return Tunnels.Values.FirstOrDefault(t => Connections.ContainsKey(t.ClientId));
+        {
+            foreach (var (_, tunnel) in Tunnels)
+            {
+                if (tunnel.IsLoopback && Connections.ContainsKey(tunnel.ClientId))
+                {
+                    return tunnel;
+                }
+            }
+
+            return null;
+        }
 
         var host = context.Request.Host.Host;
         var dot = host.IndexOf('.');
@@ -108,6 +121,8 @@ public class HttpTunnelRequest
     public bool RequirePairing { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public byte[]? ViewerKey { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsLoopback { get; set; }
     public int ProtocolVersion { get; set; }
     public string? Subdomain { get; set; }
 

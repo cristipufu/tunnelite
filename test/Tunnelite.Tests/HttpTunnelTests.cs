@@ -428,4 +428,56 @@ public class SubdomainReservationTests(BareTunnelHost host) : IClassFixture<Bare
         var body = await response.Content.ReadAsStringAsync();
         Assert.DoesNotContain($"\"subdomain\":\"{reserved}\"", body, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task Multiple_tunnels_on_a_single_server_route_independently_and_isolate_disconnects()
+    {
+        await using var secondApp = await LocalApp.StartAsync();
+        await using var firstTunnel = new Tunnelite.Sdk.HttpTunnelClient(new Tunnelite.Sdk.HttpTunnelRequest
+        {
+            ClientId = Guid.NewGuid(),
+            Subdomain = "alpha-tenant",
+            LocalUrl = host.App.Url,
+            PublicUrl = host.PublicUrl,
+        }, logLevel: null);
+        await using var secondTunnel = new Tunnelite.Sdk.HttpTunnelClient(new Tunnelite.Sdk.HttpTunnelRequest
+        {
+            ClientId = Guid.NewGuid(),
+            Subdomain = "beta-tenant",
+            LocalUrl = secondApp.Url,
+            PublicUrl = host.PublicUrl,
+        }, logLevel: null);
+
+        await Task.WhenAll(
+            firstTunnel.ConnectAsync().WaitAsync(TestData.Timeout),
+            secondTunnel.ConnectAsync().WaitAsync(TestData.Timeout));
+
+        using var alphaRequest = new HttpRequestMessage(HttpMethod.Post, "/echo") { Content = new StringContent("from-alpha") };
+        alphaRequest.Headers.Host = "alpha-tenant.tunnelite.com";
+        using var betaRequest = new HttpRequestMessage(HttpMethod.Post, "/echo") { Content = new StringContent("from-beta") };
+        betaRequest.Headers.Host = "beta-tenant.tunnelite.com";
+
+        var responses = await Task.WhenAll(_client.SendAsync(alphaRequest), _client.SendAsync(betaRequest));
+        using var alphaResponse = responses[0];
+        using var betaResponse = responses[1];
+
+        Assert.Equal("from-alpha", await alphaResponse.Content.ReadAsStringAsync());
+        Assert.Equal("from-beta", await betaResponse.Content.ReadAsStringAsync());
+
+        // A reverse-proxied request with Host: localhost must never match customer tunnels.
+        using var spoofedLoopback = new HttpRequestMessage(HttpMethod.Get, "/hello");
+        spoofedLoopback.Headers.Host = "localhost";
+        spoofedLoopback.Headers.Add("X-Forwarded-For", "203.0.113.10");
+        using var spoofedResponse = await _client.SendAsync(spoofedLoopback);
+        Assert.Equal(HttpStatusCode.NotFound, spoofedResponse.StatusCode);
+
+        // Disconnecting one tenant must not affect the other tenant on the same node.
+        await firstTunnel.DisposeAsync();
+
+        using var betaAfterDisconnect = new HttpRequestMessage(HttpMethod.Get, "/hello");
+        betaAfterDisconnect.Headers.Host = "beta-tenant.tunnelite.com";
+        using var betaStillAlive = await _client.SendAsync(betaAfterDisconnect);
+        Assert.Equal(HttpStatusCode.OK, betaStillAlive.StatusCode);
+        Assert.Equal("hello from local app", await betaStillAlive.Content.ReadAsStringAsync());
+    }
 }

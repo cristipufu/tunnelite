@@ -32,6 +32,12 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
             response.Error = "Missing or invalid 'ClientId' property.";
             return response;
         }
+        if (tunnel.PublicPort is < 0 or > 65535)
+        {
+            response.Message = "An error occurred while creating the tunnel";
+            response.Error = "Invalid 'PublicPort' property.";
+            return response;
+        }
         tunnel.ClientId = clientId;
 
         var tcpListenerContext = new TcpListenerContext();
@@ -40,10 +46,8 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         {
             await _tcpClientStore.DisposeTcpListenerAsync(clientId);
 
-            tcpListenerContext.TcpListener = new TcpListener(IPAddress.Any, tunnel.PublicPort ?? 0);
             tcpListenerContext.CancellationTokenSource = new CancellationTokenSource();
-
-            tcpListenerContext.TcpListener.Start();
+            tcpListenerContext.TcpListener = StartListenerWithFallback(tunnel.PublicPort ?? 0);
 
             tunnel.PublicPort = ((IPEndPoint)tcpListenerContext.TcpListener.LocalEndpoint).Port;
 
@@ -53,6 +57,16 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
                 tcpListenerContext.CancellationTokenSource.Token);
 
             _tcpClientStore.AddTcpListener(clientId, tcpListenerContext);
+
+            if (Context.ConnectionAborted.IsCancellationRequested
+                || !_tunnelStore.Connections.TryGetValue(clientId, out var activeConnectionId)
+                || activeConnectionId != Context.ConnectionId)
+            {
+                await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+                response.Message = "An error occurred while creating the tunnel";
+                response.Error = "The tunnel connection is no longer active.";
+                return response;
+            }
 
             var httpContext = Context.GetHttpContext();
             var tunnelUrl = $"tcp://{httpContext!.Request.Host.Host}:{tunnel.PublicPort}";
@@ -184,6 +198,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
 
                 if (!_tunnelStore.Connections.TryGetValue(clientId, out var connectionId))
                 {
+                    tcpClient.Dispose();
                     continue;
                 }
 
@@ -213,6 +228,23 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
             {
                 await _hubContext.Clients.Client(connectionId).SendAsync("TcpTunnelClosed", ex.Message, cancellationToken: cancellationToken);
             }
+        }
+    }
+
+    private static TcpListener StartListenerWithFallback(int preferredPort)
+    {
+        var listener = new TcpListener(IPAddress.Any, preferredPort);
+        try
+        {
+            listener.Start();
+            return listener;
+        }
+        catch (SocketException) when (preferredPort > 0)
+        {
+            listener.Dispose();
+            var fallback = new TcpListener(IPAddress.Any, 0);
+            fallback.Start();
+            return fallback;
         }
     }
 

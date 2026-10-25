@@ -36,6 +36,39 @@ public class TcpTunnelTests(TcpTunnelHost host) : IClassFixture<TcpTunnelHost>
         });
         Assert.NotEmpty(spoofedResponse.Error);
     }
+
+    [Fact]
+    public async Task Multiple_tcp_tunnels_coexist_and_fallback_when_preferred_port_is_occupied()
+    {
+        using var cts = new CancellationTokenSource(TestData.Timeout);
+        var secondClientId = Guid.NewGuid();
+        await using var secondConnection = new HubConnectionBuilder()
+            .WithUrl(host.PublicUrl + "/wsstcptunnel?clientId=" + secondClientId)
+            .AddMessagePackProtocol()
+            .Build();
+        await secondConnection.StartAsync(cts.Token);
+
+        // Request the port already occupied by the first TCP tunnel on the same single-node server.
+        var fallbackResponse = await secondConnection.InvokeAsync<TcpTunnelResponse>(
+            "RegisterTunnelAsync",
+            new TcpTunnelRequest
+            {
+                ClientId = secondClientId,
+                Host = "localhost",
+                LocalPort = host.App.TcpPort,
+                PublicPort = host.PublicTcpPort,
+                LocalUrl = $"tcp://localhost:{host.App.TcpPort}",
+            },
+            cts.Token);
+
+        Assert.True(string.IsNullOrEmpty(fallbackResponse.Error), fallbackResponse.Error);
+        Assert.True(fallbackResponse.Port > 0);
+        Assert.NotEqual(host.PublicTcpPort, fallbackResponse.Port);
+
+        // The first tunnel remains unaffected on its original port.
+        using var client = await ConnectAndReadGreetingAsync(cts.Token);
+        await AssertEchoAsync(client, Encoding.UTF8.GetBytes("multi-tenant-tcp"), cts.Token);
+    }
     [Fact]
     public async Task Data_sent_by_the_local_service_on_connect_reaches_the_public_client()
     {

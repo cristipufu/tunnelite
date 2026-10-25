@@ -146,6 +146,9 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
                 if (!string.IsNullOrEmpty(tunnelResponse.Error))
                 {
                     Emit(LogError, $"[TCP] {tunnelResponse.Message}:{tunnelResponse.Error}");
+                    tunnel.PublicPort = null;
+                    tunnelResponse = null;
+                    await Task.Delay(5000, cancellationToken);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }

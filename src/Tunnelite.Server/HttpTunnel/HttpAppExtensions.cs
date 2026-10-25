@@ -117,11 +117,12 @@ public static class HttpAppExtensions
             }
 
             payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
+            payload.IsLoopback = HttpTunnelStore.IsLoopbackHost(context);
 
             var status = await session.RegisterAsync(payload, tunnelStore, context.RequestAborted);
             if (status != StatusCodes.Status201Created) { context.Response.StatusCode = status; return; }
 
-            var tunnelUrl = HttpTunnelStore.IsLoopbackHost(context)
+            var tunnelUrl = payload.IsLoopback
                 ? $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}"
                 : $"{context.Request.Scheme}://{payload.Subdomain}.{context.Request.Host}{context.Request.PathBase}";
 

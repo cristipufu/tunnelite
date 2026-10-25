@@ -53,13 +53,19 @@ public class HttpRequestsQueue
 
     public Guid GetClientId(Guid requestId) => PendingRequests.TryGetValue(requestId, out var request) ? request.ClientId : Guid.Empty;
 
-    public async Task CompleteConnectionAsync(string connectionId)
+    public Task CompleteConnectionAsync(string connectionId)
     {
-        foreach (var request in PendingRequests.Values.Where(r => r.ConnectionId == connectionId))
+        foreach (var (requestId, request) in PendingRequests)
         {
-            request.HttpContext?.Abort();
-            await CompleteAsync(request.RequestId);
+            if (request.ConnectionId == connectionId && PendingRequests.TryRemove(requestId, out var removed))
+            {
+                removed.HttpContext?.Abort();
+                removed.TaskCompletionSource?.TrySetResult();
+                removed.Dispose();
+            }
         }
+
+        return Task.CompletedTask;
     }
 
     public virtual HttpContext? GetHttpContext(Guid requestId) =>
