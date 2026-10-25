@@ -71,9 +71,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
             yield break;
         }
 
-        const int chunkSize = 16 * 1024;
-
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(TunnelProtocol.ChunkSize);
 
         int bytesRead;
 
@@ -83,7 +81,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
 
 
             while (!Context.ConnectionAborted.IsCancellationRequested &&
-                (bytesRead = await stream.ReadAsync(buffer, Context.ConnectionAborted)) > 0)
+                (bytesRead = await stream.ReadAsync(buffer.AsMemory(0, TunnelProtocol.ChunkSize), Context.ConnectionAborted)) > 0)
             {
                 yield return new ReadOnlyMemory<byte>(buffer, 0, bytesRead);
             }

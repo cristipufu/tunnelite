@@ -11,7 +11,7 @@ internal sealed class StreamingContent(Stream source) : HttpContent
     private async Task CopyAsync(Stream stream, CancellationToken cancellationToken)
     {
         await stream.FlushAsync(cancellationToken);
-        var buffer = new byte[16 * 1024];
+        var buffer = new byte[TunnelProtocol.ChunkSize];
         int read;
         while ((read = await source.ReadAsync(buffer, cancellationToken)) != 0)
         {

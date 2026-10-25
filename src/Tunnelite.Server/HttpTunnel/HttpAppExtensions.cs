@@ -218,7 +218,7 @@ public static class HttpAppExtensions
                 }
 
                 // Stream the body from the tunneling client's request to the deferred response
-                var buffer = new byte[16 * 1024];
+                var buffer = new byte[TunnelProtocol.ChunkSize];
                 int read;
                 while ((read = await context.Request.Body.ReadAsync(buffer, deferredHttpContext.RequestAborted)) != 0)
                 {
