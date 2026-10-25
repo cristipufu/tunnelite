@@ -10,8 +10,6 @@ public class SseTunnelMiddleware(
     IHubContext<HttpTunnelHub> hubContext,
     ILogger<SseTunnelMiddleware> logger)
 {
-    private const int MaxLegacyBodyChars = 64 * 1024;
-
     public async Task InvokeAsync(HttpContext context)
     {
         // Check if this is an SSE request by looking at the Accept header
@@ -49,22 +47,6 @@ public class SseTunnelMiddleware(
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, connectionId.Disconnected);
         try
         {
-            using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
-            var buffer = new char[MaxLegacyBodyChars + 1];
-            var totalChars = 0;
-            while (totalChars <= MaxLegacyBodyChars)
-            {
-                var read = await reader.ReadAsync(buffer.AsMemory(totalChars, buffer.Length - totalChars), lifetime.Token);
-                if (read == 0) break;
-                totalChars += read;
-            }
-            if (totalChars > MaxLegacyBodyChars)
-            {
-                context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
-                return;
-            }
-            var content = new string(buffer, 0, totalChars);
-
             // Set up SSE connection headers
             context.Response.Headers.TryAdd("Content-Type", "text/event-stream");
             context.Response.Headers.TryAdd("Cache-Control", "no-cache");
@@ -77,6 +59,9 @@ public class SseTunnelMiddleware(
                 tunnel.ClientId,
                 requestId,
                 context, connectionId.ConnectionId);
+
+            using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
+            var content = await reader.ReadToEndAsync(lifetime.Token);
 
             // Notify the client about new SSE connection
             await hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection
