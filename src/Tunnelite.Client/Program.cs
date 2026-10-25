@@ -27,10 +27,9 @@ public class Program
         var pair = new Option<bool>("--pair", "Require QR pairing before allowing browser access.");
         var name = new Option<string>("--name", () => "default", "Desktop profile name; the same profile keeps the same address.");
         var identity = new Option<string?>("--identity-file", "Desktop profile file (identity and paired devices).");
-        var qr = new Option<bool>("--qr", "Display a QR code for an ordinary public tunnel.");
         var insecureLocal = new Option<bool>("--insecure-local", "Allow an untrusted HTTPS certificate only on a loopback local server.");
         command.AddArgument(local);
-        foreach (var option in new Option[] { relay, log, pair, name, identity, qr, insecureLocal }) command.AddOption(option);
+        foreach (var option in new Option[] { relay, log, pair, name, identity, insecureLocal }) command.AddOption(option);
         command.SetHandler(async (InvocationContext invocation) =>
         {
             try
@@ -38,7 +37,7 @@ public class Program
                 await RunAsync(invocation.ParseResult.GetValueForArgument(local), invocation.ParseResult.GetValueForOption(relay)!,
                     invocation.ParseResult.GetValueForOption(log), pairedMode || invocation.ParseResult.GetValueForOption(pair),
                     invocation.ParseResult.GetValueForOption(name)!, invocation.ParseResult.GetValueForOption(identity),
-                    invocation.ParseResult.GetValueForOption(qr), invocation.ParseResult.GetValueForOption(insecureLocal), invocation.GetCancellationToken());
+                    invocation.ParseResult.GetValueForOption(insecureLocal), invocation.GetCancellationToken());
             }
             catch (OperationCanceledException) { }
             catch (Exception exception)
@@ -50,7 +49,7 @@ public class Program
     }
 
     private static async Task RunAsync(string localUrl, string publicUrl, LogLevel? logLevel, bool pair,
-        string profileName, string? identityFile, bool qr, bool insecureLocal, CancellationToken cancellationToken)
+        string profileName, string? identityFile, bool insecureLocal, CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(localUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https" or "tcp"))
             throw new ArgumentException("Use an absolute http://, https:// or tcp:// local URL.");
@@ -89,7 +88,7 @@ public class Program
         var connecting = client is HttpTunnelClient http ? http.ConnectAsync(lifetime.Token) : client.ConnectAsync().WaitAsync(lifetime.Token);
         try
         {
-            await display.RunAsync(token => RunMainLoop(client, connecting, display, access, qr,
+            await display.RunAsync(token => RunMainLoop(client, connecting, display, access,
                 () => Volatile.Read(ref readyVersion), token), lifetime.Token);
         }
         finally
@@ -102,7 +101,7 @@ public class Program
     }
 
     private static async Task RunMainLoop(ITunnelClient client, Task connecting, CliDisplay display,
-        PairedAccess? access, bool qr, Func<int> readyVersion, CancellationToken cancellationToken)
+        PairedAccess? access, Func<int> readyVersion, CancellationToken cancellationToken)
     {
         var initialReady = false;
         var observedVersion = -1;
@@ -117,7 +116,7 @@ public class Program
             if (status != display.View.Status) display.SetView(display.View with { Status = status, Qr = null });
             if (status == "Connected" && (observedVersion != readyVersion() || display.View.PublicUrl != client.TunnelUrl))
             {
-                RefreshQr(client, display, access, qr);
+                RefreshQr(client, display, access);
                 observedVersion = readyVersion();
             }
             if (access is not null)
@@ -154,7 +153,7 @@ public class Program
             try
             {
                 if (action is "c" or "clear") { display.ClearActivity(); display.Notice("Activity cleared."); }
-                if (action is "p" or "pair" && (access is not null || qr)) RefreshQr(client, display, access, qr);
+                if (action is "p" or "pair" && access is not null) RefreshQr(client, display, access);
                 if (action == "back") display.SetView(display.View with { Panel = DevicePanel.Closed, Notice = "" });
                 if (action is "d" or "devices" && access is not null)
                     display.ShowDevices(display.View.Panel == DevicePanel.List ? DevicePanel.Closed : DevicePanel.List, access.State.Devices);
@@ -191,11 +190,12 @@ public class Program
         }
     }
 
-    private static void RefreshQr(ITunnelClient client, CliDisplay display, PairedAccess? access, bool qr)
+    private static void RefreshQr(ITunnelClient client, CliDisplay display, PairedAccess? access)
     {
         var url = client.TunnelUrl;
         if (url is null) { display.Notice("The tunnel is reconnecting. Try again when connected."); return; }
-        var qrUrl = access is not null ? ((HttpTunnelClient)client).CreatePairingUrl() : qr ? url : null;
+        string? qrUrl = null;
+        if (client is HttpTunnelClient http) qrUrl = access is null ? url : http.CreatePairingUrl();
         display.Ready(url, qrUrl);
     }
 }

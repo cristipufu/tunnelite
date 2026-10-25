@@ -3,13 +3,13 @@
 Run the same commands as before:
 
 ```sh
-tunnelite http://localhost:3000 --qr
+tunnelite http://localhost:3000
 tunnelite serve http://localhost:3000 --name my-website
 ```
 
 ## Live terminal view
 
-ANSI terminals show an inset dashboard with a bounded content width, a connection card, and a QR code when requested. The public URL is emphasized, URLs support terminal hyperlinks, and keyboard controls use visible keycaps. Wide windows keep comfortable outer gutters instead of stretching content to the edges. Smaller windows use a compact layout.
+ANSI terminals show an inset dashboard with a bounded content width and a connection card. HTTP(S) tunnels automatically show a QR code for the public URL; paired mode shows a pairing QR instead. TCP tunnels do not show a QR. The public URL is emphasized, URLs support terminal hyperlinks, and keyboard controls use visible keycaps. Wide windows keep comfortable outer gutters instead of stretching content to the edges. Smaller windows use a compact layout.
 
 The dashboard resets the alternate screen's cursor origin before drawing and restores the shell screen and cursor on exit.
 
