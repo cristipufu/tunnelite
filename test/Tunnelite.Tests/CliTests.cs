@@ -48,6 +48,31 @@ public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
     }
 
     [CliFact]
+    public async Task The_cli_can_quit_while_its_initial_connection_is_retrying()
+    {
+        var info = new ProcessStartInfo(Environment.GetEnvironmentVariable(CliFactAttribute.EnvironmentVariable)!)
+        {
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+        };
+        foreach (var argument in new[] { host.App.Url, "--publicUrl", "http://127.0.0.1:1" }) info.ArgumentList.Add(argument);
+        using var process = new Process { StartInfo = info };
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        process.OutputDataReceived += (_, args) => { if (args.Data?.Contains("Connecting") == true) ready.TrySetResult(); };
+        process.Start();
+        process.BeginOutputReadLine();
+        var errors = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await ready.Task.WaitAsync(TestData.Timeout);
+            await process.StandardInput.WriteLineAsync("q");
+            await process.StandardInput.FlushAsync();
+            await process.WaitForExitAsync().WaitAsync(TestData.Timeout);
+            Assert.True(process.ExitCode == 0, await errors);
+        }
+        finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+    }
+
+    [CliFact]
     public async Task The_cli_binary_tunnels_http_sse_and_websockets()
     {
         var cli = Environment.GetEnvironmentVariable(CliFactAttribute.EnvironmentVariable)!;
@@ -88,12 +113,19 @@ public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
             Assert.Equal("hello from local app", await http.GetStringAsync("/hello", cts.Token));
 
             // SSE
-            using var request = new HttpRequestMessage(HttpMethod.Get, "/sse?count=2&size=8&delay=50");
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/gated-sse");
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-            var sse = await response.Content.ReadAsStringAsync(cts.Token);
-            Assert.Contains("data: aaaaaaaa", sse);
-            Assert.Contains("data: bbbbbbbb", sse);
+            using (var reader = new StreamReader(await response.Content.ReadAsStreamAsync(cts.Token)))
+            {
+                // The backend cannot send the last event or finish until the CLI has delivered the first.
+                Assert.Equal("data: first", await reader.ReadLineAsync(cts.Token));
+                Assert.Equal("", await reader.ReadLineAsync(cts.Token));
+                host.App.ReleaseGatedSse();
+                Assert.Equal("data: last", await reader.ReadLineAsync(cts.Token));
+                Assert.Equal("", await reader.ReadLineAsync(cts.Token));
+                Assert.Null(await reader.ReadLineAsync(cts.Token));
+            }
 
             // WebSocket: text, then a message spanning several chunks
             using var socket = new ClientWebSocket();
@@ -110,13 +142,21 @@ public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
 
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cts.Token);
 
-            // Let the CLI process the stream completions, then make sure it printed no exception.
-            await Task.Delay(1000, cts.Token);
+            // A browser's asset burst updates one summary instead of producing one log line per request.
+            await Task.WhenAll(Enumerable.Range(0, 30).Select(index => http.GetStringAsync($"/hello?asset={index}", cts.Token)));
+            await process.StandardInput.WriteLineAsync("q");
+            await process.StandardInput.FlushAsync(cts.Token);
+            await process.WaitForExitAsync(cts.Token);
+            Assert.Equal(0, process.ExitCode);
             var log = string.Join("\n", output);
             Assert.DoesNotContain("Exception", log);
+            Assert.DoesNotContain("\u001b", log, StringComparison.Ordinal);
+            Assert.Contains("Requests: 33 | Proxy errors: 0", log);
+            Assert.True(output.Count(line => line.StartsWith("Requests:", StringComparison.Ordinal)) < 15, log);
         }
         finally
         {
+            host.App.ReleaseGatedSse();
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);

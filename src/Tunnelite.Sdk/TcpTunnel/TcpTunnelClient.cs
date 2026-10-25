@@ -210,9 +210,7 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
 
     private async IAsyncEnumerable<byte[]> StreamLocalTcpAsync(TcpClient localClient, TcpConnection tcpConnection, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        const int chunkSize = 16 * 1024;
-
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(TunnelProtocol.ChunkSize);
 
         try
         {
@@ -220,7 +218,7 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
 
             int bytesRead;
             while (!cancellationToken.IsCancellationRequested &&
-                (bytesRead = await tcpStream.ReadAsync(buffer, cancellationToken)) > 0)
+                (bytesRead = await tcpStream.ReadAsync(buffer.AsMemory(0, TunnelProtocol.ChunkSize), cancellationToken)) > 0)
             {
                 yield return buffer[..bytesRead];
             }

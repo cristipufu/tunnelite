@@ -28,6 +28,7 @@ public class TunnelHost : IAsyncLifetime
 
     protected virtual bool StartHttpTunnel => true;
     protected virtual bool StartTcpTunnel => false;
+    protected virtual void ConfigureServer(WebApplication server) { }
 
     public async Task InitializeAsync()
     {
@@ -36,6 +37,7 @@ public class TunnelHost : IAsyncLifetime
             "--contentRoot", AppContext.BaseDirectory,
             "--Logging:LogLevel:Default=Warning",
         ]);
+        ConfigureServer(_server);
         await _server.StartAsync();
 
         // The server treats the "localhost" host name as "the first registered tunnel".

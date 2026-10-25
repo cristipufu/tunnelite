@@ -61,3 +61,11 @@ builder.Services.AddTunnelite(options =>
 ## Local HTTPS
 
 `HttpTunnelRequest.AllowUntrustedLocalCertificates` and the matching hosted option are nullable. `null` preserves ordinary HTTP tunnel behavior and verifies certificates in paired mode. `false` explicitly requires validation. `true` permits an untrusted certificate only on loopback. Relay TLS validation is always enabled.
+
+## Streaming and timeouts
+
+Ordinary relay HTTP calls retain `HttpClient`'s default 100-second timeout. Registration has a separate 30-second deadline. Only forwarding a response with the `text/event-stream` content type uses an HTTP client with no total-duration timeout, so an SSE subscription can remain open beyond 100 seconds.
+
+The SSE transfer still uses cancellation tied to the tunnel's lifetime and paired-device revocation/expiry. Local requests use `ResponseHeadersRead`, which bounds waiting for response headers without applying `HttpClient.Timeout` to subsequent stream reads.
+
+The relay exempts the SSE response-transfer POST from Kestrel's minimum upload rate and total upload size limits. An idle or long-running SSE response is not an ordinary upload. These exemptions apply only to that SSE transfer; ordinary request limits remain in place.

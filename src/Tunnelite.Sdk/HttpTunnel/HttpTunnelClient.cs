@@ -37,7 +37,10 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         UseCookies = false,
         AllowAutoRedirect = false,
     };
-    private static readonly HttpClient ServerHttpClient = new(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false })
+    private static readonly HttpClientHandler ServerHttpClientHandler = new() { UseCookies = false, AllowAutoRedirect = false };
+    private static readonly HttpClient ServerHttpClient = new(ServerHttpClientHandler, disposeHandler: false);
+    // Only an SSE response body may outlive the normal HTTP timeout. Control calls remain bounded.
+    private static readonly HttpClient SseServerHttpClient = new(ServerHttpClientHandler, disposeHandler: false)
     {
         Timeout = Timeout.InfiniteTimeSpan,
     };
@@ -333,7 +336,9 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync());
 
         // Send the response back to the public server
-        using var response = await ServerHttpClient.SendAsync(publicRequest, cancellationToken);
+        var transfer = string.Equals(localResponse.Content.Headers.ContentType?.MediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase)
+            ? SseServerHttpClient : ServerHttpClient;
+        using var response = await transfer.SendAsync(publicRequest, cancellationToken);
         response.EnsureSuccessStatusCode();
     }
 

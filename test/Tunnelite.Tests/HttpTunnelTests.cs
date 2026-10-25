@@ -134,6 +134,26 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
     }
 
     [Fact]
+    public async Task Sse_delivers_the_first_event_before_the_backend_is_allowed_to_finish()
+    {
+        using var timeout = new CancellationTokenSource(TestData.Timeout);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/gated-sse");
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(timeout.Token));
+            Assert.Equal("data: first", await reader.ReadLineAsync(timeout.Token));
+            Assert.Equal("", await reader.ReadLineAsync(timeout.Token));
+            host.App.ReleaseGatedSse();
+            Assert.Equal("data: last", await reader.ReadLineAsync(timeout.Token));
+            Assert.Equal("", await reader.ReadLineAsync(timeout.Token));
+            Assert.Null(await reader.ReadLineAsync(timeout.Token));
+        }
+        finally { host.App.ReleaseGatedSse(); }
+    }
+
+    [Fact]
     public async Task Sse_events_larger_than_a_chunk_are_delivered_whole()
     {
         // 100 KB per event: several stream items per event and more than the 32 KB SignalR default limit.

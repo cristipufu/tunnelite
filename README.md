@@ -102,7 +102,7 @@ Once installed, you can use the `tunnelite` command to create a tunnel to your l
 tunnelite http://localhost:3000
 ```
 
-This command returns a public URL with an auto-generated subdomain.
+This command returns a public URL with an auto-generated subdomain and automatically shows a QR code in your terminal to open it on your phone.
 
 ![The tunnelite CLI connecting a local application to a public URL](https://github.com/cristipufu/tunnelite/blob/master/docs/tunnelite-cli.gif?raw=true)
 
@@ -113,15 +113,14 @@ This command returns a public URL with an auto-generated subdomain.
 | `--log <level>` | Client log verbosity: `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical`. |
 | `--name <name>` | Optional label for a saved paired-tunnel setup on your computer (default: `default`). Does not choose the public hostname. |
 | `--identity-file <path>` | Use an explicit desktop profile file in paired mode. |
-| `--qr` | Display a QR code that opens the public URL. Anyone with that URL can access the site. |
 | `--insecure-local` | Explicitly allow an untrusted HTTPS development certificate on a loopback target. Relay certificates are always verified. |
 
-While the tunnel is running, press `c` to clear the screen and `q` to quit.
+Interactive terminals show a live dashboard: requests update one activity entry instead of scrolling past. Press `c` to reset activity or `q` to quit. See [CLI controls](docs/cli.md) for device management and plain-text output.
 
 ### Test your local website from your phone
 
 ```bash
-tunnelite http://localhost:3000 --qr
+tunnelite http://localhost:3000
 ```
 
 Start your website on your computer, then run the command above, replacing `3000` with your website's port. Scan the QR code with your phone's camera and open the link. Your website opens in the phone's browser. Keep your website and Tunnelite running on your computer.

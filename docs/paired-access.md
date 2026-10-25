@@ -1,6 +1,6 @@
 # Paired access
 
-For a quick mobile preview with no access restriction, use `tunnelite http://localhost:3000 --qr`. Scan the code to open the public URL on your phone.
+For a quick mobile preview with no access restriction, use `tunnelite http://localhost:3000`. A QR code appears automatically. Scan it to open the public URL on your phone.
 
 To restrict access to browsers you authorize, start a paired tunnel to a website already running on your computer:
 
@@ -17,8 +17,9 @@ Scan the QR with the phone's camera. The browser enrolls once and opens the app.
 While the CLI runs:
 
 - `p`: replace the pairing code and show a new QR.
-- `d`: list paired devices and their IDs.
-- `r`: select a device to revoke. Its active streams close too.
+- `d`: open the device panel; use Up/Down to scroll and Esc to return.
+- `r`: select a device with Up/Down and press Enter to revoke it. Esc cancels. Its active streams close too.
+- `c`: reset the activity counters and clear recent errors.
 - `q`: close the tunnel and exit.
 
 Redirected stdin accepts one command per line: `pair`, `devices`, `revoke <device-id>`, and `q`.
@@ -45,7 +46,7 @@ Paired mode requires a relay that supports pairing. Use HTTPS for the relay. HTT
 tunnelite serve http://localhost:3000 --publicUrl http://localhost:5000
 ```
 
-A QR code pointing to a loopback relay cannot be used from a phone: `localhost` on the phone refers to the phone itself. To preview a site from your phone before deploying the updated relay, run the branch's CLI with `--qr` against the existing hosted relay.
+A QR code pointing to a loopback relay cannot be used from a phone: `localhost` on the phone refers to the phone itself. To preview a site from your phone using the hosted relay, run `tunnelite http://localhost:3000`.
 
 ## Development servers with host checks
 

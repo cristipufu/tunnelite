@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Tunnelite.Protocol;
 
 namespace Tunnelite.Server.HttpTunnel;
@@ -169,9 +170,10 @@ public static class HttpAppExtensions
 
         app.MapPost("/tunnelite/request/{requestId}", async (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
         {
+            HttpContext? deferredHttpContext = null;
             try
             {
-                var deferredHttpContext = requestsQueue.GetHttpContext(requestId);
+                deferredHttpContext = requestsQueue.GetHttpContext(requestId);
 
                 if (deferredHttpContext == null)
                 {
@@ -217,8 +219,18 @@ public static class HttpAppExtensions
                     }
                 }
 
+                // SSE is a long-lived, possibly idle response transported as this request body.
+                // Change limits for this transfer only; ordinary requests retain Kestrel's limits.
+                if (deferredHttpContext.Response.ContentType?.Split(';')[0].Trim()
+                    .Equals("text/event-stream", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    if (context.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } rate) rate.MinDataRate = null;
+                    if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
+                        size.MaxRequestBodySize = null;
+                }
+
                 // Stream the body from the tunneling client's request to the deferred response
-                var buffer = new byte[16 * 1024];
+                var buffer = new byte[TunnelProtocol.ChunkSize];
                 int read;
                 while ((read = await context.Request.Body.ReadAsync(buffer, deferredHttpContext.RequestAborted)) != 0)
                 {
@@ -226,17 +238,25 @@ public static class HttpAppExtensions
                     await deferredHttpContext.Response.Body.FlushAsync(deferredHttpContext.RequestAborted);
                 }
 
-                // Complete the deferred response
-                await requestsQueue.CompleteAsync(requestId);
-
                 // Send a confirmation response to the tunneling client
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
             }
-            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested || deferredHttpContext?.RequestAborted.IsCancellationRequested == true)
+            { deferredHttpContext?.Abort(); }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
+                if (deferredHttpContext is not null)
+                {
+                    try
+                    {
+                        if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
+                        else await ServerErrorAsync(app, deferredHttpContext);
+                    }
+                    catch (Exception failure) when (failure is IOException or OperationCanceledException)
+                    { deferredHttpContext.Abort(); }
+                }
 
                 if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
@@ -244,6 +264,10 @@ public static class HttpAppExtensions
                 {
                     Message = "An error occurred while forwarding the response body",
                 });
+            }
+            finally
+            {
+                if (deferredHttpContext is not null) await requestsQueue.CompleteAsync(requestId);
             }
         });
 
@@ -438,6 +462,7 @@ public static class HttpAppExtensions
     static async Task ServerErrorAsync(WebApplication app, HttpContext context)
     {
         var filePath = Path.Combine(app.Environment.WebRootPath, "500.html");
+        context.Response.Clear();
         context.Response.StatusCode = StatusCodes.Status502BadGateway;
         context.Response.ContentType = "text/html";
         await context.Response.SendFileAsync(filePath);
