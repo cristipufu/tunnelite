@@ -67,16 +67,18 @@ public class SseRequestsQueue
         return Task.CompletedTask;
     }
 
-    public virtual async Task CompleteAsync(Guid clientId)
+    public virtual Task CompleteAsync(Guid clientId)
     {
         if (!PendingRequests.TryRemove(clientId, out var requests))
         {
-            return;
+            return Task.CompletedTask;
         }
 
         foreach (var request in requests)
         {
-            await CompleteAsync(clientId, request.Key);
+            request.Value.HttpContext?.Abort();
+            request.Value.TaskCompletionSource?.TrySetResult();
         }
+        return Task.CompletedTask;
     }
 }

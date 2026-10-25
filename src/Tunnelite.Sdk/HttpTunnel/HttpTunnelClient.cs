@@ -4,6 +4,7 @@ using Nerdbank.MessagePack.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.WebSockets;
@@ -44,7 +45,10 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
     private HttpTunnelResponse? _currentTunnel = null;
     private readonly HttpTunnelRequest Tunnel;
-    private bool _disposed;
+    private int _disposed;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ConcurrentDictionary<long, Task> _requests = new();
+    private long _operationId;
 
     public HttpTunnelClient(HttpTunnelRequest tunnel, LogLevel? logLevel)
     {
@@ -89,7 +93,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             LogRequest?.Invoke(httpConnection.Method, httpConnection.Path);
 
-            _ = TunnelHttpConnectionAsync(httpConnection);
+            Track(() => TunnelHttpConnectionAsync(httpConnection));
 
             return Task.CompletedTask;
         });
@@ -98,7 +102,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             LogRequest?.Invoke("WS", wsConnection.Path);
 
-            _ = TunnelWsConnectionAsync(wsConnection);
+            Track(() => TunnelWsConnectionAsync(wsConnection));
 
             return Task.CompletedTask;
         });
@@ -107,35 +111,28 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             LogRequest?.Invoke("SSE", sseConnection.Path);
 
-            _ = TunnelSseConnectionAsync(sseConnection);
+            Track(() => TunnelSseConnectionAsync(sseConnection));
 
             return Task.CompletedTask;
         });
 
-        Connection.Reconnected += async connectionId =>
+        Connection.Reconnecting += _ => { _currentTunnel = null; return Task.CompletedTask; };
+        Connection.Reconnected += _ => ObserveAsync(async () =>
         {
-            _currentTunnel = await RegisterTunnelAsync(tunnel);
-        };
-
-        Connection.Closed += async (error) =>
+            _currentTunnel = await RegisterTunnelAsync(tunnel, _lifetime.Token);
+            await NotifyReadyAsync();
+        });
+        Connection.Closed += _ => ObserveAsync(async () =>
         {
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0) return;
+            _currentTunnel = null;
+            await Task.Delay(Random.Shared.Next(0, 5000), _lifetime.Token);
+            if (await ConnectWithRetryAsync(Connection, _lifetime.Token))
             {
-                return;
+                _currentTunnel = await RegisterTunnelAsync(tunnel, _lifetime.Token);
+                await NotifyReadyAsync();
             }
-
-            await Task.Delay(new Random().Next(0, 5) * 1000);
-
-            if (_disposed)
-            {
-                return;
-            }
-
-            if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
-            {
-                _currentTunnel = await RegisterTunnelAsync(tunnel);
-            }
-        };
+        });
     }
 
     /// <summary>
@@ -143,19 +140,50 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        _disposed = true;
-
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        await _lifetime.CancelAsync();
         await Connection.DisposeAsync();
-
+        await Task.WhenAll(_requests.Values);
+        _lifetime.Dispose();
         GC.SuppressFinalize(this);
     }
 
-    public async Task ConnectAsync()
+    public Task ConnectAsync() => ConnectAsync(CancellationToken.None);
+
+    /// <summary>Connects and registers the endpoint. Cancellation also stops initial retry attempts.</summary>
+    public async Task ConnectAsync(CancellationToken cancellationToken)
     {
-        if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        if (await ConnectWithRetryAsync(Connection, attempt.Token))
         {
-            _currentTunnel = await RegisterTunnelAsync(Tunnel);
+            _currentTunnel = await RegisterTunnelAsync(Tunnel, attempt.Token);
+            await NotifyReadyAsync();
         }
+        attempt.Token.ThrowIfCancellationRequested();
+    }
+
+    private async Task NotifyReadyAsync()
+    {
+        if (Connected is { } handlers)
+            foreach (Func<Task> handler in handlers.GetInvocationList()) await ObserveAsync(handler);
+    }
+
+    private void Track(Func<Task> operation)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        var id = Interlocked.Increment(ref _operationId);
+        var task = ObserveAsync(operation);
+        _requests[id] = task;
+        _ = task.ContinueWith(_ => _requests.TryRemove(id, out var ignored), CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private async Task ObserveAsync(Func<Task> operation)
+    {
+        try { await operation(); }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { if (Volatile.Read(ref _disposed) == 0) LogException?.Invoke(exception); }
     }
 
     /// <summary>Creates a one-use pairing URL. Render it as a QR code in the host application.</summary>
@@ -173,7 +201,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             // Start the request to the public server
             using var fetch = ControlRequest(HttpMethod.Get, requestUrl);
-            using var publicResponse = await ServerHttpClient.SendAsync(fetch, HttpCompletionOption.ResponseHeadersRead);
+            using var publicResponse = await ServerHttpClient.SendAsync(fetch, HttpCompletionOption.ResponseHeadersRead, _lifetime.Token);
             publicResponse.EnsureSuccessStatusCode();
 
             // Prepare the request to the local server
@@ -199,24 +227,25 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             if (Tunnel.Access is { } access)
             {
                 var path = httpConnection.Path[Tunnel.LocalUrl.TrimEnd('/').Length..].Split('?')[0];
-                var decision = await access.CheckHttpAsync(localRequest, path, new Uri(TunnelUrl!), CancellationToken.None);
+                var decision = await access.CheckHttpAsync(localRequest, path, new Uri(TunnelUrl!), _lifetime.Token);
                 if (decision.Response is { } denied)
                 {
-                    using (denied) await ForwardResponseAsync(requestUrl, denied, CancellationToken.None);
+                    using (denied) await ForwardResponseAsync(requestUrl, denied, _lifetime.Token);
                     return;
                 }
                 revoked = decision.Revoked;
             }
-            using var active = CancellationTokenSource.CreateLinkedTokenSource(revoked);
+            using var active = CancellationTokenSource.CreateLinkedTokenSource(revoked, _lifetime.Token);
             using var localResponse = await LocalHttpClient.SendAsync(localRequest, HttpCompletionOption.ResponseHeadersRead, active.Token);
             await ForwardResponseAsync(requestUrl, localResponse, active.Token);
         }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
             LogFailedRequest?.Invoke(httpConnection.Method, httpConnection.Path);
             LogException?.Invoke(ex);
             using var errorRequest = ControlRequest(HttpMethod.Delete, requestUrl);
-            using var response = await ServerHttpClient.SendAsync(errorRequest);
+            using var response = await ServerHttpClient.SendAsync(errorRequest, _lifetime.Token);
         }
     }
 
@@ -263,11 +292,11 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             var cookies = wsConnection.Headers?.FirstOrDefault(h => h.Key.Equals("Cookie", StringComparison.OrdinalIgnoreCase)).Value;
             if (!access.Authorize(cookies is null ? null : string.Join("; ", cookies), new Uri(TunnelUrl!).Scheme == "https", out revoked))
             {
-                await Connection.InvokeAsync("CloseWsAsync", wsConnection);
+                await Connection.InvokeAsync("CloseWsAsync", wsConnection, _lifetime.Token);
                 return;
             }
         }
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(revoked);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(revoked, _lifetime.Token);
 
         try
         {
@@ -306,7 +335,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         finally
         {
             await cts.CancelAsync();
-            if (Tunnel.Access is not null) await Connection.InvokeAsync("CloseWsAsync", wsConnection);
+            if (Tunnel.Access is not null && !_lifetime.IsCancellationRequested) await Connection.InvokeAsync("CloseWsAsync", wsConnection, _lifetime.Token);
 
             Log?.Invoke($"[WS] Connection {wsConnection.RequestId} closed.");
         }
@@ -385,7 +414,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
     private async Task TunnelSseConnectionAsync(SseConnection sseConnection)
     {
-        using var cts = new CancellationTokenSource();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
 
         try
         {
@@ -460,7 +489,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
     }
 
-    private async Task<HttpTunnelResponse?> RegisterTunnelAsync(HttpTunnelRequest tunnel)
+    private async Task<HttpTunnelResponse?> RegisterTunnelAsync(HttpTunnelRequest tunnel, CancellationToken cancellationToken)
     {
         tunnel.Subdomain = _currentTunnel?.Subdomain ?? tunnel.Subdomain;
 
@@ -472,25 +501,29 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             {
                 using var request = ControlRequest(HttpMethod.Post, $"{Tunnel.PublicUrl}/tunnelite/tunnel");
                 request.Content = JsonContent.Create(tunnel, TunneliteJsonContext.Default.HttpTunnelRequest);
-                using var response = await ServerHttpClient.SendAsync(request);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(30));
+                using var response = await ServerHttpClient.SendAsync(request, timeout.Token);
                 if ((int)response.StatusCode is >= 400 and < 500)
                     throw new InvalidOperationException($"Tunnel registration was refused ({(int)response.StatusCode}).");
                 response.EnsureSuccessStatusCode();
 
                 tunnelResponse = await response.Content.ReadFromJsonAsync(TunneliteJsonContext.Default.HttpTunnelResponse);
+                tunnel.Subdomain = tunnelResponse?.Subdomain ?? tunnel.Subdomain;
 
                 if (!response.IsSuccessStatusCode)
                 {
                     LogError?.Invoke($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (InvalidOperationException) { throw; }
             catch (Exception ex)
             {
                 LogError?.Invoke($"[HTTP] An error occurred while registering the tunnel:");
                 LogException?.Invoke(ex);
 
-                await Task.Delay(5000);
+                await Task.Delay(5000, cancellationToken);
             }
         }
 
@@ -512,8 +545,6 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             {
                 await connection.StartAsync(token);
 
-                Connected?.Invoke();
-
                 return true;
             }
             catch when (token.IsCancellationRequested)
@@ -522,7 +553,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             }
             catch
             {
-                if (_disposed)
+                if (Volatile.Read(ref _disposed) != 0)
                 {
                     return false;
                 }

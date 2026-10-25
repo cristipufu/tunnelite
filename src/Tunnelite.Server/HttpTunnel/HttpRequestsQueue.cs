@@ -53,6 +53,15 @@ public class HttpRequestsQueue
 
     public Guid GetClientId(Guid requestId) => PendingRequests.TryGetValue(requestId, out var request) ? request.ClientId : Guid.Empty;
 
+    public async Task CompleteClientAsync(Guid clientId)
+    {
+        foreach (var request in PendingRequests.Values.Where(r => r.ClientId == clientId))
+        {
+            request.HttpContext?.Abort();
+            await CompleteAsync(request.RequestId);
+        }
+    }
+
     public virtual HttpContext? GetHttpContext(Guid requestId)
     {
         if (!PendingRequests.TryGetValue(requestId, out var request))

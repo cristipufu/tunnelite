@@ -6,7 +6,7 @@ using Tunnelite.Server.WsTunnel;
 
 namespace Tunnelite.Server.HttpTunnel;
 
-public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRequestsQueue, SseRequestsQueue sseRequestsQueue, ILogger<HttpTunnelHub> logger) : Hub
+public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRequestsQueue, SseRequestsQueue sseRequestsQueue, HttpRequestsQueue httpRequests, ILogger<HttpTunnelHub> logger) : Hub
 {
     private readonly HttpTunnelStore _httpTunnelStore = httpTunnelStore;
     private readonly WsRequestsQueue _wsRequestsQueue = wsRequestsQueue;
@@ -29,7 +29,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         var socket = _wsRequestsQueue.GetWebSocket(clientId, connection.RequestId);
         if (socket is { State: WebSocketState.Open })
             await socket.CloseOutputAsync(WebSocketCloseStatus.PolicyViolation, "Desktop access ended.", Context.ConnectionAborted);
-        await _wsRequestsQueue.CompleteAsync(connection.RequestId);
+        await _wsRequestsQueue.CompleteAsync(clientId, connection.RequestId);
     }
 
     /// <summary>
@@ -100,7 +100,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         finally
         {
             // Complete the deferred websocket request
-            await _wsRequestsQueue.CompleteAsync(wsConnection.RequestId);
+            await _wsRequestsQueue.CompleteAsync(clientId, wsConnection.RequestId);
 
             _logger.LogInformation("Done reading.. Closing WebSocketConnection {RequestId}", wsConnection.RequestId);
 
@@ -208,12 +208,12 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         if (!Tunnelite.Protocol.EndpointIdentity.IsProtected(clientId) && _httpTunnelStore.Clients.TryGetValue(clientId, out var subdomain))
         {
             _httpTunnelStore.Tunnels.Remove(subdomain, out var _);
-            _httpTunnelStore.Connections.Remove(clientId, out var _);
             _httpTunnelStore.Clients.Remove(clientId, out _);
         }
 
         await _wsRequestsQueue.CompleteAsync(clientId);
         await _sseRequestsQueue.CompleteAsync(clientId);
+        await httpRequests.CompleteClientAsync(clientId);
 
         await base.OnDisconnectedAsync(exception);
     }

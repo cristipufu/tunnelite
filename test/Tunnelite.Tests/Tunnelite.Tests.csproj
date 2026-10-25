@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Tunnelite.Sdk\Tunnelite.Sdk.csproj" />
     <ProjectReference Include="..\..\src\Tunnelite.Server\Tunnelite.Server.csproj" />
+    <ProjectReference Include="..\..\src\Tunnelite.AspNetCore\Tunnelite.AspNetCore.csproj" />
   </ItemGroup>
 
   <ItemGroup>
