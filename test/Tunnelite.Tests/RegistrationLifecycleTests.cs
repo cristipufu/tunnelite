@@ -30,22 +30,43 @@ public class RegistrationLifecycleTests(BareTunnelHost host) : IClassFixture<Bar
         HubConnection Connection() => new HubConnectionBuilder().WithUrl(host.PublicUrl + "/wsshttptunnel?clientId=" + identity.ClientId,
             options => options.AccessTokenProvider = () => Task.FromResult<string?>(identity.Secret)).Build();
         using var http = new HttpClient { Timeout = TestData.Timeout };
-        async Task RegisterAsync()
+        async Task RegisterAsync(HubConnection connection)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, host.PublicUrl + "/tunnelite/tunnel");
-            request.Headers.Authorization = new("Bearer", identity.Secret);
-            request.Content = JsonContent.Create(new { identity.ClientId, identity.Subdomain, localUrl = host.App.Url, protocolVersion = 2 });
-            using var response = await http.SendAsync(request);
-            response.EnsureSuccessStatusCode();
+            using var deadline = new CancellationTokenSource(TestData.Timeout);
+            while (true)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, host.PublicUrl + "/tunnelite/tunnel");
+                request.Headers.Authorization = new("Bearer", identity.Secret);
+                request.Content = JsonContent.Create(new
+                {
+                    identity.ClientId, identity.Subdomain, localUrl = host.App.Url,
+                    protocolVersion = 2, connectionId = connection.ConnectionId,
+                });
+                using var response = await http.SendAsync(request, deadline.Token);
+                if ((int)response.StatusCode == 425) { await Task.Delay(50, deadline.Token); continue; }
+                response.EnsureSuccessStatusCode();
+                return;
+            }
         }
         await using var previous = Connection();
         await previous.StartAsync();
-        await RegisterAsync();
+        await RegisterAsync(previous);
         await using var replacement = Connection();
         var notified = new TaskCompletionSource<HttpConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
         replacement.On<HttpConnection>("NewHttpConnection", request => notified.TrySetResult(request));
         await replacement.StartAsync();
-        await RegisterAsync();
+        await RegisterAsync(replacement);
+        // A delayed registration from the still-connected old client cannot overwrite the new route.
+        using var stale = new HttpRequestMessage(HttpMethod.Post, host.PublicUrl + "/tunnelite/tunnel");
+        stale.Headers.Authorization = new("Bearer", identity.Secret);
+        stale.Content = JsonContent.Create(new
+        {
+            identity.ClientId, identity.Subdomain, localUrl = host.App.Url,
+            protocolVersion = 2, connectionId = previous.ConnectionId,
+        });
+        using var refused = await http.SendAsync(stale);
+        Assert.Equal(425, (int)refused.StatusCode);
+        Assert.Equal(replacement.ConnectionId, host.ServerServices.GetRequiredService<HttpTunnelStore>().Tunnels[identity.Subdomain].ConnectionId);
         var browser = http.GetAsync(host.PublicUrl + "/hello");
         var pending = await notified.Task.WaitAsync(TestData.Timeout);
         await previous.DisposeAsync();

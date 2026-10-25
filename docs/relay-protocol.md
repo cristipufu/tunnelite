@@ -12,11 +12,11 @@ The secret is never put in a browser URL. Browser sessions use a separate signin
 
 ## Registration
 
-Connect to `/wsshttptunnel` before posting `/tunnelite/tunnel`. A registration without an active connection returns HTTP 425 and retains no route. The SDK retries while the hub's startup callback finishes.
+Connect to `/wsshttptunnel` before posting `/tunnelite/tunnel`. The SDK includes the current SignalR `connectionId` so a delayed request cannot register against an older or replacement connection. A registration without its matching active connection returns HTTP 425 and retains no route. The SDK retries while the hub's startup callback finishes. Legacy clients may omit this field.
 
 Each connection owns one route. A private asynchronous gate coordinates that connection's registration and teardown. Routing and request processing use concurrent dictionaries and do not take the registration gate.
 
-Registration acknowledges protected-endpoint and pairing capabilities. Protected clients refuse an older relay without those capabilities. Existing anonymous clients retain their wire format; protocol version 2 sends SSE through the streaming HTTP path to preserve headers, authentication, and status codes.
+Registration acknowledges protected-endpoint, pairing, and WebSocket-close capabilities. Protected clients refuse an older relay without identity and pairing support. Existing anonymous clients retain their wire format; protocol version 2 sends SSE through the streaming HTTP path to preserve headers, authentication, and status codes.
 
 ## Teardown and reconnects
 

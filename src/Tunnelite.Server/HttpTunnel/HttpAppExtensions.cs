@@ -48,7 +48,9 @@ public static class HttpAppExtensions
                 HttpTunnelSession? session = null;
                 for (var attempt = 0; attempt < 10; attempt++)
                 {
-                    if (tunnelStore.Connections.TryGetValue(payload.ClientId, out session)) break;
+                    if (tunnelStore.Connections.TryGetValue(payload.ClientId, out session)
+                        && (payload.ConnectionId is null || payload.ConnectionId == session.ConnectionId)) break;
+                    session = null;
                     await Task.Delay(10, context.RequestAborted);
                 }
                 if (session is null) { context.Response.StatusCode = 425; return; }

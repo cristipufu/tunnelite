@@ -14,6 +14,8 @@ public class HttpTunnelRequest
     public string OwnerToken { get; set; }
     /// <summary>Version 2 forwards SSE through the streaming HTTP path, including response status and headers.</summary>
     public int ProtocolVersion { get; set; } = 2;
+    /// <summary>The active SignalR connection, populated by HttpTunnelClient during registration.</summary>
+    public string ConnectionId { get; set; }
     public string Subdomain { get; set; }
     public Guid? ClientId { get; set; }
     public string LocalUrl { get; set; }

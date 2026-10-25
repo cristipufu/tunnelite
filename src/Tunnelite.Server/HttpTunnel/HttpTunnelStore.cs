@@ -25,11 +25,14 @@ public sealed class HttpTunnelSession(string connectionId, CancellationToken dis
         await _registration.WaitAsync(cancellationToken);
         try
         {
-            if (_closed || Disconnected.IsCancellationRequested || !ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this)) return 425;
+            if (_closed || Disconnected.IsCancellationRequested
+                || (payload.ConnectionId is not null && payload.ConnectionId != ConnectionId)
+                || !ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this)) return 425;
             if (_tunnel is not null && _tunnel.Subdomain != payload.Subdomain) return 409;
             var registered = store.Tunnels.AddOrUpdate(payload.Subdomain!, payload, (_, previous) =>
                 previous.ClientId == payload.ClientId && ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this) ? payload : previous);
-            if (!ReferenceEquals(registered, payload)) return 409;
+            if (!ReferenceEquals(registered, payload))
+                return ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this) ? 409 : 425;
             if (!ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this))
             {
                 store.Tunnels.TryRemove(new KeyValuePair<string, HttpTunnelRequest>(payload.Subdomain!, payload));
@@ -55,6 +58,7 @@ public sealed class HttpTunnelSession(string connectionId, CancellationToken dis
 
 public class HttpTunnelRequest
 {
+    public string? ConnectionId { get; set; }
     public bool RequirePairing { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public byte[]? ViewerKey { get; set; }

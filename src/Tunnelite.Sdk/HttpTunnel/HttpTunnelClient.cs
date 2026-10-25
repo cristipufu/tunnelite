@@ -569,6 +569,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             try
             {
                 using var request = ControlRequest(HttpMethod.Post, $"{Tunnel.PublicUrl}/tunnelite/tunnel");
+                tunnel.ConnectionId = Connection.ConnectionId;
                 request.Content = JsonContent.Create(tunnel, TunneliteJsonContext.Default.HttpTunnelRequest);
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(TimeSpan.FromSeconds(30));
