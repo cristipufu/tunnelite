@@ -119,30 +119,36 @@ internal static class CliDashboardRenderer
         }
 
         var frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
-        if (MeasureHeight(frame, width) > availableHeight && spacious)
+        var frameHeight = MeasureHeight(frame, width);
+        if (frameHeight > availableHeight && spacious)
         {
             spacious = false;
             frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
+            frameHeight = MeasureHeight(frame, width);
         }
-        if (qrAvailable && MeasureHeight(frame, width) > availableHeight)
+        if (qrAvailable && frameHeight > availableHeight)
         {
             top = 0;
             availableHeight = screenHeight >= 24 ? screenHeight : Math.Max(1, screenHeight - 1);
             frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
+            frameHeight = MeasureHeight(frame, width);
         }
-        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        if (qrAvailable && screenHeight >= 20 && frameHeight > availableHeight)
         {
             frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Compact, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
+            frameHeight = MeasureHeight(frame, width);
         }
-        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        if (qrAvailable && screenHeight >= 20 && frameHeight > availableHeight)
         {
             frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Minimal, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
+            frameHeight = MeasureHeight(frame, width);
         }
-        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        if (qrAvailable && screenHeight >= 20 && frameHeight > availableHeight)
         {
             frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Minimal, mergeHeaderIntoPanel: true, animationFrame, MeasureHeight);
+            frameHeight = MeasureHeight(frame, width);
         }
-        if (qrAvailable && MeasureHeight(frame, width) > availableHeight)
+        if (qrAvailable && frameHeight > availableHeight)
         {
             frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, showQr: false, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
         }
@@ -351,7 +357,7 @@ internal static class CliDashboardRenderer
         var top = new Rows(connection);
         var bottom = new Rows(traffic);
         var minSpacer = spacious ? 2 : inlineCaption is not null ? 0 : 1;
-        var spacer = Math.Max(minSpacer, targetHeight - height(top, width) - height(bottom, width));
+        var spacer = targetHeight <= minSpacer ? minSpacer : Math.Max(minSpacer, targetHeight - height(top, width) - height(bottom, width));
         return new Rows(new[] { top }.Cast<IRenderable>().Concat(Enumerable.Repeat<IRenderable>(Text.Empty, spacer)).Append(bottom));
     }
 

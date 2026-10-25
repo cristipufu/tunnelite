@@ -248,4 +248,32 @@ public class PairingTests(PairingHost host) : IClassFixture<PairingHost>
         }
         finally { await expiring.DisposeAsync(); }
     }
+
+    [Fact]
+    public async Task Pairing_works_when_local_url_includes_a_path_prefix()
+    {
+        await using var relay = new BareTunnelHost();
+        await relay.InitializeAsync();
+        using var access = new PairedAccess(TunnelIdentity.Create());
+        await using var prefixedTunnel = new HttpTunnelClient(new HttpTunnelRequest
+        {
+            LocalUrl = relay.App.Url + "/base",
+            PublicUrl = relay.PublicUrl,
+            Access = access,
+        }, null);
+        await prefixedTunnel.ConnectAsync().WaitAsync(TestData.Timeout);
+        var code = prefixedTunnel.CreatePairingUrl().Split("#code=")[1];
+
+        using var handler = new HttpClientHandler { UseCookies = true, CookieContainer = new CookieContainer() };
+        using var browser = new HttpClient(handler) { BaseAddress = new Uri(relay.PublicUrl), Timeout = TestData.Timeout };
+
+        using var page = await browser.GetAsync("/_tunnelite/pair");
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+
+        using var script = await browser.GetAsync("/_tunnelite/pair.js");
+        Assert.Equal(HttpStatusCode.OK, script.StatusCode);
+
+        using var enroll = await browser.PostAsJsonAsync("/_tunnelite/pair", new { code, name = "Prefixed phone" });
+        Assert.Equal(HttpStatusCode.NoContent, enroll.StatusCode);
+    }
 }

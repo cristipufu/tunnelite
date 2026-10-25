@@ -122,10 +122,13 @@ public sealed class PairedAccess : IDisposable
             if (_save is not null) await _save(updated, cancellationToken);
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             _devices[device.Id] = device;
-            foreach (var expired in _devices.Values.Where(d => d.ExpiresAt <= now))
+            foreach (var (id, existing) in _devices)
             {
-                _devices.TryRemove(expired.Id, out _);
-                if (_revocations.TryRemove(expired.Id, out var stale)) { stale.Source.Cancel(); stale.Source.Dispose(); }
+                if (existing.ExpiresAt <= now)
+                {
+                    _devices.TryRemove(id, out _);
+                    if (_revocations.TryRemove(id, out var stale)) { stale.Source.Cancel(); stale.Source.Dispose(); }
+                }
             }
             Volatile.Write(ref _state, updated);
             var response = Response(HttpStatusCode.NoContent, "");
@@ -442,7 +445,7 @@ public sealed class PairedAccess : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        foreach (var cancellation in _revocations.Values) { cancellation.Source.Cancel(); cancellation.Source.Dispose(); }
+        foreach (var (_, cancellation) in _revocations) { cancellation.Source.Cancel(); cancellation.Source.Dispose(); }
     }
 
     private static PairedAccessState Snapshot(IEnumerable<PairedDevice> devices) => new() { Devices = Array.AsReadOnly(devices.ToArray()) };

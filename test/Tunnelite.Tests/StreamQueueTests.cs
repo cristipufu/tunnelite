@@ -76,4 +76,51 @@ public class StreamQueueTests
         if (webSockets) Assert.Null(ws.GetWebSocket(otherClient, request));
         else Assert.Null(sse.GetHttpContext(otherClient, request));
     }
+
+    [Fact]
+    public async Task Concurrent_registration_and_cleanup_never_orphans_pending_streams()
+    {
+        var queue = new SseRequestsQueue();
+        var clientId = Guid.NewGuid();
+        var pending = new System.Collections.Concurrent.ConcurrentBag<(Guid RequestId, Task Task)>();
+        using var stop = new CancellationTokenSource();
+
+        var cleaner = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                await queue.CompleteConnectionAsync(clientId, "conn");
+                await Task.Yield();
+            }
+        });
+
+        var producers = Enumerable.Range(0, 4).Select(_ => Task.Run(async () =>
+        {
+            for (var i = 0; i < 500; i++)
+            {
+                var requestId = Guid.NewGuid();
+                var waitTask = queue.WaitForCompletionAsync(clientId, requestId, new DefaultHttpContext(), "conn");
+                pending.Add((requestId, waitTask));
+                if (i % 8 == 0)
+                {
+                    await Task.Yield();
+                }
+            }
+        })).ToArray();
+
+        await Task.WhenAll(producers);
+        stop.Cancel();
+        await cleaner;
+        await queue.CompleteConnectionAsync(clientId, "conn");
+
+        foreach (var (requestId, waitTask) in pending)
+        {
+            if (!waitTask.IsCompleted)
+            {
+                Assert.NotNull(queue.GetHttpContext(clientId, requestId));
+                await queue.CompleteAsync(clientId, requestId);
+            }
+            await waitTask.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+    }
 }

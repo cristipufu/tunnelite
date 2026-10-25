@@ -46,6 +46,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     };
     private static readonly HttpClient LocalHttpClient = new(LocalHttpClientHandler);
     private readonly HttpClient _localHttpClient;
+    private readonly bool _allowUntrustedLocalCertificates;
 
     private HttpTunnelResponse? _currentTunnel = null;
     private readonly HttpTunnelRequest Tunnel;
@@ -70,8 +71,8 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         tunnel.PublicUrl = relayUri.AbsoluteUri.TrimEnd('/');
         tunnel.ClientId ??= Guid.NewGuid();
         if (tunnel.ClientId == Guid.Empty) throw new ArgumentException("A client id cannot be empty.", nameof(tunnel));
-        var allowUntrusted = tunnel.AllowUntrustedLocalCertificates ?? (tunnel.Access is null);
-        _localHttpClient = allowUntrusted ? new HttpClient(new HttpClientHandler
+        _allowUntrustedLocalCertificates = tunnel.AllowUntrustedLocalCertificates ?? (tunnel.Access is null);
+        _localHttpClient = _allowUntrustedLocalCertificates ? new HttpClient(new HttpClientHandler
         {
             UseCookies = false, AllowAutoRedirect = false,
             ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
@@ -277,9 +278,13 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     await ForwardResponseAsync(requestUrl, pending, _lifetime.Token);
                     return;
                 }
-                var path = Uri.TryCreate(httpConnection.Path, UriKind.Absolute, out var requestUri)
-                    ? requestUri.AbsolutePath
-                    : httpConnection.Path.Split('?')[0];
+                var localBase = Tunnel.LocalUrl.TrimEnd('/');
+                var path = httpConnection.Path.StartsWith(localBase, StringComparison.OrdinalIgnoreCase)
+                    ? httpConnection.Path[localBase.Length..].Split('?')[0]
+                    : Uri.TryCreate(httpConnection.Path, UriKind.Absolute, out var requestUri)
+                        ? requestUri.AbsolutePath
+                        : httpConnection.Path.Split('?')[0];
+                if (path.Length == 0) path = "/";
                 var decision = await access.CheckHttpAsync(localRequest, path, new Uri(endpoint), _lifetime.Token);
                 if (decision.Response is { } denied)
                 {
@@ -362,7 +367,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         try
         {
             using var webSocket = new ClientWebSocket();
-            if (Tunnel.AllowUntrustedLocalCertificates == true) webSocket.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+            if (_allowUntrustedLocalCertificates) webSocket.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
 
             // Ask the local app for the same subprotocols the public client asked for (e.g. Vite's "vite-hmr").
             foreach (var subProtocol in wsConnection.SubProtocols ?? [])
@@ -594,11 +599,6 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     || (Tunnel.RequirePairing && !tunnelResponse.RequirePairing)))
                     throw new InvalidOperationException("This relay must be upgraded to support protected endpoints and pairing.");
                 tunnel.Subdomain = tunnelResponse?.Subdomain ?? tunnel.Subdomain;
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    Emit(LogError, $"{tunnelResponse!.Message}:{tunnelResponse.Error}");
-                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (InvalidOperationException) { throw; }
