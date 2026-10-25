@@ -204,7 +204,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         var id = Interlocked.Increment(ref _operationId);
         var task = ObserveAsync(operation);
         _requests[id] = task;
-        _ = task.ContinueWith(_ => _requests.TryRemove(id, out var ignored), CancellationToken.None,
+        _ = task.ContinueWith(_ => _requests.TryRemove(id, out var _), CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
@@ -551,7 +551,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
 
             int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, 0, TunnelProtocol.ChunkSize, cancellationToken)) > 0)
+            while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, TunnelProtocol.ChunkSize), cancellationToken)) > 0)
             {
                 yield return buffer[..bytesRead];
             }

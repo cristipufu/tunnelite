@@ -10,12 +10,6 @@ public class SseTunnelMiddleware(
     IHubContext<HttpTunnelHub> hubContext,
     ILogger<SseTunnelMiddleware> logger)
 {
-    private readonly RequestDelegate _next = next;
-    private readonly HttpTunnelStore _tunnelStore = tunnelStore;
-    private readonly SseRequestsQueue _requestsQueue = requestsQueue;
-    private readonly IHubContext<HttpTunnelHub> _hubContext = hubContext;
-    private readonly ILogger<SseTunnelMiddleware> _logger = logger;
-
     private const int MaxLegacyBodyChars = 64 * 1024;
 
     public async Task InvokeAsync(HttpContext context)
@@ -26,7 +20,7 @@ public class SseTunnelMiddleware(
 
         if (!isSseRequest)
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
@@ -34,20 +28,20 @@ public class SseTunnelMiddleware(
 
         if (path == "/wsshttptunnel" || path == "/wsstcptunnel")
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
-        if (!_tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
+        if (!tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
         // New clients stream the full HTTP response, preserving authentication, errors and resume headers.
         if (tunnel.ProtocolVersion >= 2)
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
@@ -76,16 +70,16 @@ public class SseTunnelMiddleware(
             context.Response.Headers.TryAdd("Cache-Control", "no-cache");
             context.Response.Headers.TryAdd("Connection", "keep-alive");
 
-            _logger.LogInformation("SSE connection accepted: {requestId}", requestId);
+            logger.LogInformation("SSE connection accepted: {requestId}", requestId);
 
             // Register the SSE connection with the queue
-            var completionTask = _requestsQueue.WaitForCompletionAsync(
+            var completionTask = requestsQueue.WaitForCompletionAsync(
                 tunnel.ClientId,
                 requestId,
                 context, connectionId.ConnectionId);
 
             // Notify the client about new SSE connection
-            await _hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection
+            await hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection
             {
                 RequestId = requestId,
                 Content = content,
@@ -100,8 +94,8 @@ public class SseTunnelMiddleware(
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling SSE connection");
+            logger.LogError(ex, "Error handling SSE connection");
         }
-        finally { await _requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
+        finally { await requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
     }
 }

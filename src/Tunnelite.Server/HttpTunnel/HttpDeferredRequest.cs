@@ -39,5 +39,3 @@ public class HttpDeferredRequest : IDisposable
         }
     }
 }
-
-public class HttpDefferedRequest : HttpDeferredRequest;

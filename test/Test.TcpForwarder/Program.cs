@@ -1,9 +1,9 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Sockets;
 
 class Program
 {
-    static async Task Main(string[] args)
+    static async Task Main()
     {
         const int listenPort = 5000;
         const int sqlServerPort = 1433; // SQL Server default port
@@ -56,7 +56,7 @@ class Program
         {
             Console.WriteLine($"{message} reading and sending");
 
-            await destination.WriteAsync(buffer, 0, bytesRead);
+            await destination.WriteAsync(buffer.AsMemory(0, bytesRead));
             await destination.FlushAsync();
         }
 

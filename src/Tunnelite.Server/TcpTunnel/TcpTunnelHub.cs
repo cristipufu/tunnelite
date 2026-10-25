@@ -8,16 +8,11 @@ namespace Tunnelite.Server.TcpTunnel;
 
 public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientStore, IHubContext<TcpTunnelHub> hubContext, ILogger<TcpTunnelHub> logger) : Hub
 {
-    private readonly TcpTunnelStore _tunnelStore = tunnelStore;
-    private readonly TcpClientStore _tcpClientStore = tcpClientStore;
-    private readonly IHubContext<TcpTunnelHub> _hubContext = hubContext;
-    private readonly ILogger _logger = logger;
-
     public override Task OnConnectedAsync()
     {
         var clientId = GetClientId(Context);
 
-        _tunnelStore.Connections.AddOrUpdate(clientId, Context.ConnectionId, (key, oldValue) => Context.ConnectionId);
+        tunnelStore.Connections.AddOrUpdate(clientId, Context.ConnectionId, (_, _) => Context.ConnectionId);
 
         return base.OnConnectedAsync();
     }
@@ -44,7 +39,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
 
         try
         {
-            await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+            await tcpClientStore.DisposeTcpListenerAsync(clientId);
 
             tcpListenerContext.CancellationTokenSource = new CancellationTokenSource();
             tcpListenerContext.TcpListener = StartListenerWithFallback(tunnel.PublicPort ?? 0);
@@ -56,13 +51,13 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
                 clientId,
                 tcpListenerContext.CancellationTokenSource.Token);
 
-            _tcpClientStore.AddTcpListener(clientId, tcpListenerContext);
+            tcpClientStore.AddTcpListener(clientId, tcpListenerContext);
 
             if (Context.ConnectionAborted.IsCancellationRequested
-                || !_tunnelStore.Connections.TryGetValue(clientId, out var activeConnectionId)
+                || !tunnelStore.Connections.TryGetValue(clientId, out var activeConnectionId)
                 || activeConnectionId != Context.ConnectionId)
             {
-                await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+                await tcpClientStore.DisposeTcpListenerAsync(clientId);
                 response.Message = "An error occurred while creating the tunnel";
                 response.Error = "The tunnel connection is no longer active.";
                 return response;
@@ -89,7 +84,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
     {
         var clientId = GetClientId(Context);
 
-        var tcpClient = _tcpClientStore.GetTcpClient(clientId, tcpConnection.RequestId);
+        var tcpClient = tcpClientStore.GetTcpClient(clientId, tcpConnection.RequestId);
 
         if (tcpClient == null)
         {
@@ -113,11 +108,11 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         }
         finally
         {
-            _logger.LogInformation("Done reading.. Closing TCP client {RequestId}", tcpConnection.RequestId);
+            logger.LogInformation("Done reading.. Closing TCP client {RequestId}", tcpConnection.RequestId);
 
             ArrayPool<byte>.Shared.Return(buffer);
 
-            _tcpClientStore.DisposeTcpClient(clientId, tcpConnection.RequestId);
+            tcpClientStore.DisposeTcpClient(clientId, tcpConnection.RequestId);
         }
     }
 
@@ -125,7 +120,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
     {
         var clientId = GetClientId(Context);
 
-        var tcpClient = _tcpClientStore.GetTcpClient(clientId, tcpConnection.RequestId);
+        var tcpClient = tcpClientStore.GetTcpClient(clientId, tcpConnection.RequestId);
 
         if (tcpClient == null)
         {
@@ -159,13 +154,13 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unexpected error occurred while streaming outgoing data for {RequestId}", tcpConnection.RequestId);
+            logger.LogError(ex, "An unexpected error occurred while streaming outgoing data for {RequestId}", tcpConnection.RequestId);
         }
         finally
         {
-            _logger.LogInformation("Done writing.. TCP client {RequestId}", tcpConnection.RequestId);
+            logger.LogInformation("Done writing.. TCP client {RequestId}", tcpConnection.RequestId);
 
-            _tcpClientStore.DisposeTcpClient(clientId, tcpConnection.RequestId);
+            tcpClientStore.DisposeTcpClient(clientId, tcpConnection.RequestId);
         }
     }
 
@@ -173,9 +168,9 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
     {
         var clientId = GetClientId(Context);
 
-        if (_tunnelStore.Connections.TryRemove(new KeyValuePair<Guid, string>(clientId, Context.ConnectionId)))
+        if (tunnelStore.Connections.TryRemove(new KeyValuePair<Guid, string>(clientId, Context.ConnectionId)))
         {
-            await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+            await tcpClientStore.DisposeTcpListenerAsync(clientId);
         }
 
         await base.OnDisconnectedAsync(exception);
@@ -196,7 +191,7 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
                     break;
                 }
 
-                if (!_tunnelStore.Connections.TryGetValue(clientId, out var connectionId))
+                if (!tunnelStore.Connections.TryGetValue(clientId, out var connectionId))
                 {
                     tcpClient.Dispose();
                     continue;
@@ -207,11 +202,11 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
                     RequestId = Guid.NewGuid(),
                 };
 
-                _logger.LogInformation("New TCP client connected {RequestId}", tcpConnection.RequestId);
+                logger.LogInformation("New TCP client connected {RequestId}", tcpConnection.RequestId);
 
-                _tcpClientStore.AddTcpClient(clientId, tcpConnection.RequestId, tcpClient);
+                tcpClientStore.AddTcpClient(clientId, tcpConnection.RequestId, tcpClient);
 
-                await _hubContext.Clients.Client(connectionId).SendAsync("NewTcpConnection", tcpConnection, cancellationToken: cancellationToken);
+                await hubContext.Clients.Client(connectionId).SendAsync("NewTcpConnection", tcpConnection, cancellationToken: cancellationToken);
             }
         }
         catch (OperationCanceledException)
@@ -220,13 +215,13 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An error has occurred while listening for incoming TCP connections: {Message}", ex.Message);
+            logger.LogError(ex, "An error has occurred while listening for incoming TCP connections: {Message}", ex.Message);
 
-            await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+            await tcpClientStore.DisposeTcpListenerAsync(clientId);
 
-            if (_tunnelStore.Connections.TryGetValue(clientId, out var connectionId))
+            if (tunnelStore.Connections.TryGetValue(clientId, out var connectionId))
             {
-                await _hubContext.Clients.Client(connectionId).SendAsync("TcpTunnelClosed", ex.Message, cancellationToken: cancellationToken);
+                await hubContext.Clients.Client(connectionId).SendAsync("TcpTunnelClosed", ex.Message, cancellationToken: cancellationToken);
             }
         }
     }

@@ -6,7 +6,4 @@ public static class SseAppExtensions
     {
         app.UseMiddleware<SseTunnelMiddleware>();
     }
-
-    [Obsolete("Use UseSseTunneling instead.")]
-    public static void UsSseTunneling(this WebApplication app) => app.UseSseTunneling();
 }
