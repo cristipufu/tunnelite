@@ -32,8 +32,9 @@ public class Program
         var name = new Option<string>("--name", () => "default", "Desktop profile name; the same profile keeps the same address.");
         var identity = new Option<string?>("--identity-file", "Desktop profile file (identity and paired devices).");
         var qr = new Option<bool>("--qr", "Display a QR code for an ordinary public tunnel.");
+        var insecureLocal = new Option<bool>("--insecure-local", "Allow an untrusted HTTPS certificate only on a loopback local server.");
         command.AddArgument(local);
-        foreach (var option in new Option[] { relay, log, pair, name, identity, qr }) command.AddOption(option);
+        foreach (var option in new Option[] { relay, log, pair, name, identity, qr, insecureLocal }) command.AddOption(option);
         command.SetHandler(async (InvocationContext invocation) =>
         {
             try
@@ -41,7 +42,7 @@ public class Program
                 await RunAsync(invocation.ParseResult.GetValueForArgument(local), invocation.ParseResult.GetValueForOption(relay)!,
                     invocation.ParseResult.GetValueForOption(log), pairedMode || invocation.ParseResult.GetValueForOption(pair),
                     invocation.ParseResult.GetValueForOption(name)!, invocation.ParseResult.GetValueForOption(identity),
-                    invocation.ParseResult.GetValueForOption(qr), invocation.GetCancellationToken());
+                    invocation.ParseResult.GetValueForOption(qr), invocation.ParseResult.GetValueForOption(insecureLocal), invocation.GetCancellationToken());
             }
             catch (OperationCanceledException) { }
             catch (Exception exception)
@@ -53,7 +54,7 @@ public class Program
     }
 
     private static async Task RunAsync(string localUrl, string publicUrl, LogLevel? logLevel, bool pair,
-        string profileName, string? identityFile, bool qr, CancellationToken cancellationToken)
+        string profileName, string? identityFile, bool qr, bool insecureLocal, CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(localUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https" or "tcp"))
             throw new ArgumentException("Use an absolute http://, https:// or tcp:// local URL.");
@@ -71,7 +72,7 @@ public class Program
             {
                 status.Spinner(Spinner.Known.Dots);
                 if (uri.Scheme == "tcp") await InitializeTcpTunnel(localUrl, publicUrl, uri, logLevel, status);
-                else await InitializeHttpTunnel(localUrl, publicUrl, logLevel, status, access, cancellationToken);
+                else await InitializeHttpTunnel(localUrl, publicUrl, logLevel, status, access, insecureLocal, cancellationToken);
             });
             await RunMainLoop(localUrl, access, qr, cancellationToken);
         }
@@ -104,11 +105,12 @@ public class Program
         ctx.Status("TCP tunnel established.");
     }
 
-    private static async Task InitializeHttpTunnel(string localUrl, string publicUrl, LogLevel? logLevel, StatusContext ctx, PairedAccess? access, CancellationToken cancellationToken)
+    private static async Task InitializeHttpTunnel(string localUrl, string publicUrl, LogLevel? logLevel, StatusContext ctx, PairedAccess? access, bool insecureLocal, CancellationToken cancellationToken)
     {
         var httpTunnel = new HttpTunnelRequest
         {
             Access = access!,
+            AllowUntrustedLocalCertificates = insecureLocal ? true : null,
             ClientId = ClientId,
             LocalUrl = localUrl,
             PublicUrl = publicUrl,

@@ -9,6 +9,7 @@ public sealed class TunneliteOptions
     public string? LocalUrl { get; set; }
     public PairedAccess? Access { get; set; }
     public TunnelIdentity? Identity { get; set; }
+    public bool? AllowUntrustedLocalCertificates { get; set; }
     /// <summary>Called after registration and after reconnects, when the endpoint URL is ready.</summary>
     public Func<HttpTunnelClient, CancellationToken, Task>? OnReady { get; set; }
 }

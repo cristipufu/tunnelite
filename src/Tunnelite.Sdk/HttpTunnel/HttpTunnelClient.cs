@@ -33,7 +33,6 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
     private static readonly HttpClientHandler LocalHttpClientHandler = new()
     {
-        ServerCertificateCustomValidationCallback = (message, cert, chain, sslPolicyErrors) => true,
         UseCookies = false,
         AllowAutoRedirect = false,
     };
@@ -42,6 +41,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         Timeout = Timeout.InfiniteTimeSpan,
     };
     private static readonly HttpClient LocalHttpClient = new(LocalHttpClientHandler);
+    private readonly HttpClient _localHttpClient;
 
     private HttpTunnelResponse? _currentTunnel = null;
     private readonly HttpTunnelRequest Tunnel;
@@ -52,6 +52,25 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
     public HttpTunnelClient(HttpTunnelRequest tunnel, LogLevel? logLevel)
     {
+        ArgumentNullException.ThrowIfNull(tunnel);
+        if (!Uri.TryCreate(tunnel.LocalUrl, UriKind.Absolute, out var local)
+            || local.Scheme is not ("http" or "https") || local.Query.Length > 0 || local.Fragment.Length > 0)
+            throw new ArgumentException("The local URL must be an HTTP(S) base URL without a query or fragment.", nameof(tunnel));
+        if (!Uri.TryCreate(tunnel.PublicUrl, UriKind.Absolute, out var relayUri)
+            || relayUri.Scheme is not ("http" or "https") || relayUri.Query.Length > 0 || relayUri.Fragment.Length > 0)
+            throw new ArgumentException("The relay must be an HTTP(S) base URL without a query or fragment.", nameof(tunnel));
+        if (tunnel.AllowUntrustedLocalCertificates == true && !local.IsLoopback)
+            throw new ArgumentException("Untrusted local certificates are allowed only on loopback.", nameof(tunnel));
+        tunnel.LocalUrl = local.AbsoluteUri.TrimEnd('/');
+        tunnel.PublicUrl = relayUri.AbsoluteUri.TrimEnd('/');
+        tunnel.ClientId ??= Guid.NewGuid();
+        if (tunnel.ClientId == Guid.Empty) throw new ArgumentException("A client id cannot be empty.", nameof(tunnel));
+        var allowUntrusted = tunnel.AllowUntrustedLocalCertificates ?? (tunnel.Access is null);
+        _localHttpClient = allowUntrusted ? new HttpClient(new HttpClientHandler
+        {
+            UseCookies = false, AllowAutoRedirect = false,
+            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+        }) : LocalHttpClient;
         Tunnel = tunnel;
         if (tunnel.Access is not null)
         {
@@ -144,6 +163,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         await _lifetime.CancelAsync();
         await Connection.DisposeAsync();
         await Task.WhenAll(_requests.Values);
+        if (!ReferenceEquals(_localHttpClient, LocalHttpClient)) _localHttpClient.Dispose();
         _lifetime.Dispose();
         GC.SuppressFinalize(this);
     }
@@ -236,7 +256,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 revoked = decision.Revoked;
             }
             using var active = CancellationTokenSource.CreateLinkedTokenSource(revoked, _lifetime.Token);
-            using var localResponse = await LocalHttpClient.SendAsync(localRequest, HttpCompletionOption.ResponseHeadersRead, active.Token);
+            using var localResponse = await _localHttpClient.SendAsync(localRequest, HttpCompletionOption.ResponseHeadersRead, active.Token);
             await ForwardResponseAsync(requestUrl, localResponse, active.Token);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
@@ -301,6 +321,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         try
         {
             using var webSocket = new ClientWebSocket();
+            if (Tunnel.AllowUntrustedLocalCertificates == true) webSocket.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
 
             // Ask the local app for the same subprotocols the public client asked for (e.g. Vite's "vite-hmr").
             foreach (var subProtocol in wsConnection.SubProtocols ?? [])
@@ -429,7 +450,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(sseConnection.ContentType);
             }
 
-            using var response = await LocalHttpClient.SendAsync(
+            using var response = await _localHttpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cts.Token);

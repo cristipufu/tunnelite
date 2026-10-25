@@ -101,6 +101,7 @@ This command returns a public URL with an auto-generated subdomain.
 | `<localUrl>` | The local URL to tunnel to. Use `http://` or `https://` for web applications, or `tcp://host:port` for raw TCP (self-hosted servers only). |
 | `--publicUrl <url>` | The tunnel server to connect to. Defaults to `https://tunnelite.com`. |
 | `--log <level>` | Client log verbosity: `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical`. |
+| `--insecure-local` | Explicitly allow an untrusted HTTPS development certificate on a loopback target. Relay certificates are always verified. |
 
 While the tunnel is running, press `c` to clear the screen and `q` to quit.
 
@@ -268,6 +269,8 @@ builder.Services.AddTunnelite(options =>
 `OnReady` runs after registration and reconnects. Render its URL using the host application's QR library. `access.State.Devices` lists enrolled browsers; `await access.RevokeAsync(deviceId)` revokes one. The asynchronous save callback runs before enrollment or revocation is acknowledged. `PairedAccessState` contains token hashes, not browser tokens. The host service starts after the local HTTP server and disposes the tunnel during shutdown. `PublicUrl` and `LocalUrl` can be configured in the same options.
 
 Applications can also instantiate `HttpTunnelClient` directly with `HttpTunnelRequest.Access`. Use `await using` for the client and `ConnectAsync(cancellationToken)` for cancellable startup. Keep the local web server bound to loopback, and allow the public tunnel hostname in any host validation performed by your app.
+
+Ordinary HTTP tunnels retain their existing acceptance of untrusted development certificates. The new paired mode verifies local HTTPS certificates by default. For a loopback development server in paired mode, explicitly set `HttpTunnelRequest.AllowUntrustedLocalCertificates`, the matching hosted-service option, or the CLI's `--insecure-local` flag. SDK callers can explicitly set the option to `false` to require validation in ordinary tunnels too. An explicit bypass cannot disable relay TLS validation or bypass validation for a remote target.
 
 ## 🧪 Tests
 

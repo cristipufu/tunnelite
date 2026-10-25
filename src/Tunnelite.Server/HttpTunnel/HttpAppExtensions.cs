@@ -418,7 +418,7 @@ public static class HttpAppExtensions
     static async Task ServerErrorAsync(WebApplication app, HttpContext context)
     {
         var filePath = Path.Combine(app.Environment.WebRootPath, "500.html");
-        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        context.Response.StatusCode = StatusCodes.Status502BadGateway;
         context.Response.ContentType = "text/html";
         await context.Response.SendFileAsync(filePath);
     }

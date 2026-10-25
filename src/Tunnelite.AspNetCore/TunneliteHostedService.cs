@@ -22,6 +22,7 @@ internal sealed class TunneliteHostedService(IServer server, IHostApplicationLif
         {
             ClientId = Guid.NewGuid(), PublicUrl = options.PublicUrl, LocalUrl = uri.Uri.ToString().TrimEnd('/'),
             Access = options.Access!, OwnerToken = options.Identity?.Secret!,
+            AllowUntrustedLocalCertificates = options.AllowUntrustedLocalCertificates,
         }, null);
         client.LogException += exception => logger.LogError(exception, "Tunnel connection failed.");
         client.Connected += async () =>

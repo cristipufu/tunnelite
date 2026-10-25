@@ -3,6 +3,9 @@ namespace Tunnelite.Sdk;
 
 public class HttpTunnelRequest
 {
+    /// <summary>Override local certificate policy. Null preserves legacy HTTP tunnel behavior and verifies certificates in paired mode. Explicit bypass is loopback-only. Relay TLS is always verified.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool? AllowUntrustedLocalCertificates { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public PairedAccess Access { get; set; }
     public bool RequirePairing => Access is not null;
