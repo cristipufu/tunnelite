@@ -13,7 +13,7 @@ internal sealed record TerminalQr(string Url, string Graphic, int Width, int Hei
         var graphic = (unicode ? code.GetGraphicSmall(invert: true)
             : code.GetGraphic(1, darkColorString: "##", whiteSpaceString: "  ")).TrimEnd('\r', '\n');
         var lines = graphic.Split('\n');
-        if (unicode && lines.Length > 18 && string.IsNullOrWhiteSpace(lines[^1]))
+        if (unicode && lines.Length > 1 && string.IsNullOrWhiteSpace(lines[^1]))
         {
             lines = lines[..^1];
             graphic = string.Join('\n', lines);

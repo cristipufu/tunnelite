@@ -137,6 +137,9 @@ public class PairingTests(PairingHost host) : IClassFixture<PairingHost>
         using var page = await browser.GetAsync("/_tunnelite/pair");
         Assert.Equal(HttpStatusCode.OK, page.StatusCode);
         Assert.Contains("no-store", page.Headers.CacheControl!.ToString());
+        var html = await page.Content.ReadAsStringAsync();
+        Assert.Contains("data-state=\"loading\"", html);
+        Assert.Contains("tunnelite", html);
         var script = await browser.GetStringAsync("/_tunnelite/pair.js");
         Assert.True(script.IndexOf("history.replaceState", StringComparison.Ordinal) < script.IndexOf("fetch(", StringComparison.Ordinal));
         using var request = new HttpRequestMessage(HttpMethod.Post, "/_tunnelite/pair") { Content = JsonContent.Create(new { code = Code() }) };

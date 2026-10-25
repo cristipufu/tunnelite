@@ -158,7 +158,12 @@ public class CliDisplayTests
         display.SetView(new("Connected", publicUrl, qr, PairingUrl: pairingUrl));
         console.Write(display.Render());
         var rendered = output.ToString();
+        Assert.Contains("CONNECTION", rendered);
         Assert.Contains("Scan to pair this browser", rendered);
         Assert.DoesNotContain("Resize the terminal", rendered);
+        if (height >= 26)
+        {
+            Assert.Contains(new string('▀', qr.Width), rendered);
+        }
     }
 }

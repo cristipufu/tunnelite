@@ -10,6 +10,7 @@ internal static class CliTheme
     internal static readonly Style Border = new(new Color(91, 111, 139));
     internal static readonly Style Key = new(decoration: Decoration.Bold | Decoration.Invert);
     internal static readonly Style QrInk = new(new Color(0, 0, 0), new Color(255, 255, 255));
+    internal static readonly Style QrBorder = new(new Color(255, 255, 255));
     internal static readonly Style Error = new(Color.Red);
 
     private static readonly string[] UnicodeSpinner = ["⠋ ", "⠙ ", "⠹ ", "⠸ ", "⠼ ", "⠴ ", "⠦ ", "⠧ ", "⠇ ", "⠏ "];
@@ -75,9 +76,9 @@ internal static class CliDashboardRenderer
         var margin = screenWidth >= 100 ? 4 : screenWidth >= 60 ? 2 : screenWidth >= 30 ? 1 : 0;
         var usableWidth = Math.Max(1, screenWidth - margin * 2);
         var width = Math.Min(MaxWidth, usableWidth);
-        if (view.Qr is { } q && width < q.Width + 30 && screenWidth >= q.Width)
+        if (view.Qr is { } q && width < q.Width + 34 && screenWidth >= q.Width + 2)
         {
-            margin = Math.Min(margin, Math.Max(0, (screenWidth - (q.Width + 30)) / 2));
+            margin = Math.Min(margin, Math.Max(0, (screenWidth - (q.Width + 34)) / 2));
             usableWidth = Math.Max(1, screenWidth - margin * 2);
             width = Math.Min(MaxWidth, usableWidth);
         }
@@ -105,10 +106,11 @@ internal static class CliDashboardRenderer
             return endedWithBreak ? Math.Max(1, lines - 1) : lines;
         }
 
+        var panelChromeWidth = width >= 47 ? 4 : width >= 24 ? 2 : 0;
         var qrAvailable = view.Status == "Connected"
             && view.Panel == DevicePanel.Closed
             && view.Qr is { } candidate
-            && candidate.Width <= width
+            && candidate.Width <= width - panelChromeWidth
             && (view.QrExpires is null || view.QrExpires > DateTimeOffset.UtcNow);
         var spacious = screenHeight >= 30 && width >= 64;
         if (qrAvailable && spacious && view.Qr!.Width > width - 6)
@@ -116,29 +118,33 @@ internal static class CliDashboardRenderer
             spacious = false;
         }
 
-        var frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, animationFrame, MeasureHeight);
+        var frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
         if (MeasureHeight(frame, width) > availableHeight && spacious)
         {
             spacious = false;
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, animationFrame, MeasureHeight);
-        }
-        if (qrAvailable && MeasureHeight(frame, width) > availableHeight && top > 0)
-        {
-            top = 0;
-            availableHeight = Math.Max(1, screenHeight - 1);
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, animationFrame, MeasureHeight);
-        }
-        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
-        {
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Compact, animationFrame, MeasureHeight);
-        }
-        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
-        {
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Minimal, animationFrame, MeasureHeight);
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
         }
         if (qrAvailable && MeasureHeight(frame, width) > availableHeight)
         {
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, showQr: false, BodyDensity.Full, animationFrame, MeasureHeight);
+            top = 0;
+            availableHeight = screenHeight >= 24 ? screenHeight : Math.Max(1, screenHeight - 1);
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
+        }
+        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        {
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Compact, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
+        }
+        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        {
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Minimal, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
+        }
+        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        {
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Minimal, mergeHeaderIntoPanel: true, animationFrame, MeasureHeight);
+        }
+        if (qrAvailable && MeasureHeight(frame, width) > availableHeight)
+        {
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, showQr: false, BodyDensity.Full, mergeHeaderIntoPanel: false, animationFrame, MeasureHeight);
         }
 
         // Center the surface as a whole, preserving left alignment within it.
@@ -158,27 +164,41 @@ internal static class CliDashboardRenderer
         bool spacious,
         bool showQr,
         BodyDensity density,
+        bool mergeHeaderIntoPanel,
         int animationFrame,
         Func<IRenderable, int, int> measureHeight)
     {
         var unicode = console.Profile.Capabilities.Unicode;
-        var innerWidth = Math.Max(1, width - (spacious ? 6 : 0));
+        var showPanel = width >= 24 && screenHeight >= 14 && (showQr || spacious || view.Panel != DevicePanel.Closed || screenHeight >= 20);
+        var padX = !showPanel ? 0 : spacious ? 2 : width >= 47 ? 1 : 0;
+        var padY = spacious ? 1 : 0;
+        var innerWidth = Math.Max(1, width - (showPanel ? 2 + padX * 2 : 0));
+        var chromeLines = (showPanel ? 2 + padY * 2 : 0) + (mergeHeaderIntoPanel && showPanel ? 0 : 1) + 1;
         var body = view.Panel != DevicePanel.Closed
             ? Devices(view, innerWidth, availableHeight)
-            : BuildConnectionBody(localUrl, paired, view, activity, innerWidth, availableHeight, screenHeight < 20, spacious, showQr, density, measureHeight);
+            : BuildConnectionBody(localUrl, paired, view, activity, innerWidth, availableHeight, chromeLines, screenHeight < 20, spacious, showQr, unicode, mergeHeaderIntoPanel, density, measureHeight);
 
-        IRenderable card = spacious ? new Panel(body)
+        var panelTitle = mergeHeaderIntoPanel && showPanel
+            ? $" {CliTheme.BrandPrefix(unicode)}tunnelite ·{CliTheme.PanelTitle(view.Panel)}· {CliTheme.StatusPrefix(view.Status, unicode, animationFrame)}{view.Status} "
+            : CliTheme.PanelTitle(view.Panel);
+
+        IRenderable card = showPanel ? new Panel(body)
         {
             Border = unicode ? BoxBorder.Rounded : BoxBorder.Ascii,
             BorderStyle = CliTheme.Border,
-            Padding = new Padding(2, 1),
+            Padding = new Padding(padX, padY),
             Width = width,
             Expand = true,
-            Header = new PanelHeader(CliTheme.PanelTitle(view.Panel)),
+            Header = new PanelHeader(panelTitle),
         } : body;
 
-        var header = Header(view, width, spacious, paired, unicode, animationFrame);
         var footer = new Padder(Legend(view.Panel, paired, width, unicode), new Padding(spacious ? 2 : 0, 0));
+        if (mergeHeaderIntoPanel && showPanel)
+        {
+            return new Rows(card, footer);
+        }
+
+        var header = Header(view, width, spacious, paired, unicode, animationFrame);
         return !spacious || screenHeight < 26
             ? new Rows(header, card, footer)
             : new Rows(header, Text.Empty, card, Text.Empty, footer);
@@ -191,24 +211,27 @@ internal static class CliDashboardRenderer
         ActivitySnapshot activity,
         int innerWidth,
         int availableHeight,
+        int chromeLines,
         bool minimal,
         bool spacious,
         bool showQr,
+        bool unicode,
+        bool mergeHeaderIntoPanel,
         BodyDensity density,
         Func<IRenderable, int, int> measureHeight)
     {
         var qr = showQr ? view.Qr : null;
         var gap = spacious ? 4 : 2;
-        var minDetails = spacious ? 40 : density == BodyDensity.Full ? 28 : 18;
+        var minDetails = spacious ? 40 : density == BodyDensity.Full ? 28 : 25;
         IRenderable body;
 
         if (qr is not null && qr.Width + gap + minDetails <= innerWidth)
         {
-            var inlineCaption = density == BodyDensity.Minimal
-                || (density == BodyDensity.Compact && availableHeight < QrHeight(qr, spacious: false, showCaption: true) + 2);
-            var qrContent = Qr(qr, paired, spacious, showCaption: !inlineCaption);
+            var inlineCaption = density != BodyDensity.Full;
+            var showBottomBorder = unicode && (availableHeight >= QrHeight(qr, spacious, showCaption: !inlineCaption, showBottomBorder: true) + chromeLines || !mergeHeaderIntoPanel);
+            var qrContent = Qr(qr, paired, spacious, unicode, showCaption: !inlineCaption, showBottomBorder: showBottomBorder);
             var detailsWidth = innerWidth - qr.Width - gap;
-            var qrLines = QrHeight(qr, spacious, showCaption: !inlineCaption);
+            var qrLines = QrHeight(qr, spacious, showCaption: !inlineCaption, showBottomBorder: showBottomBorder);
             var details = Details(localUrl, paired, view, activity, detailsWidth, spacious,
                 minimal || density == BodyDensity.Minimal, qrLines, measureHeight,
                 inlineCaption ? ScanCaption(paired) : null, omitPairingLink: density == BodyDensity.Minimal);
@@ -226,17 +249,18 @@ internal static class CliDashboardRenderer
         }
         else if (qr is not null && density == BodyDensity.Compact)
         {
-            body = new Rows(CompactStackedDetails(localUrl, paired, view, activity), Qr(qr, paired, spacious: false, showCaption: true));
+            body = new Rows(CompactStackedDetails(localUrl, paired, view, activity), Qr(qr, paired, spacious: false, unicode, showCaption: true, showBottomBorder: unicode));
         }
         else if (qr is not null && density == BodyDensity.Minimal)
         {
-            var singleLine = availableHeight <= QrHeight(qr, spacious: false, showCaption: false) + 3;
-            body = new Rows(MinimalStackedDetails(localUrl, paired, view, activity, singleLine), Qr(qr, paired, spacious: false, showCaption: false));
+            var showBottomBorder = unicode && (availableHeight >= QrHeight(qr, spacious: false, showCaption: false, showBottomBorder: true) + chromeLines + 1 || !mergeHeaderIntoPanel);
+            var singleLine = availableHeight <= QrHeight(qr, spacious: false, showCaption: false, showBottomBorder: showBottomBorder) + chromeLines + 1;
+            body = new Rows(MinimalStackedDetails(localUrl, paired, view, activity, singleLine), Qr(qr, paired, spacious: false, unicode, showCaption: false, showBottomBorder: showBottomBorder));
         }
         else
         {
             var details = Details(localUrl, paired, view, activity, innerWidth, spacious, minimal, targetHeight: 0, measureHeight);
-            body = qr is not null ? new Rows(details, Text.Empty, Qr(qr, paired, spacious, showCaption: true)) : details;
+            body = qr is not null ? new Rows(details, Text.Empty, Qr(qr, paired, spacious, unicode, showCaption: true, showBottomBorder: unicode)) : details;
         }
 
         if (!showQr && view.Qr is not null && (view.QrExpires is null || view.QrExpires > DateTimeOffset.UtcNow))
@@ -247,10 +271,10 @@ internal static class CliDashboardRenderer
         return body;
     }
 
-    private static int QrHeight(TerminalQr qr, bool spacious, bool showCaption = true)
+    private static int QrHeight(TerminalQr qr, bool spacious, bool showCaption = true, bool showBottomBorder = false)
     {
         var graphicLines = qr.Height > 0 ? qr.Height : qr.Graphic.Count(c => c == '\n') + 1;
-        return graphicLines + (spacious ? 4 : showCaption ? 1 : 0);
+        return graphicLines + (showBottomBorder ? 1 : 0) + (spacious ? 4 : showCaption ? 1 : 0);
     }
 
     private sealed class FixedWidth(IRenderable content, int width) : IRenderable
@@ -363,7 +387,7 @@ internal static class CliDashboardRenderer
             decoration: primary ? Decoration.Bold : Decoration.None, link: link)).Fold();
     }
 
-    private static IRenderable Qr(TerminalQr qr, bool paired, bool spacious, bool showCaption = true)
+    private static IRenderable Qr(TerminalQr qr, bool paired, bool spacious, bool unicode, bool showCaption = true, bool showBottomBorder = true)
     {
         var rows = new List<IRenderable>();
         if (spacious)
@@ -371,7 +395,11 @@ internal static class CliDashboardRenderer
             rows.Add(Align.Center(new Text(paired ? "PAIR YOUR BROWSER" : "OPEN ON YOUR PHONE", CliTheme.Strong)));
             rows.Add(Text.Empty);
         }
-        rows.Add(new Text(qr.Graphic, CliTheme.QrInk));
+        rows.Add(new Text(unicode ? qr.Graphic.Replace(' ', '\u00A0') : qr.Graphic, CliTheme.QrInk));
+        if (unicode && showBottomBorder)
+        {
+            rows.Add(new Text(new string('▀', qr.Width), CliTheme.QrBorder));
+        }
         if (spacious) rows.Add(Text.Empty);
         if (showCaption)
         {
