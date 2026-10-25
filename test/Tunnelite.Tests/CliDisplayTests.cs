@@ -142,10 +142,16 @@ public class CliDisplayTests
         Assert.NotEqual("* ", CliTheme.StatusPrefix("Reconnecting", unicode: false, animationFrame: 1));
     }
 
-    [Fact]
-    public void Paired_qr_fits_in_a_standard_26_row_terminal()
+    [Theory]
+    [InlineData(100, 26)]
+    [InlineData(80, 24)]
+    [InlineData(66, 25)]
+    [InlineData(52, 29)]
+    [InlineData(50, 26)]
+    [InlineData(45, 25)]
+    public void Paired_qr_fits_across_smaller_and_narrower_terminal_resolutions(int width, int height)
     {
-        var (display, console, output) = Create(100, 26, paired: true);
+        var (display, console, output) = Create(width, height, paired: true);
         var publicUrl = "https://p-8f3c1cd768f8c84f489d7f7da3a82d35.tunnelite.com";
         var pairingUrl = publicUrl + "/_tunnelite/pair#code=" + new string('a', 43);
         var qr = TerminalQr.Create(pairingUrl, unicode: true);

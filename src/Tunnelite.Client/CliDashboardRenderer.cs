@@ -55,6 +55,13 @@ internal static class CliDashboardRenderer
 {
     private const int MaxWidth = 112;
 
+    private enum BodyDensity
+    {
+        Full,
+        Compact,
+        Minimal,
+    }
+
     internal static IRenderable Render(
         IAnsiConsole console,
         string localUrl,
@@ -68,6 +75,13 @@ internal static class CliDashboardRenderer
         var margin = screenWidth >= 100 ? 4 : screenWidth >= 60 ? 2 : screenWidth >= 30 ? 1 : 0;
         var usableWidth = Math.Max(1, screenWidth - margin * 2);
         var width = Math.Min(MaxWidth, usableWidth);
+        if (view.Qr is { } q && width < q.Width + 30 && screenWidth >= q.Width)
+        {
+            margin = Math.Min(margin, Math.Max(0, (screenWidth - (q.Width + 30)) / 2));
+            usableWidth = Math.Max(1, screenWidth - margin * 2);
+            width = Math.Min(MaxWidth, usableWidth);
+        }
+
         var top = screenHeight >= 32 ? 2 : screenHeight >= 18 ? 1 : 0;
         var availableHeight = Math.Max(1, screenHeight - top - 1);
         var options = new RenderOptions(console.Profile.Capabilities, new Size(width, availableHeight));
@@ -102,21 +116,29 @@ internal static class CliDashboardRenderer
             spacious = false;
         }
 
-        var frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, animationFrame, MeasureHeight);
+        var frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, animationFrame, MeasureHeight);
         if (MeasureHeight(frame, width) > availableHeight && spacious)
         {
             spacious = false;
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, animationFrame, MeasureHeight);
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, animationFrame, MeasureHeight);
         }
         if (qrAvailable && MeasureHeight(frame, width) > availableHeight && top > 0)
         {
             top = 0;
             availableHeight = Math.Max(1, screenHeight - 1);
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, animationFrame, MeasureHeight);
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Full, animationFrame, MeasureHeight);
+        }
+        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        {
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Compact, animationFrame, MeasureHeight);
+        }
+        if (qrAvailable && screenHeight >= 20 && MeasureHeight(frame, width) > availableHeight)
+        {
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, qrAvailable, BodyDensity.Minimal, animationFrame, MeasureHeight);
         }
         if (qrAvailable && MeasureHeight(frame, width) > availableHeight)
         {
-            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, showQr: false, animationFrame, MeasureHeight);
+            frame = BuildFrame(console, localUrl, paired, view, activity, width, screenHeight, availableHeight, spacious, showQr: false, BodyDensity.Full, animationFrame, MeasureHeight);
         }
 
         // Center the surface as a whole, preserving left alignment within it.
@@ -135,6 +157,7 @@ internal static class CliDashboardRenderer
         int availableHeight,
         bool spacious,
         bool showQr,
+        BodyDensity density,
         int animationFrame,
         Func<IRenderable, int, int> measureHeight)
     {
@@ -142,7 +165,7 @@ internal static class CliDashboardRenderer
         var innerWidth = Math.Max(1, width - (spacious ? 6 : 0));
         var body = view.Panel != DevicePanel.Closed
             ? Devices(view, innerWidth, availableHeight)
-            : BuildConnectionBody(localUrl, paired, view, activity, innerWidth, screenHeight < 20, spacious, showQr, measureHeight);
+            : BuildConnectionBody(localUrl, paired, view, activity, innerWidth, availableHeight, screenHeight < 20, spacious, showQr, density, measureHeight);
 
         IRenderable card = spacious ? new Panel(body)
         {
@@ -167,31 +190,53 @@ internal static class CliDashboardRenderer
         CliView view,
         ActivitySnapshot activity,
         int innerWidth,
+        int availableHeight,
         bool minimal,
         bool spacious,
         bool showQr,
+        BodyDensity density,
         Func<IRenderable, int, int> measureHeight)
     {
         var qr = showQr ? view.Qr : null;
         var gap = spacious ? 4 : 2;
-        var minDetails = spacious ? 40 : 28;
+        var minDetails = spacious ? 40 : density == BodyDensity.Full ? 28 : 18;
         IRenderable body;
 
         if (qr is not null && qr.Width + gap + minDetails <= innerWidth)
         {
-            var qrContent = Qr(qr, paired, spacious);
+            var inlineCaption = density == BodyDensity.Minimal
+                || (density == BodyDensity.Compact && availableHeight < QrHeight(qr, spacious: false, showCaption: true) + 2);
+            var qrContent = Qr(qr, paired, spacious, showCaption: !inlineCaption);
             var detailsWidth = innerWidth - qr.Width - gap;
-            var details = Details(localUrl, paired, view, activity, detailsWidth, spacious, minimal, QrHeight(qr, spacious), measureHeight);
+            var qrLines = QrHeight(qr, spacious, showCaption: !inlineCaption);
+            var details = Details(localUrl, paired, view, activity, detailsWidth, spacious,
+                minimal || density == BodyDensity.Minimal, qrLines, measureHeight,
+                inlineCaption ? ScanCaption(paired) : null, omitPairingLink: density == BodyDensity.Minimal);
+            if (density == BodyDensity.Compact && measureHeight(details, detailsWidth) > qrLines)
+            {
+                details = Details(localUrl, paired, view, activity, detailsWidth, spacious,
+                    minimal: true, qrLines, measureHeight, inlineCaption ? ScanCaption(paired) : null, omitPairingLink: true);
+            }
+
             var columns = new Grid();
             columns.AddColumn(new GridColumn { Width = detailsWidth, Padding = new Padding(0, 0, gap, 0) });
             columns.AddColumn(new GridColumn { Width = qr.Width, Padding = new Padding(0) });
             columns.AddRow(details, qrContent);
             body = columns;
         }
+        else if (qr is not null && density == BodyDensity.Compact)
+        {
+            body = new Rows(CompactStackedDetails(localUrl, paired, view, activity), Qr(qr, paired, spacious: false, showCaption: true));
+        }
+        else if (qr is not null && density == BodyDensity.Minimal)
+        {
+            var singleLine = availableHeight <= QrHeight(qr, spacious: false, showCaption: false) + 3;
+            body = new Rows(MinimalStackedDetails(localUrl, paired, view, activity, singleLine), Qr(qr, paired, spacious: false, showCaption: false));
+        }
         else
         {
             var details = Details(localUrl, paired, view, activity, innerWidth, spacious, minimal, targetHeight: 0, measureHeight);
-            body = qr is not null ? new Rows(details, Text.Empty, Qr(qr, paired, spacious)) : details;
+            body = qr is not null ? new Rows(details, Text.Empty, Qr(qr, paired, spacious, showCaption: true)) : details;
         }
 
         if (!showQr && view.Qr is not null && (view.QrExpires is null || view.QrExpires > DateTimeOffset.UtcNow))
@@ -202,10 +247,10 @@ internal static class CliDashboardRenderer
         return body;
     }
 
-    private static int QrHeight(TerminalQr qr, bool spacious)
+    private static int QrHeight(TerminalQr qr, bool spacious, bool showCaption = true)
     {
         var graphicLines = qr.Height > 0 ? qr.Height : qr.Graphic.Count(c => c == '\n') + 1;
-        return graphicLines + (spacious ? 4 : 1);
+        return graphicLines + (spacious ? 4 : showCaption ? 1 : 0);
     }
 
     private sealed class FixedWidth(IRenderable content, int width) : IRenderable
@@ -227,8 +272,12 @@ internal static class CliDashboardRenderer
         return header;
     }
 
+    private static string ScanCaption(bool paired) =>
+        paired ? "Scan to pair this browser" : "Scan to open on your phone";
+
     private static IRenderable Details(string localUrl, bool paired, CliView view, ActivitySnapshot activity,
-        int width, bool spacious, bool minimal, int targetHeight, Func<IRenderable, int, int> height)
+        int width, bool spacious, bool minimal, int targetHeight, Func<IRenderable, int, int> height,
+        string? inlineCaption = null, bool omitPairingLink = false)
     {
         var connection = new List<IRenderable>();
         if (!minimal) connection.Add(new Text("OPEN IN YOUR BROWSER", CliTheme.Strong));
@@ -237,10 +286,10 @@ internal static class CliDashboardRenderer
         if (spacious) connection.Add(Text.Empty);
         if (!minimal) connection.Add(new Text("FORWARDS TO", CliTheme.Strong));
         connection.Add(Address(localUrl));
-        if (paired && view.Status == "Connected" && view.PairingUrl is not null)
+        if (paired && view.Status == "Connected" && view.PairingUrl is not null && !omitPairingLink)
         {
             if (spacious) connection.Add(Text.Empty);
-            connection.Add(new Text("PAIRING LINK", CliTheme.Strong));
+            if (!minimal) connection.Add(new Text("PAIRING LINK", CliTheme.Strong));
             connection.Add(Address(view.PairingUrl));
         }
         if (paired && view.Status == "Connected" && view.QrExpires is { } expires)
@@ -248,6 +297,10 @@ internal static class CliDashboardRenderer
             var remaining = expires - DateTimeOffset.UtcNow;
             connection.Add(new Text(remaining > TimeSpan.Zero ? $"One browser · code expires in {remaining:mm\\:ss}"
                 : "Pairing code expired · p for a new QR").Ellipsis());
+        }
+        if (inlineCaption is not null)
+        {
+            connection.Add(new Text(inlineCaption));
         }
 
         var traffic = new List<IRenderable>();
@@ -263,7 +316,7 @@ internal static class CliDashboardRenderer
             traffic.Add(stats);
             traffic.Add(Text.Empty);
         }
-        else traffic.Add(new Text($"Requests {activity.Requests}   Proxy errors {activity.Failures}"));
+        else traffic.Add(new Text($"Requests {activity.Requests}   Proxy errors {activity.Failures}").Ellipsis());
         if (!minimal) traffic.Add(new Text("LATEST REQUEST", CliTheme.Strong));
         traffic.Add(new Text(activity.Latest).Ellipsis());
         if (activity.Errors.Length > 0 && spacious) traffic.Add(new Text("RECENT ERRORS", CliTheme.Error));
@@ -273,9 +326,34 @@ internal static class CliDashboardRenderer
 
         var top = new Rows(connection);
         var bottom = new Rows(traffic);
-        var spacer = Math.Max(spacious ? 2 : 1, targetHeight - height(top, width) - height(bottom, width));
+        var minSpacer = spacious ? 2 : inlineCaption is not null ? 0 : 1;
+        var spacer = Math.Max(minSpacer, targetHeight - height(top, width) - height(bottom, width));
         return new Rows(new[] { top }.Cast<IRenderable>().Concat(Enumerable.Repeat<IRenderable>(Text.Empty, spacer)).Append(bottom));
     }
+
+    private static IRenderable CompactStackedDetails(string localUrl, bool paired, CliView view, ActivitySnapshot activity)
+    {
+        var rows = new List<IRenderable>
+        {
+            Address(view.PublicUrl ?? "Waiting for the relay...", primary: true),
+            new Text($"{TerminalText.Clean(localUrl)} · {activity.Requests} req / {activity.Failures} err").Ellipsis(),
+        };
+        if (paired && view.Status == "Connected" && view.QrExpires is { } expires)
+        {
+            var remaining = expires - DateTimeOffset.UtcNow;
+            rows.Add(new Text(remaining > TimeSpan.Zero ? $"One browser · code expires in {remaining:mm\\:ss}"
+                : "Pairing code expired · p for a new QR").Ellipsis());
+        }
+        if (view.Notice.Length > 0) rows.Add(new Text(view.Notice).Ellipsis());
+        return new Rows(rows);
+    }
+
+    private static IRenderable MinimalStackedDetails(string localUrl, bool paired, CliView view, ActivitySnapshot activity, bool singleLine) =>
+        singleLine
+            ? new Text(ScanCaption(paired)).Ellipsis()
+            : new Rows(
+                new Text(TerminalText.Clean(view.PublicUrl ?? localUrl, 2048), CliTheme.Accent).Ellipsis(),
+                new Text($"{ScanCaption(paired)} · {activity.Requests} req / {activity.Failures} err").Ellipsis());
 
     private static IRenderable Address(string value, bool primary = false)
     {
@@ -285,7 +363,7 @@ internal static class CliDashboardRenderer
             decoration: primary ? Decoration.Bold : Decoration.None, link: link)).Fold();
     }
 
-    private static IRenderable Qr(TerminalQr qr, bool paired, bool spacious)
+    private static IRenderable Qr(TerminalQr qr, bool paired, bool spacious, bool showCaption = true)
     {
         var rows = new List<IRenderable>();
         if (spacious)
@@ -295,7 +373,10 @@ internal static class CliDashboardRenderer
         }
         rows.Add(new Text(qr.Graphic, CliTheme.QrInk));
         if (spacious) rows.Add(Text.Empty);
-        rows.Add(Align.Center(new Text(paired ? "Scan to pair this browser" : "Scan to open on your phone")));
+        if (showCaption)
+        {
+            rows.Add(Align.Center(new Text(ScanCaption(paired))));
+        }
         return new Rows(rows);
     }
 
@@ -324,8 +405,14 @@ internal static class CliDashboardRenderer
     private static IRenderable Legend(DevicePanel panel, bool paired, int width, bool unicode)
     {
         var legend = new Paragraph();
-        foreach (var (key, label) in CliTheme.KeyBindings(panel, paired, width, unicode))
-            legend.Append(" " + key + " ", CliTheme.Key).Append(" " + label + "   ");
+        var bindings = CliTheme.KeyBindings(panel, paired, width, unicode);
+        var keyPad = width < 54 ? "" : " ";
+        var itemGap = width < 64 ? " " : "   ";
+        for (var i = 0; i < bindings.Length; i++)
+        {
+            var (key, label) = bindings[i];
+            legend.Append(keyPad + key + keyPad, CliTheme.Key).Append(" " + label + (i < bindings.Length - 1 ? itemGap : ""));
+        }
         return legend;
     }
 }
