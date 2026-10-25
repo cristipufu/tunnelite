@@ -26,6 +26,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<Compile Include="../Shared/EndpointIdentity.cs" Link="Protocol/EndpointIdentity.cs" />
 		<PackageReference Include="Nerdbank.MessagePack.SignalR" Version="1.3.85" />
 	</ItemGroup>
 

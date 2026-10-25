@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Tunnelite.Protocol;
 
 namespace Tunnelite.Server.HttpTunnel;
 
@@ -23,6 +24,18 @@ public static class HttpAppExtensions
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
                     await context.Response.WriteAsync("Missing or invalid 'ClientId' property.");
                     return;
+                }
+
+                if (EndpointIdentity.IsProtected(payload.ClientId) || EndpointIdentity.IsProtected(payload.Subdomain ?? ""))
+                {
+                    if (!EndpointIdentity.TryDerive(EndpointIdentityMiddleware.Bearer(context), out var ownerId, out var name)
+                        || ownerId != payload.ClientId || !string.Equals(name, payload.Subdomain, StringComparison.OrdinalIgnoreCase)
+                        || payload.ProtocolVersion < 2)
+                    {
+                        context.Response.StatusCode = 401;
+                        return;
+                    }
+                    payload.Subdomain = name;
                 }
 
                 if (string.IsNullOrEmpty(payload.Subdomain))
@@ -51,7 +64,14 @@ public static class HttpAppExtensions
 
                 payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
 
-                tunnelStore.Tunnels.AddOrUpdate(payload.Subdomain, payload, (key, oldValue) => payload);
+                // Atomic registration; a competing registration cannot replace another client's route.
+                var registered = tunnelStore.Tunnels.AddOrUpdate(payload.Subdomain, payload,
+                    (_, oldValue) => oldValue.ClientId == payload.ClientId ? payload : oldValue);
+                if (!ReferenceEquals(registered, payload))
+                {
+                    context.Response.StatusCode = 409;
+                    return;
+                }
                 tunnelStore.Clients.AddOrUpdate(payload.ClientId, payload.Subdomain, (key, oldValue) => payload.Subdomain);
 
                 var subdomain = context.Request.Host.Host.Split('.')[0];
@@ -304,7 +324,7 @@ public static class HttpAppExtensions
             var requestId = Guid.NewGuid();
 
             var streaming = context.Request.Headers.Accept.Any(h => h?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
-            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), context.RequestAborted);
+            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), context.RequestAborted, tunnel.ClientId);
 
             await hubContext.Clients.Client(connectionId).SendAsync("NewHttpConnection", new HttpConnection
             {

@@ -48,9 +48,19 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     public HttpTunnelClient(HttpTunnelRequest tunnel, LogLevel? logLevel)
     {
         Tunnel = tunnel;
+        if (tunnel.OwnerToken is not null)
+        {
+            if (!Uri.TryCreate(tunnel.PublicUrl, UriKind.Absolute, out var relay)
+                || (relay.Scheme != "https" && !(relay.Scheme == "http" && relay.IsLoopback)))
+                throw new ArgumentException("Protected tunnels require an HTTPS relay (HTTP is allowed for loopback tests).", nameof(tunnel));
+            var identity = new TunnelIdentity(tunnel.OwnerToken);
+            tunnel.ClientId = identity.ClientId;
+            tunnel.Subdomain = identity.Subdomain;
+        }
 
         Connection = new HubConnectionBuilder()
-            .WithUrl($"{tunnel.PublicUrl}/wsshttptunnel?clientId={tunnel.ClientId}")
+            .WithUrl($"{tunnel.PublicUrl}/wsshttptunnel?clientId={tunnel.ClientId}", options =>
+                options.AccessTokenProvider = () => Task.FromResult<string?>(tunnel.OwnerToken))
             .AddMessagePackProtocol(
                 TunneliteWitness.GeneratedTypeShapeProvider,
                 new MessagePackSerializer
@@ -148,7 +158,8 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         try
         {
             // Start the request to the public server
-            using var publicResponse = await ServerHttpClient.GetAsync(requestUrl, HttpCompletionOption.ResponseHeadersRead);
+            using var fetch = ControlRequest(HttpMethod.Get, requestUrl);
+            using var publicResponse = await ServerHttpClient.SendAsync(fetch, HttpCompletionOption.ResponseHeadersRead);
             publicResponse.EnsureSuccessStatusCode();
 
             // Prepare the request to the local server
@@ -175,7 +186,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             using var localResponse = await LocalHttpClient.SendAsync(localRequest, HttpCompletionOption.ResponseHeadersRead);
 
             // Prepare the request back to the public server
-            using var publicRequest = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+            using var publicRequest = ControlRequest(HttpMethod.Post, requestUrl);
 
             // Set the status code
             publicRequest.Headers.Add("X-T-Status", ((int)localResponse.StatusCode).ToString());
@@ -210,7 +221,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             LogFailedRequest?.Invoke(httpConnection.Method, httpConnection.Path);
             LogException?.Invoke(ex);
-            using var errorRequest = new HttpRequestMessage(HttpMethod.Delete, requestUrl);
+            using var errorRequest = ControlRequest(HttpMethod.Delete, requestUrl);
             using var response = await ServerHttpClient.SendAsync(errorRequest);
         }
     }
@@ -405,7 +416,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
     private async Task<HttpTunnelResponse?> RegisterTunnelAsync(HttpTunnelRequest tunnel)
     {
-        tunnel.Subdomain = _currentTunnel?.Subdomain;
+        tunnel.Subdomain = _currentTunnel?.Subdomain ?? tunnel.Subdomain;
 
         HttpTunnelResponse? tunnelResponse = null;
 
@@ -413,7 +424,12 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             try
             {
-                var response = await ServerHttpClient.PostAsJsonAsync($"{Tunnel.PublicUrl}/tunnelite/tunnel", tunnel, TunneliteJsonContext.Default.HttpTunnelRequest);
+                using var request = ControlRequest(HttpMethod.Post, $"{Tunnel.PublicUrl}/tunnelite/tunnel");
+                request.Content = JsonContent.Create(tunnel, TunneliteJsonContext.Default.HttpTunnelRequest);
+                using var response = await ServerHttpClient.SendAsync(request);
+                if ((int)response.StatusCode is >= 400 and < 500)
+                    throw new InvalidOperationException($"Tunnel registration was refused ({(int)response.StatusCode}).");
+                response.EnsureSuccessStatusCode();
 
                 tunnelResponse = await response.Content.ReadFromJsonAsync(TunneliteJsonContext.Default.HttpTunnelResponse);
 
@@ -422,6 +438,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     LogError?.Invoke($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
                 }
             }
+            catch (InvalidOperationException) { throw; }
             catch (Exception ex)
             {
                 LogError?.Invoke($"[HTTP] An error occurred while registering the tunnel:");
@@ -432,6 +449,13 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
 
         return tunnelResponse;
+    }
+
+    private HttpRequestMessage ControlRequest(HttpMethod method, string url)
+    {
+        var request = new HttpRequestMessage(method, url);
+        if (Tunnel.OwnerToken is { } token) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return request;
     }
 
     private async Task<bool> ConnectWithRetryAsync(HubConnection connection, CancellationToken token)

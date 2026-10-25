@@ -193,7 +193,10 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        if (_httpTunnelStore.Clients.TryGetValue(clientId, out var subdomain))
+        if (!_httpTunnelStore.Connections.TryRemove(new KeyValuePair<Guid, string>(clientId, Context.ConnectionId))) return;
+        // Protected addresses can be reconstituted by their owner after a restart. Keep only their transient route
+        // while this process lives, so a late disconnect cannot remove a freshly registered replacement.
+        if (!Tunnelite.Protocol.EndpointIdentity.IsProtected(clientId) && _httpTunnelStore.Clients.TryGetValue(clientId, out var subdomain))
         {
             _httpTunnelStore.Tunnels.Remove(subdomain, out var _);
             _httpTunnelStore.Connections.Remove(clientId, out var _);

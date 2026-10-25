@@ -6,10 +6,11 @@ public class HttpRequestsQueue
 {
     private readonly ConcurrentDictionary<Guid, HttpDefferedRequest> PendingRequests = new();
 
-    public virtual Task WaitForCompletionAsync(Guid requestId, HttpContext context, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    public virtual Task WaitForCompletionAsync(Guid requestId, HttpContext context, TimeSpan? timeout = null, CancellationToken cancellationToken = default, Guid clientId = default)
     {
         HttpDefferedRequest request = new()
         {
+            ClientId = clientId,
             HttpContext = context,
             RequestId = requestId,
             TimeoutCancellationTokenSource = timeout.HasValue ? new CancellationTokenSource(timeout.Value) : new CancellationTokenSource(),
@@ -49,6 +50,8 @@ public class HttpRequestsQueue
 
         return request.TaskCompletionSource.Task;
     }
+
+    public Guid GetClientId(Guid requestId) => PendingRequests.TryGetValue(requestId, out var request) ? request.ClientId : Guid.Empty;
 
     public virtual HttpContext? GetHttpContext(Guid requestId)
     {
