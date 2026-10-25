@@ -8,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
+using Tunnelite.Protocol;
 
 namespace Tunnelite.Sdk;
 
@@ -48,6 +49,12 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     public HttpTunnelClient(HttpTunnelRequest tunnel, LogLevel? logLevel)
     {
         Tunnel = tunnel;
+        if (tunnel.Access is not null)
+        {
+            if (tunnel.OwnerToken is not null && tunnel.OwnerToken != tunnel.Access.Identity.Secret)
+                throw new ArgumentException("The pairing policy and tunnel must use the same desktop identity.", nameof(tunnel));
+            tunnel.OwnerToken = tunnel.Access.Identity.Secret;
+        }
         if (tunnel.OwnerToken is not null)
         {
             if (!Uri.TryCreate(tunnel.PublicUrl, UriKind.Absolute, out var relay)
@@ -151,6 +158,13 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
     }
 
+    /// <summary>Creates a one-use pairing URL. Render it as a QR code in the host application.</summary>
+    public string CreatePairingUrl()
+    {
+        if (Tunnel.Access is null || TunnelUrl is null) throw new InvalidOperationException("A paired tunnel must be connected first.");
+        return TunnelUrl.TrimEnd('/') + "/_tunnelite/pair#code=" + Tunnel.Access.CreateChallenge().Code;
+    }
+
     private async Task TunnelHttpConnectionAsync(HttpConnection httpConnection)
     {
         var publicUrl = Tunnel.PublicUrl;
@@ -181,41 +195,21 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 localRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(httpConnection.ContentType);
             }
 
-            // Send the request to the local server; start forwarding as soon as the headers are in instead of
-            // buffering the whole body first.
-            using var localResponse = await LocalHttpClient.SendAsync(localRequest, HttpCompletionOption.ResponseHeadersRead);
-
-            // Prepare the request back to the public server
-            using var publicRequest = ControlRequest(HttpMethod.Post, requestUrl);
-
-            // Set the status code
-            publicRequest.Headers.Add("X-T-Status", ((int)localResponse.StatusCode).ToString());
-
-            // Copy headers from local response to public request
-            foreach (var (key, value) in localResponse.Headers)
+            CancellationToken revoked = default;
+            if (Tunnel.Access is { } access)
             {
-                publicRequest.Headers.TryAddWithoutValidation($"X-TR-{key}", value);
-            }
-
-            // Copy content headers from local response to public request
-            foreach (var (key, value) in localResponse.Content.Headers)
-            {
-                if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+                var path = httpConnection.Path[Tunnel.LocalUrl.TrimEnd('/').Length..].Split('?')[0];
+                var decision = await access.CheckHttpAsync(localRequest, path, new Uri(TunnelUrl!), CancellationToken.None);
+                if (decision.Response is { } denied)
                 {
-                    publicRequest.Headers.TryAddWithoutValidation($"X-TC-{key}", value.First());
+                    using (denied) await ForwardResponseAsync(requestUrl, denied, CancellationToken.None);
+                    return;
                 }
-                else
-                {
-                    publicRequest.Headers.TryAddWithoutValidation($"X-TC-{key}", value);
-                }
+                revoked = decision.Revoked;
             }
-
-            // Set the content of the public request to stream from the local response
-            publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync());
-
-            // Send the response back to the public server
-            using var response = await ServerHttpClient.SendAsync(publicRequest);
-            response.EnsureSuccessStatusCode();
+            using var active = CancellationTokenSource.CreateLinkedTokenSource(revoked);
+            using var localResponse = await LocalHttpClient.SendAsync(localRequest, HttpCompletionOption.ResponseHeadersRead, active.Token);
+            await ForwardResponseAsync(requestUrl, localResponse, active.Token);
         }
         catch (Exception ex)
         {
@@ -226,9 +220,54 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
     }
 
+    private async Task ForwardResponseAsync(string requestUrl, HttpResponseMessage localResponse, CancellationToken cancellationToken)
+    {
+        // Prepare the request back to the public server
+        using var publicRequest = ControlRequest(HttpMethod.Post, requestUrl);
+
+        // Set the status code
+        publicRequest.Headers.Add("X-T-Status", ((int)localResponse.StatusCode).ToString());
+
+        // Copy headers from local response to public request
+        foreach (var (key, value) in localResponse.Headers)
+        {
+            publicRequest.Headers.TryAddWithoutValidation($"X-TR-{key}", value);
+        }
+
+        // Copy content headers from local response to public request
+        foreach (var (key, value) in localResponse.Content.Headers)
+        {
+            if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+            {
+                publicRequest.Headers.TryAddWithoutValidation($"X-TC-{key}", value.First());
+            }
+            else
+            {
+                publicRequest.Headers.TryAddWithoutValidation($"X-TC-{key}", value);
+            }
+        }
+
+        // Set the content of the public request to stream from the local response
+        publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync());
+
+        // Send the response back to the public server
+        using var response = await ServerHttpClient.SendAsync(publicRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
     private async Task TunnelWsConnectionAsync(WsConnection wsConnection)
     {
-        using var cts = new CancellationTokenSource();
+        CancellationToken revoked = default;
+        if (Tunnel.Access is { } access)
+        {
+            var cookies = wsConnection.Headers?.FirstOrDefault(h => h.Key.Equals("Cookie", StringComparison.OrdinalIgnoreCase)).Value;
+            if (!access.Authorize(cookies is null ? null : string.Join("; ", cookies), new Uri(TunnelUrl!).Scheme == "https", out revoked))
+            {
+                await Connection.InvokeAsync("CloseWsAsync", wsConnection);
+                return;
+            }
+        }
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(revoked);
 
         try
         {
@@ -243,7 +282,13 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             foreach (var (name, values) in wsConnection.Headers ?? [])
             {
                 if (!IsWebSocketTransportHeader(name))
-                    webSocket.Options.SetRequestHeader(name, string.Join(", ", values));
+                {
+                    var value = string.Join(name.Equals("Cookie", StringComparison.OrdinalIgnoreCase) ? "; " : ", ", values);
+                    if (Tunnel.Access is not null && name.Equals("Cookie", StringComparison.OrdinalIgnoreCase))
+                        value = string.Join("; ", value.Split(';').Select(s => s.Trim()).Where(s =>
+                            !s.StartsWith(ViewerTicket.CookieName(new Uri(TunnelUrl!).Scheme == "https") + "=", StringComparison.Ordinal)));
+                    if (value.Length > 0) webSocket.Options.SetRequestHeader(name, value);
+                }
             }
 
             await webSocket.ConnectAsync(new Uri(wsConnection.Path), cts.Token);
@@ -261,6 +306,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         finally
         {
             await cts.CancelAsync();
+            if (Tunnel.Access is not null) await Connection.InvokeAsync("CloseWsAsync", wsConnection);
 
             Log?.Invoke($"[WS] Connection {wsConnection.RequestId} closed.");
         }

@@ -24,6 +24,7 @@ public static class TunneliteServer
 
         app.UseHttpsRedirection();
         app.UseMiddleware<EndpointIdentityMiddleware>();
+        app.UseMiddleware<PairedEndpointMiddleware>();
 
         app.UseWsTunneling();
 

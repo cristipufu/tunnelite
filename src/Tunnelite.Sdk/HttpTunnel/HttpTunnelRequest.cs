@@ -3,6 +3,9 @@ namespace Tunnelite.Sdk;
 
 public class HttpTunnelRequest
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public PairedAccess Access { get; set; }
+    public bool RequirePairing => Access is not null;
     /// <summary>The desktop identity secret; sent only as an authorization header to the relay.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string OwnerToken { get; set; }

@@ -23,6 +23,15 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         return base.OnConnectedAsync();
     }
 
+    public async Task CloseWsAsync(WsConnection connection)
+    {
+        var clientId = GetClientId(Context);
+        var socket = _wsRequestsQueue.GetWebSocket(clientId, connection.RequestId);
+        if (socket is { State: WebSocketState.Open })
+            await socket.CloseOutputAsync(WebSocketCloseStatus.PolicyViolation, "Desktop access ended.", Context.ConnectionAborted);
+        await _wsRequestsQueue.CompleteAsync(connection.RequestId);
+    }
+
     /// <summary>
     /// Original wire format: frames from the public WebSocket as <c>(data, type)</c> tuples, used by clients built
     /// before <see cref="StreamIncomingWsV2Async"/> existed. Those clients never learn where a message ends, which is

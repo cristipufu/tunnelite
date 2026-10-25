@@ -11,6 +11,8 @@ namespace Tunnelite.Sdk;
     PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(HttpTunnelRequest))]
 [JsonSerializable(typeof(HttpTunnelResponse))]
+[JsonSerializable(typeof(PairedAccessState))]
+[JsonSerializable(typeof(PairingRequest))]
 internal partial class TunneliteJsonContext : JsonSerializerContext
 {
 }

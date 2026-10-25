@@ -36,6 +36,12 @@ public static class HttpAppExtensions
                         return;
                     }
                     payload.Subdomain = name;
+                    if (payload.RequirePairing) payload.ViewerKey = EndpointIdentity.ViewerKey(EndpointIdentityMiddleware.Bearer(context)!);
+                }
+                else if (payload.RequirePairing)
+                {
+                    context.Response.StatusCode = 400;
+                    return;
                 }
 
                 if (string.IsNullOrEmpty(payload.Subdomain))
@@ -235,7 +241,8 @@ public static class HttpAppExtensions
                     return;
                 }
 
-                await ServerErrorAsync(app, deferredHttpContext);
+                if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
+                else await ServerErrorAsync(app, deferredHttpContext);
 
                 // Complete the deferred response
                 await requestsQueue.CompleteAsync(requestId);

@@ -6,6 +6,7 @@ namespace Tunnelite.Protocol;
 // Compiled into both assemblies. Protected names and version-8 client ids are verifiable without a database.
 internal static class EndpointIdentity
 {
+    internal static byte[] ViewerKey(string secret) => HMACSHA256.HashData(Encoding.ASCII.GetBytes(secret), "tunnelite-browser-v1"u8);
     internal static bool IsProtected(Guid id) => (id.ToByteArray()[7] & 0xf0) == 0x80;
     internal static bool IsProtected(string name) => name.StartsWith("p-", StringComparison.OrdinalIgnoreCase);
 

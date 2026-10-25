@@ -16,6 +16,9 @@ public class HttpTunnelStore
 
 public class HttpTunnelRequest
 {
+    public bool RequirePairing { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public byte[]? ViewerKey { get; set; }
     public int ProtocolVersion { get; set; }
     public string? Subdomain { get; set; }
 

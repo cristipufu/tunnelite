@@ -111,6 +111,21 @@ public sealed class LocalApp : IAsyncDisposable
             }
         });
 
+        app.MapGet("/live-forever", async (HttpContext context) =>
+        {
+            context.Response.ContentType = "text/event-stream";
+            try
+            {
+                while (!context.RequestAborted.IsCancellationRequested)
+                {
+                    await context.Response.WriteAsync("data: live\n\n", context.RequestAborted);
+                    await context.Response.Body.FlushAsync(context.RequestAborted);
+                    await Task.Delay(100, context.RequestAborted);
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+
         // Echo every frame back exactly as received: same type, same end-of-message flag. Accepts the first
         // subprotocol the client asks for (like Vite's HMR server does) and reports it when asked "subprotocol?".
         app.Map("/ws", async (HttpContext context) =>
