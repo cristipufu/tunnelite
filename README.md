@@ -1,31 +1,37 @@
 <p align="center">
   <a href="https://tunnelite.com">
-    <img src="https://raw.githubusercontent.com/cristipufu/tunnelite/master/src/Tunnelite.Server/wwwroot/apple-touch-icon.png" width="112" height="112" alt="Tunnelite logo">
+    <img src="https://raw.githubusercontent.com/cristipufu/tunnelite/master/src/Tunnelite.Server/wwwroot/apple-touch-icon.png" width="96" height="96" alt="Tunnelite logo">
   </a>
 </p>
 
 <h1 align="center">Tunnelite</h1>
 
 <p align="center">
-  <strong>Your local apps, within reach.</strong><br>
-  Share a local server or pair your phone with your desktop.
+  <strong>Your localhost. One link away.</strong><br>
+  Share a local app, test a webhook, or connect your phone to your desktop.
 </p>
 
 <p align="center">
-  <a href="https://github.com/cristipufu/tunnelite/releases/latest"><img src="https://img.shields.io/github/v/release/cristipufu/tunnelite?style=flat&amp;label=release&amp;color=3b82f6" alt="Latest release" height="20"></a>
-  <a href="https://www.nuget.org/packages/Tunnelite/"><img src="https://img.shields.io/nuget/v/Tunnelite?style=flat&amp;logo=nuget&amp;label=NuGet&amp;color=2563eb" alt="NuGet version" height="20"></a>
-  <a href="https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&amp;style=flat&amp;label=build&amp;logo=github" alt="Build status" height="20"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-64748b?style=flat" alt="MIT license" height="20"></a>
+  <a href="https://github.com/cristipufu/tunnelite/releases/latest"><img src="https://img.shields.io/github/v/release/cristipufu/tunnelite?style=flat-square&amp;label=release&amp;labelColor=0f172a&amp;color=0ea5e9" alt="Latest release" height="22"></a>
+  <a href="https://www.nuget.org/packages/Tunnelite/"><img src="https://img.shields.io/nuget/v/Tunnelite?style=flat-square&amp;logo=nuget&amp;logoColor=white&amp;label=NuGet&amp;labelColor=0f172a&amp;color=0284c7" alt="NuGet version" height="22"></a>
+  <a href="https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&amp;style=flat-square&amp;label=build&amp;logo=github&amp;logoColor=white&amp;labelColor=0f172a" alt="Build status" height="22"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-64748b?style=flat-square&amp;labelColor=0f172a" alt="MIT license" height="22"></a>
 </p>
 
 <p align="center">
-  <a href="https://tunnelite.com">Website</a> ·
-  <a href="#-installation">Get started</a> ·
-  <a href="docs/sdk.md">SDK docs</a> ·
+  <a href="#quick-start"><strong>Get started</strong></a> &nbsp;·&nbsp;
+  <a href="https://tunnelite.com">Website</a> &nbsp;·&nbsp;
+  <a href="docs/sdk.md">SDK docs</a> &nbsp;·&nbsp;
   <a href="https://webhooks.tunnelite.com">Webhook tester</a>
 </p>
 
+<p align="center">
+  <sub>macOS · Linux · Windows &nbsp;/&nbsp; HTTP · WebSockets · Server-Sent Events</sub>
+</p>
+
 ---
+
+## Quick start
 
 ```bash
 # macOS / Linux with Homebrew
@@ -35,25 +41,7 @@ tunnelite http://localhost:3000
 
 You can also install the [.NET tool](#net-tool) or download a [standalone binary](#standalone-binaries).
 
-## Contents
-
-- [Use Cases](#-use-cases)
-- [Installation](#-installation)
-- [Usage](#-usage)
-- [How It Works](#-how-it-works)
-- [Self-Hosting](#-self-hosting)
-- [Packages](#-packages)
-- [Tests](#-tests)
-- [License](#-license)
-
-## 🚀 Use Cases
-
-- Exposing locally-hosted web applications to the internet for testing or demo purposes.
-- Quickly sharing dev builds during hackathons.
-- Testing and debugging webhook integrations.
-- Providing internet access to services running behind firewalls without exposing incoming ports.
-
-## 📦 Installation
+## Installation
 
 ### Homebrew
 
@@ -100,7 +88,7 @@ Every [release](https://github.com/cristipufu/tunnelite/releases/latest) also sh
 
 A `SHA256SUMS` file is attached to each release for verification.
 
-## 💻 Usage
+## Usage
 
 Once installed, you can use the `tunnelite` command to create a tunnel to your local application:
 
@@ -137,95 +125,7 @@ You can also use `tunnelite http://localhost:3000 --pair`. For a public tunnel w
 
 See [paired access](docs/paired-access.md) for profile options and device management.
 
-## 🔍 How It Works
-
-Tunnelite creates a bridge between your local application and the internet using a WebSocket connection. It streams incoming data from a public URL directly to your local server, making your local app accessible from anywhere.
-
-The managed version of Tunnelite supports HTTP(S), WebSocket (WS/WSS) and Server-Sent Events tunneling. If you need TCP tunneling, you'll have to host the server yourself.
-
-### HTTP connection
-
-```mermaid
-sequenceDiagram
-    actor EC as External Client
-    participant PTS as Public Tunneling Server<br/>(Multiple Pods)
-    participant AS as Azure SignalR
-    participant TC as Tunneling Client
-    participant IS as Intranet Server
-
-    EC->>PTS: 1. HTTP Request
-    PTS->>AS: 2. Notify Client (based on subdomain)
-    AS-->>TC: 3. WSS Notification (contains pod name)
-    TC->>PTS: 4. HTTP GET (with headers for pod routing)
-    PTS-->>TC: 5. Stream HTTP Request Body
-    TC->>IS: 6. Forward Request
-    IS-->>TC: 7. Forward Response
-    TC->>PTS: 8. HTTP POST (with headers for pod routing)
-    PTS-->>EC: 9. Stream Response
-    Note right of PTS: Steps 4-5 and 8-9 are routed<br/>to the same pod based on<br/>HTTP headers
-```
-
-<details>
-<summary><b>TCP overview</b></summary>
-
-<br/>
-
-```mermaid
-sequenceDiagram
-    actor TC as Tunneling Client
-    box rgb(222, 235, 247) Public Tunneling Server
-        participant WS as WebSocket Handler
-        participant TL as TCP Listener
-    end
-    actor EC as External Client
-
-    TC->>WS: Connect via WebSocket
-    TC->>WS: Register tunnel request
-    WS->>TL: Start listening on random port
-    TL-->>WS: Port number
-    WS-->>TC: Tunnel registered (port number)
-
-    Note over TC,EC: Some time later
-
-    EC->>TL: Connect to generated port
-    TL->>WS: New TCP connection
-    WS-->>TC: Notify of new TCP connection
-    TC->>WS: Begin tunneling data
-    WS<<->>TC: Bi-directional data transfer
-    TL<<->>EC: Bi-directional data transfer
-```
-
-</details>
-
-<details>
-<summary><b>TCP connection</b></summary>
-
-<br/>
-
-```mermaid
-sequenceDiagram
-    actor EC as External Client
-    participant PTS as Public Tunneling Server<br/>(Multiple Pods)
-    participant AS as Azure SignalR
-    participant TC as Tunneling Client
-    participant IS as Intranet Server
-
-    EC->>PTS: 1. TCP Connection
-    PTS->>AS: 2. Notify Client (NewTcpConnection)
-    AS-->>TC: 3. WSS Notification (contains connection details)
-    TC->>IS: 4. Open TCP Connection
-    TC->>PTS: 5. Start StreamIncomingAsync
-    PTS-->>TC: 6. Stream TCP Data (incoming)
-    TC->>IS: 7. Forward Incoming Data
-    IS-->>TC: 8. Send Outgoing Data
-    TC->>PTS: 9. StreamOutgoingAsync (with outgoing data)
-    PTS-->>EC: 10. Forward Outgoing Data
-    Note right of PTS: Steps 5-6 and 9-10 use<br/>bi-directional streaming<br/>over SignalR
-```
-
-</details>
-
-## 🏠 Self-Hosting
+## Self-hosting
 
 Tunnelite allows you to self-host the server, giving you full control over your tunneling infrastructure. To set up your own Tunnelite server, you'll need:
 
@@ -240,7 +140,7 @@ Once your server is up, point the client at it:
 tunnelite http://localhost:3000 --publicUrl https://your-server-domain
 ```
 
-## 📚 Packages
+## .NET integration
 
 | Package | Description |
 | --- | --- |
@@ -258,16 +158,17 @@ app.Run();
 
 See [SDK integration](docs/sdk.md) to embed paired access in a desktop or ASP.NET Core application.
 
-## 🧪 Tests
+## Development
 
-`test/Tunnelite.Tests` starts the tunnel server and a local app in-process and drives real traffic through the tunnel: HTTP, Server-Sent Events, WebSockets (including large and fragmented messages), TCP, and a client speaking the original WebSocket wire format. Set `TUNNELITE_CLI` to a built `tunnelite` binary to also run the CLI end-to-end.
+Build and run the integration suite:
 
 ```bash
-dotnet test test/Tunnelite.Tests
+dotnet build -c Release
+dotnet test test/Tunnelite.Tests -c Release --no-build
 ```
 
-CI runs the suite on every pull request, plus a NativeAOT publish of the CLI that is tested the same way.
+See [cross-platform validation](docs/cross-platform.md) for native CLI checks and [how it works](docs/how-it-works.md) for the transport diagrams.
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).
