@@ -26,16 +26,27 @@ public class LocalTlsTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
         names.AddDnsName("localhost");
         certificateRequest.CertificateExtensions.Add(names.Build());
         using var certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
+        // Schannel needs a named private key. Importing a PFX without EphemeralKeySet provides one,
+        // and disposing the imported certificate removes the temporary key from this test runner.
+        using var windowsCertificate = OperatingSystem.IsWindows()
+            ? X509CertificateLoader.LoadPkcs12(certificate.Export(X509ContentType.Pkcs12), null, X509KeyStorageFlags.UserKeySet)
+            : null;
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
-        builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0, listen => listen.UseHttps(certificate)));
+        builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0, listen => listen.UseHttps(windowsCertificate ?? certificate)));
         await using var app = builder.Build();
         app.MapGet("/hello", () => "secure local app");
         await app.StartAsync();
+        var localUrl = "https://localhost:" + new Uri(app.Urls.First()).Port;
+        using var probe = new HttpClient(new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+        }) { Timeout = TestData.Timeout };
+        Assert.Equal("secure local app", await probe.GetStringAsync(localUrl + "/hello"));
         using var access = paired ? new PairedAccess(TunnelIdentity.Create()) : null;
         await using var client = new HttpTunnelClient(new HttpTunnelRequest
         {
-            LocalUrl = "https://localhost:" + new Uri(app.Urls.First()).Port,
+            LocalUrl = localUrl,
             PublicUrl = host.PublicUrl, AllowUntrustedLocalCertificates = allow, Access = access!,
         }, null);
         await client.ConnectAsync().WaitAsync(TestData.Timeout);
