@@ -65,6 +65,7 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
         // for "vite-hmr"), so confirm the first one here and pass the whole list on to the tunnel client, which
         // requests the same from the local app. The list is attacker-controlled input from the public side; cap it.
         var subProtocols = context.WebSockets.WebSocketRequestedProtocols.Take(MaxSubProtocols).ToArray();
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, connectionId.Disconnected);
 
         try
         {
@@ -80,11 +81,11 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
                 Path = $"{ConvertHttpToWsUri(tunnel.LocalUrl)}{path}{context.Request.QueryString}",
                 SubProtocols = subProtocols.Length > 0 ? subProtocols : null,
                 Headers = context.Request.Headers.ToDictionary(h => h.Key, h => h.Value.Select(v => v ?? "").ToArray()),
-            });
+            }, lifetime.Token);
 
-            await completionTask;
+            await completionTask.WaitAsync(lifetime.Token);
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
             // ignore
         }
@@ -92,6 +93,7 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
         {
             _logger.LogError(ex, "Error handling WebSocket connection");
         }
+        finally { await _requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
     }
 
     public static string ConvertHttpToWsUri(string? httpUrl)

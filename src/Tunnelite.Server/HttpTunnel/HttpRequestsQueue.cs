@@ -15,7 +15,7 @@ public class HttpRequestsQueue
             HttpContext = context,
             RequestId = requestId,
             TimeoutCancellationTokenSource = timeout.HasValue ? new CancellationTokenSource(timeout.Value) : new CancellationTokenSource(),
-            TaskCompletionSource = new TaskCompletionSource(),
+            TaskCompletionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
         };
 
         // Wait until caller cancels or timeout expires

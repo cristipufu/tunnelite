@@ -1,97 +1,48 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 
 namespace Tunnelite.Server.WsTunnel;
 
 public class WsRequestsQueue
 {
-    // client, [requestId, WsDefferedRequest]
-    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, WsDefferedRequest>> PendingRequests = new();
+    // Flat keys release all per-client state when the last request completes.
+    private readonly ConcurrentDictionary<(Guid ClientId, Guid RequestId), WsDefferedRequest> PendingRequests = new();
 
     public virtual Task WaitForCompletionAsync(Guid clientId, Guid requestId, WebSocket webSocket, string? connectionId = null)
     {
-        WsDefferedRequest request = new()
+        var request = new WsDefferedRequest
         {
-            ConnectionId = connectionId,
-            WebSocket = webSocket,
-            RequestId = requestId,
-            TaskCompletionSource = new TaskCompletionSource(),
+            ConnectionId = connectionId, WebSocket = webSocket, RequestId = requestId,
+            TaskCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously),
         };
-
-        PendingRequests.AddOrUpdate(
-            clientId,
-            _ => new ConcurrentDictionary<Guid, WsDefferedRequest> { [requestId] = request },
-            (_, requests) =>
-            {
-                requests[requestId] = request;
-                return requests;
-            });
-
+        if (!PendingRequests.TryAdd((clientId, requestId), request))
+            throw new InvalidOperationException("The stream request is already pending.");
         return request.TaskCompletionSource.Task;
     }
 
-    public virtual WebSocket? GetWebSocket(Guid clientId, Guid requestId)
-    {
-        if (!PendingRequests.TryGetValue(clientId, out var requests))
-        {
-            return null;
-        }
-
-        requests.TryGetValue(requestId, out var request);
-
-        return request?.WebSocket;
-    }
+    public virtual WebSocket? GetWebSocket(Guid clientId, Guid requestId) =>
+        PendingRequests.TryGetValue((clientId, requestId), out var request) ? request.WebSocket : null;
 
     public virtual Task CompleteAsync(Guid clientId, Guid requestId)
     {
-        if (!PendingRequests.TryGetValue(clientId, out var requests))
-        {
-            return Task.CompletedTask;
-        }
-
-        if (!requests.TryRemove(requestId, out var request))
-        {
-            return Task.CompletedTask;
-        }
-
-        if (!request.TaskCompletionSource!.Task.IsCompleted)
-        {
-            // Try to complete the task 
-            if (request.TaskCompletionSource?.TrySetResult() == false)
-            {
-                // The request was canceled
-            }
-        }
-        else
-        {
-            // The request was canceled while pending
-        }
-
+        if (PendingRequests.TryRemove((clientId, requestId), out var request))
+            request.TaskCompletionSource?.TrySetResult();
         return Task.CompletedTask;
     }
 
-    public virtual Task CompleteAsync(Guid clientId)
-    {
-        if (!PendingRequests.TryRemove(clientId, out var requests))
-        {
-            return Task.CompletedTask;
-        }
+    public virtual Task CompleteAsync(Guid clientId) => CompleteMatchingAsync(clientId, null);
 
-        foreach (var request in requests)
+    public Task CompleteConnectionAsync(Guid clientId, string connectionId) => CompleteMatchingAsync(clientId, connectionId);
+
+    private Task CompleteMatchingAsync(Guid clientId, string? connectionId)
+    {
+        foreach (var entry in PendingRequests)
         {
-            request.Value.WebSocket?.Abort();
-            request.Value.TaskCompletionSource?.TrySetResult();
+            if (entry.Key.ClientId != clientId || (connectionId is not null && entry.Value.ConnectionId != connectionId)
+                || !PendingRequests.TryRemove(entry)) continue;
+            try { entry.Value.WebSocket?.Abort(); }
+            finally { entry.Value.TaskCompletionSource?.TrySetResult(); }
         }
         return Task.CompletedTask;
-    }
-
-    public async Task CompleteConnectionAsync(Guid clientId, string connectionId)
-    {
-        if (!PendingRequests.TryGetValue(clientId, out var requests)) return;
-        foreach (var request in requests.Values.Where(r => r.ConnectionId == connectionId))
-        {
-            request.WebSocket?.Abort();
-            await CompleteAsync(clientId, request.RequestId);
-        }
     }
 }

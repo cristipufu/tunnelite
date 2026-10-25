@@ -18,13 +18,14 @@ public sealed class HttpTunnelSession(string connectionId, CancellationToken dis
     private HttpTunnelRequest? _tunnel;
     private bool _closed;
     public string ConnectionId { get; } = connectionId;
+    public CancellationToken Disconnected { get; } = disconnected;
 
     internal async Task<int> RegisterAsync(HttpTunnelRequest payload, HttpTunnelStore store, CancellationToken cancellationToken)
     {
         await _registration.WaitAsync(cancellationToken);
         try
         {
-            if (_closed || disconnected.IsCancellationRequested || !ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this)) return 425;
+            if (_closed || Disconnected.IsCancellationRequested || !ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this)) return 425;
             if (_tunnel is not null && _tunnel.Subdomain != payload.Subdomain) return 409;
             var registered = store.Tunnels.AddOrUpdate(payload.Subdomain!, payload, (_, previous) =>
                 previous.ClientId == payload.ClientId && ReferenceEquals(store.Connections.GetValueOrDefault(payload.ClientId), this) ? payload : previous);

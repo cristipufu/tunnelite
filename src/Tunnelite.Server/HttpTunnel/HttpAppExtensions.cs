@@ -300,6 +300,7 @@ public static class HttpAppExtensions
 
     static async Task TunnelRequestAsync(WebApplication app, HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore tunnelStore, string path, ILogger<Program> logger)
     {
+        var requestId = Guid.Empty;
         try
         {
             HttpTunnelRequest? tunnel = null;
@@ -345,10 +346,11 @@ public static class HttpAppExtensions
                 return;
             }
 
-            var requestId = Guid.NewGuid();
+            requestId = Guid.NewGuid();
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, connectionId.Disconnected);
 
             var streaming = context.Request.Headers.Accept.Any(h => h?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
-            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), context.RequestAborted, tunnel.ClientId, connectionId.ConnectionId);
+            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), lifetime.Token, tunnel.ClientId, connectionId.ConnectionId);
 
             await hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewHttpConnection", new HttpConnection
             {
@@ -356,11 +358,11 @@ public static class HttpAppExtensions
                 ContentType = context.Request.ContentType,
                 Method = context.Request.Method,
                 Path = $"{tunnel.LocalUrl}/{path}{context.Request.QueryString}",
-            });
+            }, lifetime.Token);
 
             await completionTask;
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
             // ignore
         }
@@ -374,6 +376,7 @@ public static class HttpAppExtensions
 
             logger.LogError(ex, "Error processing request tunnel: {Message}", ex.Message);
         }
+        finally { if (requestId != Guid.Empty) await requestsQueue.CompleteAsync(requestId); }
     }
 
     static readonly HashSet<string> ReservedSubdomains = new(StringComparer.OrdinalIgnoreCase)
