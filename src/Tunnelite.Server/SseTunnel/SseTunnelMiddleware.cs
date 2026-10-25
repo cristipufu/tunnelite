@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR;
 using Tunnelite.Server.HttpTunnel;
 
 namespace Tunnelite.Server.SseTunnel;
@@ -10,12 +10,6 @@ public class SseTunnelMiddleware(
     IHubContext<HttpTunnelHub> hubContext,
     ILogger<SseTunnelMiddleware> logger)
 {
-    private readonly RequestDelegate _next = next;
-    private readonly HttpTunnelStore _tunnelStore = tunnelStore;
-    private readonly SseRequestsQueue _requestsQueue = requestsQueue;
-    private readonly IHubContext<HttpTunnelHub> _hubContext = hubContext;
-    private readonly ILogger<SseTunnelMiddleware> _logger = logger;
-
     public async Task InvokeAsync(HttpContext context)
     {
         // Check if this is an SSE request by looking at the Accept header
@@ -24,7 +18,7 @@ public class SseTunnelMiddleware(
 
         if (!isSseRequest)
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
@@ -32,43 +26,20 @@ public class SseTunnelMiddleware(
 
         if (path == "/wsshttptunnel" || path == "/wsstcptunnel")
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
-        HttpTunnelRequest? tunnel = null;
-        var subdomain = context.Request.Host.Host.Split('.')[0];
-
-        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        if (!tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
         {
-            tunnel = _tunnelStore.Tunnels.Values.FirstOrDefault(t => _tunnelStore.Connections.ContainsKey(t.ClientId));
-        }
-        else if (subdomain.Equals("tunnelite"))
-        {
-            await _next(context);
-            return;
-        }
-        else
-        {
-            _tunnelStore.Tunnels.TryGetValue(subdomain, out tunnel);
-        }
-
-        if (tunnel == null)
-        {
-            await _next(context);
+            await next(context);
             return;
         }
 
         // New clients stream the full HTTP response, preserving authentication, errors and resume headers.
         if (tunnel.ProtocolVersion >= 2)
         {
-            await _next(context);
-            return;
-        }
-
-        if (!_tunnelStore.Connections.TryGetValue(tunnel.ClientId, out var connectionId))
-        {
-            await _next(context);
+            await next(context);
             return;
         }
 
@@ -81,10 +52,10 @@ public class SseTunnelMiddleware(
             context.Response.Headers.TryAdd("Cache-Control", "no-cache");
             context.Response.Headers.TryAdd("Connection", "keep-alive");
 
-            _logger.LogInformation("SSE connection accepted: {requestId}", requestId);
+            logger.LogInformation("SSE connection accepted: {requestId}", requestId);
 
             // Register the SSE connection with the queue
-            var completionTask = _requestsQueue.WaitForCompletionAsync(
+            var completionTask = requestsQueue.WaitForCompletionAsync(
                 tunnel.ClientId,
                 requestId,
                 context, connectionId.ConnectionId);
@@ -93,7 +64,7 @@ public class SseTunnelMiddleware(
             var content = await reader.ReadToEndAsync(lifetime.Token);
 
             // Notify the client about new SSE connection
-            await _hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection
+            await hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection
             {
                 RequestId = requestId,
                 Content = content,
@@ -108,8 +79,8 @@ public class SseTunnelMiddleware(
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling SSE connection");
+            logger.LogError(ex, "Error handling SSE connection");
         }
-        finally { await _requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
+        finally { await requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
     }
 }

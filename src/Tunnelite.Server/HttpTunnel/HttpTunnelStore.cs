@@ -1,4 +1,6 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
+using System.Net;
 
 namespace Tunnelite.Server.HttpTunnel;
 
@@ -9,6 +11,63 @@ public class HttpTunnelStore
 
     // clientId, connectionId
     public ConcurrentDictionary<Guid, HttpTunnelSession> Connections { get; } = new();
+
+    /// <summary>
+    /// True only when the request targets a bare <c>localhost</c> host header over a direct loopback connection
+    /// (without reverse-proxy forwarding headers). Prevents <c>localhost.tunnelite.com</c> or spoofed remote
+    /// <c>Host: localhost</c> headers from matching customer tunnels on a multi-tenant server.
+    /// </summary>
+    public static bool IsLoopbackHost(HttpContext context) =>
+        context.Request.Host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+        && !context.Request.Headers.ContainsKey("X-Forwarded-For")
+        && !context.Request.Headers.ContainsKey("X-Forwarded-Host")
+        && !context.Request.Headers.ContainsKey("X-ARR-SSL")
+        && (context.Connection.RemoteIpAddress is null || IPAddress.IsLoopback(context.Connection.RemoteIpAddress));
+
+    public HttpTunnelRequest? ResolveTunnel(HttpContext context)
+    {
+        if (IsLoopbackHost(context))
+        {
+            foreach (var (_, tunnel) in Tunnels)
+            {
+                if (tunnel.IsLoopback && Connections.ContainsKey(tunnel.ClientId))
+                {
+                    return tunnel;
+                }
+            }
+
+            return null;
+        }
+
+        var host = context.Request.Host.Host;
+        var dot = host.IndexOf('.');
+        if (dot <= 0) return null;
+
+        var subdomain = host[..dot];
+        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase)
+            || subdomain.Equals("www", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return Tunnels.GetValueOrDefault(subdomain);
+    }
+
+    public bool TryResolveActiveTunnel(
+        HttpContext context,
+        [NotNullWhen(true)] out HttpTunnelRequest? tunnel,
+        [NotNullWhen(true)] out HttpTunnelSession? session)
+    {
+        tunnel = ResolveTunnel(context);
+        if (tunnel is not null && Connections.TryGetValue(tunnel.ClientId, out session))
+        {
+            return true;
+        }
+
+        session = null;
+        return false;
+    }
 }
 
 /// <summary>Owns one connection's registration. Only registration and teardown share its asynchronous gate.</summary>
@@ -62,6 +121,8 @@ public class HttpTunnelRequest
     public bool RequirePairing { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public byte[]? ViewerKey { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsLoopback { get; set; }
     public int ProtocolVersion { get; set; }
     public string? Subdomain { get; set; }
 

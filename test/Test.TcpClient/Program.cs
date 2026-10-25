@@ -1,4 +1,4 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Text;
 
 class TcpClientApp
@@ -42,17 +42,17 @@ class TcpClientApp
     {
         // Receive file name length
         byte[] fileNameLengthBytes = new byte[sizeof(int)];
-        await stream.ReadAsync(fileNameLengthBytes);
+        await stream.ReadExactlyAsync(fileNameLengthBytes);
         int fileNameLength = BitConverter.ToInt32(fileNameLengthBytes);
 
         // Receive file name
         byte[] fileNameBytes = new byte[fileNameLength];
-        await stream.ReadAsync(fileNameBytes);
+        await stream.ReadExactlyAsync(fileNameBytes);
         string fileName = Encoding.UTF8.GetString(fileNameBytes);
 
         // Receive file size
         byte[] fileSizeBytes = new byte[sizeof(long)];
-        await stream.ReadAsync(fileSizeBytes);
+        await stream.ReadExactlyAsync(fileSizeBytes);
         long fileSize = BitConverter.ToInt64(fileSizeBytes);
 
         string filePath = Path.Combine(saveDirectory, fileName);

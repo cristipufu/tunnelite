@@ -22,13 +22,16 @@ public static class TunneliteServer
 
         var app = builder.Build();
 
-        app.UseHttpsRedirection();
+        if (!app.Environment.IsDevelopment())
+        {
+            app.UseHttpsRedirection();
+        }
         app.UseMiddleware<EndpointIdentityMiddleware>();
         app.UseMiddleware<PairedEndpointMiddleware>();
 
         app.UseWsTunneling();
 
-        app.UsSseTunneling();
+        app.UseSseTunneling();
 
         app.UseHttpTunneling();
 

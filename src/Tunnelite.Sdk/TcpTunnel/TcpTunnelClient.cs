@@ -1,9 +1,10 @@
-﻿using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.SignalR.Client;
 using Nerdbank.MessagePack;
 using Nerdbank.MessagePack.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
@@ -20,24 +21,24 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
 
     public HubConnection Connection { get; }
 
-    public string? TunnelUrl
-    {
-        get
-        {
-            return _currentTunnel?.TunnelUrl;
-        }
-    }
+    public string? TunnelUrl => _currentTunnel?.TunnelUrl;
 
     private readonly TcpTunnelRequest Tunnel;
-    private TcpTunnelResponse? _currentTunnel = null;
-    private bool _disposed;
+    private TcpTunnelResponse? _currentTunnel;
+    private int _disposed;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _connectionGate = new(1, 1);
+    private readonly ConcurrentDictionary<long, Task> _connections = new();
+    private long _operationId;
 
     public TcpTunnelClient(TcpTunnelRequest tunnel, LogLevel? logLevel)
     {
+        ArgumentNullException.ThrowIfNull(tunnel);
+        if (tunnel.ClientId == Guid.Empty) tunnel.ClientId = Guid.NewGuid();
         Tunnel = tunnel;
 
         Connection = new HubConnectionBuilder()
-            .WithUrl($"{Tunnel.PublicUrl}/wsstcptunnel?clientId={tunnel.ClientId}")
+            .WithUrl($"{Tunnel.PublicUrl.TrimEnd('/')}/wsstcptunnel?clientId={tunnel.ClientId}")
             .AddMessagePackProtocol(
                 TunneliteWitness.GeneratedTypeShapeProvider,
                 new MessagePackSerializer
@@ -55,46 +56,38 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
             .WithAutomaticReconnect()
             .Build();
 
-        Connection.On<TcpConnection>("NewTcpConnection", (tcpConnection) =>
+        Connection.On<TcpConnection>("NewTcpConnection", tcpConnection =>
         {
-            LogRequest?.Invoke("TCP", $"New Connection {tcpConnection.RequestId}");
-
-            _ = HandleNewTcpConnectionAsync(tcpConnection);
-
+            Emit(LogRequest, "TCP", $"New Connection {tcpConnection.RequestId}");
+            Track(() => HandleNewTcpConnectionAsync(tcpConnection));
             return Task.CompletedTask;
         });
 
-        Connection.On<string>("TcpTunnelClosed", async (errorMessage) =>
+        Connection.On<string>("TcpTunnelClosed", errorMessage =>
         {
-            LogError?.Invoke($"[TCP] Tunnel closed by server: {errorMessage}.");
-
-            _currentTunnel = await RegisterTunnelAsync(tunnel);
+            Emit(LogError, $"[TCP] Tunnel closed by server: {errorMessage}.");
+            Track(async () =>
+            {
+                _currentTunnel = await RegisterTunnelAsync(tunnel, _lifetime.Token);
+                if (!string.IsNullOrEmpty(_currentTunnel?.TunnelUrl)) await NotifyReadyAsync();
+            });
+            return Task.CompletedTask;
         });
 
-        Connection.Reconnected += async connectionId =>
+        Connection.Reconnecting += _ => { _currentTunnel = null; return Task.CompletedTask; };
+        Connection.Reconnected += _ => ObserveAsync(async () =>
         {
-            _currentTunnel = await RegisterTunnelAsync(tunnel);
-        };
+            _currentTunnel = await RegisterTunnelAsync(tunnel, _lifetime.Token);
+            if (!string.IsNullOrEmpty(_currentTunnel?.TunnelUrl)) await NotifyReadyAsync();
+        });
 
-        Connection.Closed += async (error) =>
+        Connection.Closed += _ => ObserveAsync(async () =>
         {
-            if (_disposed)
-            {
-                return;
-            }
-
-            await Task.Delay(new Random().Next(0, 5) * 1000);
-
-            if (_disposed)
-            {
-                return;
-            }
-
-            if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
-            {
-                _currentTunnel = await RegisterTunnelAsync(tunnel);
-            }
-        };
+            if (Volatile.Read(ref _disposed) != 0) return;
+            _currentTunnel = null;
+            await Task.Delay(Random.Shared.Next(0, 5000), _lifetime.Token);
+            await ConnectAsync(_lifetime.Token);
+        });
     }
 
     /// <summary>
@@ -102,22 +95,40 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        _disposed = true;
-
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        await _lifetime.CancelAsync();
         await Connection.DisposeAsync();
-
+        await Task.WhenAll(_connections.Values);
+        _lifetime.Dispose();
         GC.SuppressFinalize(this);
     }
 
-    public async Task ConnectAsync()
+    public Task ConnectAsync() => ConnectAsync(CancellationToken.None);
+
+    public async Task ConnectAsync(CancellationToken cancellationToken)
     {
-        if (await ConnectWithRetryAsync(Connection, CancellationToken.None))
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        await _connectionGate.WaitAsync(attempt.Token);
+        var ready = false;
+        try
         {
-            _currentTunnel = await RegisterTunnelAsync(Tunnel);
+            if (Connection.State == HubConnectionState.Connected && _currentTunnel is not null) return;
+            if (await ConnectWithRetryAsync(Connection, attempt.Token))
+            {
+                _currentTunnel = await RegisterTunnelAsync(Tunnel, attempt.Token);
+                ready = !string.IsNullOrEmpty(_currentTunnel?.TunnelUrl);
+            }
         }
+        finally { _connectionGate.Release(); }
+        if (ready) await NotifyReadyAsync();
+        attempt.Token.ThrowIfCancellationRequested();
     }
 
-    public async Task<TcpTunnelResponse?> RegisterTunnelAsync(TcpTunnelRequest tunnel)
+    public Task<TcpTunnelResponse?> RegisterTunnelAsync(TcpTunnelRequest tunnel) =>
+        RegisterTunnelAsync(tunnel, _lifetime.Token);
+
+    public async Task<TcpTunnelResponse?> RegisterTunnelAsync(TcpTunnelRequest tunnel, CancellationToken cancellationToken)
     {
         tunnel.PublicPort = _currentTunnel?.Port;
 
@@ -125,50 +136,105 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
 
         while (tunnelResponse == null)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _disposed) != 0) return null;
+
             try
             {
-                tunnelResponse = await Connection.InvokeAsync<TcpTunnelResponse>("RegisterTunnelAsync", tunnel);
+                tunnelResponse = await Connection.InvokeAsync<TcpTunnelResponse>("RegisterTunnelAsync", tunnel, cancellationToken);
 
                 if (!string.IsNullOrEmpty(tunnelResponse.Error))
                 {
-                    LogError?.Invoke($"[TCP] {tunnelResponse!.Message}:{tunnelResponse.Error}");
+                    Emit(LogError, $"[TCP] {tunnelResponse.Message}:{tunnelResponse.Error}");
+                    tunnel.PublicPort = null;
+                    tunnelResponse = null;
+                    await Task.Delay(5000, cancellationToken);
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
-                LogError?.Invoke($"[TCP] An error occurred while registering the tunnel:");
-                LogException?.Invoke(ex);
+                if (Volatile.Read(ref _disposed) != 0) return null;
+                Emit(LogError, "[TCP] An error occurred while registering the tunnel:");
+                Emit(LogException, ex);
 
-                await Task.Delay(5000);
+                await Task.Delay(5000, cancellationToken);
             }
         }
 
         return tunnelResponse;
     }
 
+    private async Task NotifyReadyAsync()
+    {
+        if (Connected is { } handlers)
+            foreach (Func<Task> handler in handlers.GetInvocationList()) await ObserveAsync(handler);
+    }
+
+    private void Track(Func<Task> operation)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        var id = Interlocked.Increment(ref _operationId);
+        var task = ObserveAsync(operation);
+        _connections[id] = task;
+        _ = task.ContinueWith(_ => _connections.TryRemove(id, out var _), CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private async Task ObserveAsync(Func<Task> operation)
+    {
+        try { await operation(); }
+        catch (OperationCanceledException) { }
+        catch (Exception exception)
+        {
+            if (Volatile.Read(ref _disposed) == 0) Emit(LogException, exception);
+        }
+    }
+
+    private static void Emit<T>(Action<T>? diagnostic, T value)
+    {
+        try { diagnostic?.Invoke(value); } catch { /* Diagnostics cannot interrupt transport cleanup. */ }
+    }
+
+    private static void Emit(Action<string, string>? diagnostic, string method, string path)
+    {
+        try { diagnostic?.Invoke(method, path); } catch { /* Diagnostics cannot interrupt transport cleanup. */ }
+    }
+
     private async Task HandleNewTcpConnectionAsync(TcpConnection tcpConnection)
     {
         using var localClient = new TcpClient();
-        using var cts = new CancellationTokenSource();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
 
         try
         {
-            await localClient.ConnectAsync(Tunnel.Host, Tunnel.LocalPort);
+            await localClient.ConnectAsync(Tunnel.Host, Tunnel.LocalPort, cts.Token);
 
             var incomingTask = StreamIncomingAsync(localClient, tcpConnection, cts.Token);
             var outgoingTask = StreamOutgoingAsync(localClient, tcpConnection, cts.Token);
 
-            await Task.WhenAny(incomingTask, outgoingTask);
+            try
+            {
+                var completed = await Task.WhenAny(incomingTask, outgoingTask);
+                await completed;
+            }
+            finally
+            {
+                await cts.CancelAsync();
+                try { await Task.WhenAll(incomingTask, outgoingTask); }
+                catch (Exception) when (cts.IsCancellationRequested) { }
+            }
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            LogException?.Invoke(ex);
+            Emit(LogFailedRequest, "TCP", $"{Tunnel.Host}:{Tunnel.LocalPort}");
+            Emit(LogException, ex);
         }
         finally
         {
             await cts.CancelAsync();
-
-            Log?.Invoke($"[TCP] Connection {tcpConnection.RequestId} closed.");
+            Emit(Log, $"[TCP] Connection {tcpConnection.RequestId} closed.");
         }
     }
 
@@ -177,7 +243,6 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
         try
         {
             var incomingTcpStream = Connection.StreamAsync<byte[]>("StreamIncomingAsync", tcpConnection, cancellationToken: cancellationToken);
-
             var localTcpStream = localClient.GetStream();
 
             await foreach (var chunk in incomingTcpStream.WithCancellation(cancellationToken))
@@ -185,21 +250,15 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
                 await localTcpStream.WriteAsync(chunk, cancellationToken);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) { }
+        catch (IOException ex) when (ex.InnerException is SocketException) { }
+        catch (Exception ex)
         {
-            // ignore
-        }
-        catch (IOException ex) when (ex.InnerException is SocketException)
-        {
-            // ignore
-        }
-        catch (Exception)
-        {
-            // ignore
+            if (!cancellationToken.IsCancellationRequested) Emit(LogException, ex);
         }
         finally
         {
-            Log?.Invoke($"[TCP] Writing data to connection {tcpConnection.RequestId} finished.");
+            Emit(Log, $"[TCP] Writing data to connection {tcpConnection.RequestId} finished.");
         }
     }
 
@@ -225,8 +284,7 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
         }
         finally
         {
-            Log?.Invoke($"[TCP] Reading data from connection {tcpConnection.RequestId} finished.");
-
+            Emit(Log, $"[TCP] Reading data from connection {tcpConnection.RequestId} finished.");
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
@@ -237,6 +295,7 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             try
             {
+                if (connection.State == HubConnectionState.Connected) return true;
                 await connection.StartAsync(token);
 
                 return true;
@@ -247,12 +306,12 @@ public class TcpTunnelClient : ITunnelClient, IAsyncDisposable
             }
             catch
             {
-                if (_disposed)
+                if (Volatile.Read(ref _disposed) != 0)
                 {
                     return false;
                 }
 
-                LogError?.Invoke($"[TCP] Cannot connect to the public server on {Tunnel.PublicUrl}");
+                Emit(LogError, $"[TCP] Cannot connect to the public server on {Tunnel.PublicUrl}");
 
                 await Task.Delay(5000, token);
             }

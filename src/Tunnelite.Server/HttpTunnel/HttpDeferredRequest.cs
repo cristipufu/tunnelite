@@ -1,7 +1,10 @@
-﻿namespace Tunnelite.Server.HttpTunnel;
+namespace Tunnelite.Server.HttpTunnel;
 
-public class HttpDefferedRequest : IDisposable
+public class HttpDeferredRequest : IDisposable
 {
+    private int _disposed;
+    private int _responseClaimed;
+
     public Guid ClientId { get; set; }
     public string? ConnectionId { get; set; }
     public HttpContext? HttpContext { get; set; }
@@ -16,6 +19,8 @@ public class HttpDefferedRequest : IDisposable
 
     public CancellationTokenRegistration CancellationTokenRegistration { get; set; }
 
+    public bool TryClaimResponse() => Interlocked.Exchange(ref _responseClaimed, 1) == 0;
+
     public void Dispose()
     {
         Dispose(true);
@@ -24,12 +29,13 @@ public class HttpDefferedRequest : IDisposable
 
     protected virtual void Dispose(bool disposing)
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         if (disposing)
         {
             HttpContext = null;
-            TimeoutCancellationTokenSource?.Dispose();
-            CancellationTokenSource?.Dispose();
             CancellationTokenRegistration.Dispose();
+            CancellationTokenSource?.Dispose();
+            TimeoutCancellationTokenSource?.Dispose();
         }
     }
 }

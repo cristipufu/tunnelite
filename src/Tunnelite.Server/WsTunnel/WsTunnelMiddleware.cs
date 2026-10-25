@@ -5,19 +5,13 @@ namespace Tunnelite.Server.WsTunnel;
 
 public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQueue, HttpTunnelStore tunnelStore, IHubContext<HttpTunnelHub> hubContext, ILogger<WsTunnelMiddleware> logger)
 {
-    private readonly RequestDelegate _next = next;
-    private readonly HttpTunnelStore _tunnelStore = tunnelStore;
-    private readonly WsRequestsQueue _requestsQueue = requestsQueue;
-    private readonly IHubContext<HttpTunnelHub> _hubContext = hubContext;
-    private readonly ILogger<WsTunnelMiddleware> _logger = logger;
-
     private const int MaxSubProtocols = 8;
 
     public async Task InvokeAsync(HttpContext context)
     {
         if (!context.WebSockets.IsWebSocketRequest)
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
@@ -25,37 +19,13 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
 
         if (path == "/wsshttptunnel" || path == "/wsstcptunnel")
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
-        HttpTunnelRequest? tunnel = null;
-
-        var subdomain = context.Request.Host.Host.Split('.')[0];
-
-        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        if (!tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
         {
-            tunnel = _tunnelStore.Tunnels.Values.FirstOrDefault(t => _tunnelStore.Connections.ContainsKey(t.ClientId));
-        }
-        else if (subdomain.Equals("tunnelite"))
-        {
-            await _next(context);
-            return;
-        }
-        else
-        {
-            _tunnelStore.Tunnels.TryGetValue(subdomain, out tunnel);
-        }
-
-        if (tunnel == null)
-        {
-            await _next(context);
-            return;
-        }
-
-        if (!_tunnelStore.Connections.TryGetValue(tunnel!.ClientId, out var connectionId))
-        {
-            await _next(context);
+            await next(context);
             return;
         }
 
@@ -71,11 +41,11 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
         {
             using var webSocket = await context.WebSockets.AcceptWebSocketAsync(subProtocols.FirstOrDefault());
 
-            _logger.LogInformation("WebSocket connection accepted: {requestId}", requestId);
+            logger.LogInformation("WebSocket connection accepted: {requestId}", requestId);
 
-            var completionTask = _requestsQueue.WaitForCompletionAsync(tunnel!.ClientId, requestId, webSocket, connectionId.ConnectionId);
+            var completionTask = requestsQueue.WaitForCompletionAsync(tunnel!.ClientId, requestId, webSocket, connectionId.ConnectionId);
 
-            await _hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewWsConnection", new WsConnection
+            await hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewWsConnection", new WsConnection
             {
                 RequestId = requestId,
                 Path = $"{ConvertHttpToWsUri(tunnel.LocalUrl)}{path}{context.Request.QueryString}",
@@ -91,9 +61,9 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling WebSocket connection");
+            logger.LogError(ex, "Error handling WebSocket connection");
         }
-        finally { await _requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
+        finally { await requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
     }
 
     public static string ConvertHttpToWsUri(string? httpUrl)

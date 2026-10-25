@@ -77,4 +77,34 @@ public class ClientLifecycleTests(BareTunnelHost host) : IClassFixture<BareTunne
         await client.DisposeAsync();
         await legacy.StopAsync();
     }
+
+    [Fact]
+    public async Task Tcp_tunnel_client_notifies_connected_and_supports_cancellation()
+    {
+        await using var client = new TcpTunnelClient(new TcpTunnelRequest
+        {
+            ClientId = Guid.NewGuid(),
+            LocalUrl = $"tcp://localhost:{host.App.TcpPort}",
+            Host = "localhost",
+            LocalPort = host.App.TcpPort,
+            PublicUrl = host.PublicUrl,
+        }, null);
+        string? notifiedUrl = null;
+        client.Connected += () => { notifiedUrl = client.TunnelUrl; return Task.CompletedTask; };
+        await client.ConnectAsync(CancellationToken.None).WaitAsync(TestData.Timeout);
+        Assert.NotNull(notifiedUrl);
+        Assert.Equal(client.TunnelUrl, notifiedUrl);
+
+        await using var unreachable = new TcpTunnelClient(new TcpTunnelRequest
+        {
+            ClientId = Guid.NewGuid(),
+            LocalUrl = $"tcp://localhost:{host.App.TcpPort}",
+            Host = "localhost",
+            LocalPort = host.App.TcpPort,
+            PublicUrl = "http://127.0.0.1:1",
+        }, null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => unreachable.ConnectAsync(cancellation.Token));
+        await unreachable.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+    }
 }

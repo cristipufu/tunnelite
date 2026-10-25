@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using Microsoft.AspNetCore.Http;
+using Tunnelite.Server.HttpTunnel;
 using Tunnelite.Server.SseTunnel;
 using Tunnelite.Server.WsTunnel;
 
@@ -7,6 +8,40 @@ namespace Tunnelite.Tests;
 
 public class StreamQueueTests
 {
+    [Fact]
+    public void Loopback_host_resolution_rejects_remote_ips_and_public_subdomains()
+    {
+        var loopback = new DefaultHttpContext();
+        loopback.Request.Host = new HostString("localhost", 5000);
+        loopback.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+        Assert.True(HttpTunnelStore.IsLoopbackHost(loopback));
+
+        var spoofedRemote = new DefaultHttpContext();
+        spoofedRemote.Request.Host = new HostString("localhost", 5000);
+        spoofedRemote.Connection.RemoteIpAddress = System.Net.IPAddress.Parse("203.0.113.10");
+        Assert.False(HttpTunnelStore.IsLoopbackHost(spoofedRemote));
+
+        var subdomain = new DefaultHttpContext();
+        subdomain.Request.Host = new HostString("localhost.tunnelite.com");
+        subdomain.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+        Assert.False(HttpTunnelStore.IsLoopbackHost(subdomain));
+    }
+
+    [Fact]
+    public async Task Http_response_can_only_be_claimed_once_for_a_pending_request()
+    {
+        var queue = new HttpRequestsQueue();
+        var requestId = Guid.NewGuid();
+        var context = new DefaultHttpContext();
+
+        var waiting = queue.WaitForCompletionAsync(requestId, context);
+
+        Assert.Same(context, queue.ClaimResponseHttpContext(requestId));
+        Assert.Null(queue.ClaimResponseHttpContext(requestId));
+
+        await queue.CompleteAsync(requestId);
+        await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+    }
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -40,5 +75,52 @@ public class StreamQueueTests
         await other.WaitAsync(TimeSpan.FromSeconds(1));
         if (webSockets) Assert.Null(ws.GetWebSocket(otherClient, request));
         else Assert.Null(sse.GetHttpContext(otherClient, request));
+    }
+
+    [Fact]
+    public async Task Concurrent_registration_and_cleanup_never_orphans_pending_streams()
+    {
+        var queue = new SseRequestsQueue();
+        var clientId = Guid.NewGuid();
+        var pending = new System.Collections.Concurrent.ConcurrentBag<(Guid RequestId, Task Task)>();
+        using var stop = new CancellationTokenSource();
+
+        var cleaner = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                await queue.CompleteConnectionAsync(clientId, "conn");
+                await Task.Yield();
+            }
+        });
+
+        var producers = Enumerable.Range(0, 4).Select(_ => Task.Run(async () =>
+        {
+            for (var i = 0; i < 500; i++)
+            {
+                var requestId = Guid.NewGuid();
+                var waitTask = queue.WaitForCompletionAsync(clientId, requestId, new DefaultHttpContext(), "conn");
+                pending.Add((requestId, waitTask));
+                if (i % 8 == 0)
+                {
+                    await Task.Yield();
+                }
+            }
+        })).ToArray();
+
+        await Task.WhenAll(producers);
+        stop.Cancel();
+        await cleaner;
+        await queue.CompleteConnectionAsync(clientId, "conn");
+
+        foreach (var (requestId, waitTask) in pending)
+        {
+            if (!waitTask.IsCompleted)
+            {
+                Assert.NotNull(queue.GetHttpContext(clientId, requestId));
+                await queue.CompleteAsync(clientId, requestId);
+            }
+            await waitTask.WaitAsync(TimeSpan.FromSeconds(1));
+        }
     }
 }

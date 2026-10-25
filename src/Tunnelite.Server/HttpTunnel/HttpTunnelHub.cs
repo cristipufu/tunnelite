@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR;
 using System.Buffers;
 using System.Net.WebSockets;
 using Tunnelite.Server.SseTunnel;
@@ -6,21 +6,20 @@ using Tunnelite.Server.WsTunnel;
 
 namespace Tunnelite.Server.HttpTunnel;
 
-public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRequestsQueue, SseRequestsQueue sseRequestsQueue, HttpRequestsQueue httpRequests, ILogger<HttpTunnelHub> logger) : Hub
+public class HttpTunnelHub(
+    HttpTunnelStore httpTunnelStore,
+    WsRequestsQueue wsRequestsQueue,
+    SseRequestsQueue sseRequestsQueue,
+    HttpRequestsQueue httpRequests,
+    ILogger<HttpTunnelHub> logger) : Hub
 {
-    private readonly HttpTunnelStore _httpTunnelStore = httpTunnelStore;
-    private readonly WsRequestsQueue _wsRequestsQueue = wsRequestsQueue;
-    private readonly SseRequestsQueue _sseRequestsQueue = sseRequestsQueue;
-
-    private readonly ILogger _logger = logger;
-
     public override Task OnConnectedAsync()
     {
         var clientId = GetClientId(Context);
 
         var session = new HttpTunnelSession(Context.ConnectionId, Context.ConnectionAborted);
         Context.Items["tunnelite.session"] = session;
-        _httpTunnelStore.Connections.AddOrUpdate(clientId, session, (_, _) => session);
+        httpTunnelStore.Connections.AddOrUpdate(clientId, session, (_, _) => session);
 
         return base.OnConnectedAsync();
     }
@@ -28,13 +27,13 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     public async Task CloseWsAsync(WsConnection connection)
     {
         var clientId = GetClientId(Context);
-        var socket = _wsRequestsQueue.GetWebSocket(clientId, connection.RequestId);
+        var socket = wsRequestsQueue.GetWebSocket(clientId, connection.RequestId);
         try
         {
             if (socket is { State: WebSocketState.Open })
                 await socket.CloseOutputAsync(WebSocketCloseStatus.EndpointUnavailable, "Tunnel connection ended.", Context.ConnectionAborted);
         }
-        finally { await _wsRequestsQueue.CompleteAsync(clientId, connection.RequestId); }
+        finally { await wsRequestsQueue.CompleteAsync(clientId, connection.RequestId); }
     }
 
     /// <summary>
@@ -63,7 +62,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        var webSocket = _wsRequestsQueue.GetWebSocket(clientId, wsConnection.RequestId);
+        var webSocket = wsRequestsQueue.GetWebSocket(clientId, wsConnection.RequestId);
 
         if (webSocket == null)
         {
@@ -105,9 +104,9 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         finally
         {
             // Complete the deferred websocket request
-            await _wsRequestsQueue.CompleteAsync(clientId, wsConnection.RequestId);
+            await wsRequestsQueue.CompleteAsync(clientId, wsConnection.RequestId);
 
-            _logger.LogInformation("Done reading.. Closing WebSocketConnection {RequestId}", wsConnection.RequestId);
+            logger.LogInformation("Done reading.. Closing WebSocketConnection {RequestId}", wsConnection.RequestId);
 
             ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -121,7 +120,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        var webSocket = _wsRequestsQueue.GetWebSocket(clientId, wsConnection.RequestId);
+        var webSocket = wsRequestsQueue.GetWebSocket(clientId, wsConnection.RequestId);
 
         if (webSocket == null)
         {
@@ -155,11 +154,11 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unexpected error occurred while streaming outgoing data for {RequestId}", wsConnection.RequestId);
+            logger.LogError(ex, "An unexpected error occurred while streaming outgoing data for {RequestId}", wsConnection.RequestId);
         }
         finally
         {
-            _logger.LogInformation("Done writing.. WebSocket Connection {RequestId}", wsConnection.RequestId);
+            logger.LogInformation("Done writing.. WebSocket Connection {RequestId}", wsConnection.RequestId);
         }
     }
 
@@ -167,7 +166,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        var context = _sseRequestsQueue.GetHttpContext(clientId, sseConnection.RequestId);
+        var context = sseRequestsQueue.GetHttpContext(clientId, sseConnection.RequestId);
 
         if (context == null)
         {
@@ -192,14 +191,14 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unexpected error occurred while streaming SSE data for {RequestId}", sseConnection.RequestId);
+            logger.LogError(ex, "An unexpected error occurred while streaming SSE data for {RequestId}", sseConnection.RequestId);
         }
         finally
         {
-            _logger.LogInformation("Done writing.. SSE Connection {RequestId}", sseConnection.RequestId);
+            logger.LogInformation("Done writing.. SSE Connection {RequestId}", sseConnection.RequestId);
 
             // Complete the SSE request
-            await _sseRequestsQueue.CompleteAsync(clientId, sseConnection.RequestId);
+            await sseRequestsQueue.CompleteAsync(clientId, sseConnection.RequestId);
         }
     }
 
@@ -208,17 +207,15 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         var clientId = GetClientId(Context);
 
         if (Context.Items["tunnelite.session"] is not HttpTunnelSession session) return;
-        _httpTunnelStore.Connections.TryRemove(new KeyValuePair<Guid, HttpTunnelSession>(clientId, session));
-        await session.CloseAsync(_httpTunnelStore);
-        await _wsRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
-        await _sseRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
+        httpTunnelStore.Connections.TryRemove(new KeyValuePair<Guid, HttpTunnelSession>(clientId, session));
+        await session.CloseAsync(httpTunnelStore);
+        await wsRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
+        await sseRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
         await httpRequests.CompleteConnectionAsync(session.ConnectionId);
 
         await base.OnDisconnectedAsync(exception);
     }
 
-    private static Guid GetClientId(HubCallerContext context)
-    {
-        return Guid.Parse(context.GetHttpContext()!.Request.Query["clientId"].ToString());
-    }
+    private static Guid GetClientId(HubCallerContext context) =>
+        Guid.TryParse(context.GetHttpContext()?.Request.Query["clientId"], out var clientId) ? clientId : Guid.Empty;
 }

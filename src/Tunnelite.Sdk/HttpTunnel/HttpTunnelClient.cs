@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.SignalR.Client;
 using Nerdbank.MessagePack;
 using Nerdbank.MessagePack.SignalR;
 using Microsoft.Extensions.DependencyInjection;
@@ -46,6 +46,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     };
     private static readonly HttpClient LocalHttpClient = new(LocalHttpClientHandler);
     private readonly HttpClient _localHttpClient;
+    private readonly bool _allowUntrustedLocalCertificates;
 
     private HttpTunnelResponse? _currentTunnel = null;
     private readonly HttpTunnelRequest Tunnel;
@@ -70,8 +71,8 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         tunnel.PublicUrl = relayUri.AbsoluteUri.TrimEnd('/');
         tunnel.ClientId ??= Guid.NewGuid();
         if (tunnel.ClientId == Guid.Empty) throw new ArgumentException("A client id cannot be empty.", nameof(tunnel));
-        var allowUntrusted = tunnel.AllowUntrustedLocalCertificates ?? (tunnel.Access is null);
-        _localHttpClient = allowUntrusted ? new HttpClient(new HttpClientHandler
+        _allowUntrustedLocalCertificates = tunnel.AllowUntrustedLocalCertificates ?? (tunnel.Access is null);
+        _localHttpClient = _allowUntrustedLocalCertificates ? new HttpClient(new HttpClientHandler
         {
             UseCookies = false, AllowAutoRedirect = false,
             ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
@@ -204,7 +205,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         var id = Interlocked.Increment(ref _operationId);
         var task = ObserveAsync(operation);
         _requests[id] = task;
-        _ = task.ContinueWith(_ => _requests.TryRemove(id, out var ignored), CancellationToken.None,
+        _ = task.ContinueWith(_ => _requests.TryRemove(id, out var _), CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
@@ -277,7 +278,13 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     await ForwardResponseAsync(requestUrl, pending, _lifetime.Token);
                     return;
                 }
-                var path = httpConnection.Path[Tunnel.LocalUrl.TrimEnd('/').Length..].Split('?')[0];
+                var localBase = Tunnel.LocalUrl.TrimEnd('/');
+                var path = httpConnection.Path.StartsWith(localBase, StringComparison.OrdinalIgnoreCase)
+                    ? httpConnection.Path[localBase.Length..].Split('?')[0]
+                    : Uri.TryCreate(httpConnection.Path, UriKind.Absolute, out var requestUri)
+                        ? requestUri.AbsolutePath
+                        : httpConnection.Path.Split('?')[0];
+                if (path.Length == 0) path = "/";
                 var decision = await access.CheckHttpAsync(localRequest, path, new Uri(endpoint), _lifetime.Token);
                 if (decision.Response is { } denied)
                 {
@@ -333,7 +340,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
 
         // Set the content of the public request to stream from the local response
-        publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync());
+        publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync(cancellationToken), cancellationToken);
 
         // Send the response back to the public server
         var transfer = string.Equals(localResponse.Content.Headers.ContentType?.MediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase)
@@ -360,7 +367,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         try
         {
             using var webSocket = new ClientWebSocket();
-            if (Tunnel.AllowUntrustedLocalCertificates == true) webSocket.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+            if (_allowUntrustedLocalCertificates) webSocket.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
 
             // Ask the local app for the same subprotocols the public client asked for (e.g. Vite's "vite-hmr").
             foreach (var subProtocol in wsConnection.SubProtocols ?? [])
@@ -374,8 +381,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 {
                     var value = string.Join(name.Equals("Cookie", StringComparison.OrdinalIgnoreCase) ? "; " : ", ", values);
                     if (Tunnel.Access is not null && name.Equals("Cookie", StringComparison.OrdinalIgnoreCase))
-                        value = string.Join("; ", value.Split(';').Select(s => s.Trim()).Where(s =>
-                            !s.StartsWith(ViewerTicket.CookieName(new Uri(endpoint!).Scheme == "https") + "=", StringComparison.Ordinal)));
+                        value = PairedAccess.StripViewerCookie(value, new Uri(endpoint!).Scheme == "https");
                     if (value.Length > 0) webSocket.Options.SetRequestHeader(name, value);
                 }
             }
@@ -550,7 +556,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
 
             int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, 0, TunnelProtocol.ChunkSize, cancellationToken)) > 0)
+            while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, TunnelProtocol.ChunkSize), cancellationToken)) > 0)
             {
                 yield return buffer[..bytesRead];
             }
@@ -593,11 +599,6 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     || (Tunnel.RequirePairing && !tunnelResponse.RequirePairing)))
                     throw new InvalidOperationException("This relay must be upgraded to support protected endpoints and pairing.");
                 tunnel.Subdomain = tunnelResponse?.Subdomain ?? tunnel.Subdomain;
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    Emit(LogError, $"{tunnelResponse!.Message}:{tunnelResponse.Error}");
-                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (InvalidOperationException) { throw; }

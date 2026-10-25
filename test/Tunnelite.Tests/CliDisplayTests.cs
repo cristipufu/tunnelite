@@ -115,4 +115,55 @@ public class CliDisplayTests
         Assert.Contains("Pairing code expired", output.ToString());
         Assert.DoesNotContain("Scan to pair", output.ToString());
     }
+
+    [Fact]
+    public void Switching_from_device_list_to_revoke_preserves_the_selected_device()
+    {
+        var (display, _, _) = Create(100, 30, paired: true);
+        var first = new Tunnelite.Sdk.PairedDevice(Guid.NewGuid(), "First", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(30), "hash");
+        var second = first with { Id = Guid.NewGuid(), Name = "Second" };
+        IReadOnlyList<Tunnelite.Sdk.PairedDevice> devices = [first, second];
+
+        display.ShowDevices(DevicePanel.List, devices);
+        Assert.Equal(0, display.View.SelectedDevice);
+
+        display.SetView(display.View with { SelectedDevice = 1 });
+        display.ShowDevices(DevicePanel.Revoke, devices);
+        Assert.Equal(1, display.View.SelectedDevice);
+        Assert.Equal(DevicePanel.Revoke, display.View.Panel);
+    }
+
+    [Fact]
+    public void Status_prefix_animates_spinner_while_connecting_and_stays_static_when_connected()
+    {
+        Assert.Equal("● ", CliTheme.StatusPrefix("Connected", unicode: true, animationFrame: 3));
+        Assert.Equal("* ", CliTheme.StatusPrefix("Connected", unicode: false, animationFrame: 3));
+        Assert.NotEqual("● ", CliTheme.StatusPrefix("Connecting", unicode: true, animationFrame: 1));
+        Assert.NotEqual("* ", CliTheme.StatusPrefix("Reconnecting", unicode: false, animationFrame: 1));
+    }
+
+    [Theory]
+    [InlineData(100, 26)]
+    [InlineData(80, 24)]
+    [InlineData(66, 25)]
+    [InlineData(52, 29)]
+    [InlineData(50, 26)]
+    [InlineData(45, 25)]
+    public void Paired_qr_fits_across_smaller_and_narrower_terminal_resolutions(int width, int height)
+    {
+        var (display, console, output) = Create(width, height, paired: true);
+        var publicUrl = "https://p-8f3c1cd768f8c84f489d7f7da3a82d35.tunnelite.com";
+        var pairingUrl = publicUrl + "/_tunnelite/pair#code=" + new string('a', 43);
+        var qr = TerminalQr.Create(pairingUrl, unicode: true);
+        display.SetView(new("Connected", publicUrl, qr, PairingUrl: pairingUrl));
+        console.Write(display.Render());
+        var rendered = output.ToString();
+        Assert.Contains("CONNECTION", rendered);
+        Assert.Contains("Scan to pair this browser", rendered);
+        Assert.DoesNotContain("Resize the terminal", rendered);
+        if (height >= 26)
+        {
+            Assert.Contains(new string('▀', qr.Width), rendered);
+        }
+    }
 }
