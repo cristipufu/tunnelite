@@ -10,6 +10,14 @@ namespace Tunnelite.Sdk;
 /// <summary>Browser enrollment, device sessions and revocation owned by the desktop, never stored on the relay.</summary>
 public sealed class PairedAccess : IDisposable
 {
+    internal const int MaxPairedDevices = 32;
+    private const int Sha256HexLength = 64;
+    private const int MaxDeviceNameLength = 64;
+    private const int MaxPairingBodyBytes = 4096;
+    private const int RandomTokenByteLength = 32;
+    private static readonly TimeSpan ChallengeLifetime = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan DeviceSessionLifetime = TimeSpan.FromDays(30);
+
     private readonly SemaphoreSlim _updates = new(1, 1);
     private readonly ConcurrentDictionary<Guid, DeviceCancellation> _revocations = new();
     private readonly ConcurrentDictionary<Guid, PairedDevice> _devices;
@@ -29,7 +37,7 @@ public sealed class PairedAccess : IDisposable
         Identity = identity;
         _key = EndpointIdentity.ViewerKey(identity.Secret);
         var devices = state?.Devices ?? (state is null ? [] : throw new ArgumentException("Device records cannot be null.", nameof(state)));
-        if (devices.Count > 32 || devices.Any(d => d is null || d.Id == Guid.Empty || d.TokenHash is not { Length: 64 }
+        if (devices.Count > MaxPairedDevices || devices.Any(d => d is null || d.Id == Guid.Empty || d.TokenHash is not { Length: Sha256HexLength }
             || !d.TokenHash.All(char.IsAsciiHexDigit) || d.ExpiresAt <= d.CreatedAt) || devices.Select(d => d.Id).Distinct().Count() != devices.Count)
             throw new ArgumentException("The saved device records are invalid.", nameof(state));
         _devices = new(devices.Select(d => new KeyValuePair<Guid, PairedDevice>(d.Id, d with { Name = DeviceName(d.Name) })));
@@ -42,7 +50,7 @@ public sealed class PairedAccess : IDisposable
     public PairingChallenge CreateChallenge()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        var challenge = new PairingChallenge(ViewerTicket.Encode(RandomNumberGenerator.GetBytes(32)), _clock.GetUtcNow().AddMinutes(5));
+        var challenge = new PairingChallenge(ViewerTicket.Encode(RandomNumberGenerator.GetBytes(RandomTokenByteLength)), _clock.GetUtcNow().Add(ChallengeLifetime));
         Interlocked.Exchange(ref _challenge, challenge);
         return challenge;
     }
@@ -86,14 +94,14 @@ public sealed class PairedAccess : IDisposable
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         using var limited = new MemoryStream();
-        var buffer = new byte[4097];
-        while (limited.Length <= 4096)
+        var buffer = new byte[MaxPairingBodyBytes + 1];
+        while (limited.Length <= MaxPairingBodyBytes)
         {
-            var read = await body.ReadAsync(buffer.AsMemory(0, (int)(4097 - limited.Length)), cancellationToken);
+            var read = await body.ReadAsync(buffer.AsMemory(0, (int)(MaxPairingBodyBytes + 1 - limited.Length)), cancellationToken);
             if (read == 0) break;
             limited.Write(buffer, 0, read);
         }
-        if (limited.Length > 4096) return Response(HttpStatusCode.RequestEntityTooLarge, "Pairing request is too large.");
+        if (limited.Length > MaxPairingBodyBytes) return Response(HttpStatusCode.RequestEntityTooLarge, "Pairing request is too large.");
         PairingRequest? request;
         try { request = JsonSerializer.Deserialize(limited.ToArray(), TunneliteJsonContext.Default.PairingRequest); }
         catch (JsonException) { return Response(HttpStatusCode.BadRequest, "Invalid pairing request."); }
@@ -101,16 +109,16 @@ public sealed class PairedAccess : IDisposable
         try
         {
             var challenge = Volatile.Read(ref _challenge);
-            if (challenge is null || challenge.ExpiresAt <= _clock.GetUtcNow() || request?.Code is not { Length: 43 }
+            if (challenge is null || challenge.ExpiresAt <= _clock.GetUtcNow() || request?.Code is not { Length: EndpointIdentity.SecretLength }
                 || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(challenge.Code), Encoding.ASCII.GetBytes(request.Code))
                 || Interlocked.CompareExchange(ref _challenge, null, challenge) != challenge)
                 return Response(HttpStatusCode.Unauthorized, "Pairing code expired or already used. Scan a new QR code.");
             var now = _clock.GetUtcNow();
-            var token = ViewerTicket.Encode(RandomNumberGenerator.GetBytes(32));
+            var token = ViewerTicket.Encode(RandomNumberGenerator.GetBytes(RandomTokenByteLength));
             var device = new PairedDevice(Guid.NewGuid(), DeviceName(request.Name),
-                now, now.AddDays(30), ViewerTicket.Hash(token));
+                now, now.Add(DeviceSessionLifetime), ViewerTicket.Hash(token));
             var updated = Snapshot(State.Devices.Where(d => d.ExpiresAt > now).Append(device));
-            if (updated.Devices.Count > 32) return Response(HttpStatusCode.Conflict, "Remove a paired device before adding another.");
+            if (updated.Devices.Count > MaxPairedDevices) return Response(HttpStatusCode.Conflict, "Remove a paired device before adding another.");
             if (_save is not null) await _save(updated, cancellationToken);
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             _devices[device.Id] = device;
@@ -121,7 +129,7 @@ public sealed class PairedAccess : IDisposable
             }
             Volatile.Write(ref _state, updated);
             var response = Response(HttpStatusCode.NoContent, "");
-            response.Headers.TryAddWithoutValidation("Set-Cookie", $"{ViewerTicket.CookieName(secure)}={ViewerTicket.Create(_key, device.Id, device.ExpiresAt, token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000{(secure ? "; Secure" : "")}");
+            response.Headers.TryAddWithoutValidation("Set-Cookie", $"{ViewerTicket.CookieName(secure)}={ViewerTicket.Create(_key, device.Id, device.ExpiresAt, token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age={(int)DeviceSessionLifetime.TotalSeconds}{(secure ? "; Secure" : "")}");
             return response;
         }
         finally { _updates.Release(); }
@@ -148,11 +156,17 @@ public sealed class PairedAccess : IDisposable
         if (!Authorize(cookies, secure, out var revoked)) return (Response(HttpStatusCode.Unauthorized, "Scan a new QR code on your desktop."), default);
         // The app receives only its own cookies; the desktop access credential belongs to Tunnelite.
         request.Headers.Remove("Cookie");
-        var remaining = cookies!.Split(';').Select(s => s.Trim())
-            .Where(s => !s.StartsWith(ViewerTicket.CookieName(secure) + "=", StringComparison.Ordinal));
-        var appCookies = string.Join("; ", remaining);
+        var appCookies = StripViewerCookie(cookies, secure);
         if (appCookies.Length > 0) request.Headers.TryAddWithoutValidation("Cookie", appCookies);
         return (null, revoked);
+    }
+
+    internal static string StripViewerCookie(string? cookies, bool secure)
+    {
+        if (string.IsNullOrEmpty(cookies)) return "";
+        var prefix = ViewerTicket.CookieName(secure) + "=";
+        return string.Join("; ", cookies.Split(';').Select(s => s.Trim())
+            .Where(s => s.Length > 0 && !s.StartsWith(prefix, StringComparison.Ordinal)));
     }
 
     internal static HttpResponseMessage Response(HttpStatusCode status, string text, string type = "text/plain")
@@ -188,7 +202,7 @@ public sealed class PairedAccess : IDisposable
     private static PairedAccessState Snapshot(IEnumerable<PairedDevice> devices) => new() { Devices = Array.AsReadOnly(devices.ToArray()) };
     private static string DeviceName(string? name)
     {
-        var clean = new string((name ?? "Phone").Where(c => !char.IsControl(c)).Take(64).ToArray());
+        var clean = new string((name ?? "Phone").Where(c => !char.IsControl(c)).Take(MaxDeviceNameLength).ToArray());
         return string.IsNullOrWhiteSpace(clean) ? "Phone" : clean;
     }
     private sealed class DeviceCancellation
@@ -200,7 +214,7 @@ public sealed class PairedAccess : IDisposable
         internal void ExpireAfter(TimeSpan remaining)
         {
             if (Interlocked.Exchange(ref _expires, 1) != 0) return;
-            try { Source.CancelAfter(remaining > TimeSpan.FromDays(30) ? TimeSpan.FromDays(30) : remaining); }
+            try { Source.CancelAfter(remaining > DeviceSessionLifetime ? DeviceSessionLifetime : remaining); }
             catch (ObjectDisposedException) { } // Revocation won the race; the cached token is already cancelled.
         }
     }

@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.SignalR.Client;
 
 namespace Tunnelite.Sdk;
 
@@ -16,4 +16,5 @@ public interface ITunnelClient
     string? TunnelUrl { get; }
 
     Task ConnectAsync();
+    Task ConnectAsync(CancellationToken cancellationToken);
 }

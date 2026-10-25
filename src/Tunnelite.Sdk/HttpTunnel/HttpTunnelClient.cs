@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.SignalR.Client;
 using Nerdbank.MessagePack;
 using Nerdbank.MessagePack.SignalR;
 using Microsoft.Extensions.DependencyInjection;
@@ -277,7 +277,9 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     await ForwardResponseAsync(requestUrl, pending, _lifetime.Token);
                     return;
                 }
-                var path = httpConnection.Path[Tunnel.LocalUrl.TrimEnd('/').Length..].Split('?')[0];
+                var path = Uri.TryCreate(httpConnection.Path, UriKind.Absolute, out var requestUri)
+                    ? requestUri.AbsolutePath
+                    : httpConnection.Path.Split('?')[0];
                 var decision = await access.CheckHttpAsync(localRequest, path, new Uri(endpoint), _lifetime.Token);
                 if (decision.Response is { } denied)
                 {
@@ -333,7 +335,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
 
         // Set the content of the public request to stream from the local response
-        publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync());
+        publicRequest.Content = new StreamingContent(await localResponse.Content.ReadAsStreamAsync(cancellationToken), cancellationToken);
 
         // Send the response back to the public server
         var transfer = string.Equals(localResponse.Content.Headers.ContentType?.MediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase)
@@ -374,8 +376,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 {
                     var value = string.Join(name.Equals("Cookie", StringComparison.OrdinalIgnoreCase) ? "; " : ", ", values);
                     if (Tunnel.Access is not null && name.Equals("Cookie", StringComparison.OrdinalIgnoreCase))
-                        value = string.Join("; ", value.Split(';').Select(s => s.Trim()).Where(s =>
-                            !s.StartsWith(ViewerTicket.CookieName(new Uri(endpoint!).Scheme == "https") + "=", StringComparison.Ordinal)));
+                        value = PairedAccess.StripViewerCookie(value, new Uri(endpoint!).Scheme == "https");
                     if (value.Length > 0) webSocket.Options.SetRequestHeader(name, value);
                 }
             }
