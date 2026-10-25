@@ -53,6 +53,36 @@ public sealed class LocalApp : IAsyncDisposable
 
         app.MapGet("/status/{code:int}", (int code) => Results.StatusCode(code));
 
+        app.MapGet("/login", (HttpContext context) =>
+        {
+            context.Response.Cookies.Append("session", "alice", new CookieOptions { HttpOnly = true, Path = "/" });
+            return Results.Ok();
+        });
+        app.MapGet("/identity", (HttpContext context) => context.Request.Cookies["session"] ?? "anonymous");
+        app.MapGet("/redirect", () => Results.Redirect("/identity"));
+        app.MapGet("/authenticated-events", async (HttpContext context) =>
+        {
+            if (context.Request.Headers.Authorization != "Bearer phone" || context.Request.Cookies["session"] != "alice")
+            {
+                context.Response.StatusCode = 401;
+                return;
+            }
+            context.Response.ContentType = "text/event-stream";
+            await context.Response.WriteAsync($"data: {context.Request.Headers["Last-Event-ID"]}\n\n");
+        });
+        app.Map("/authenticated-ws", async (HttpContext context) =>
+        {
+            if (context.Request.Headers.Authorization != "Bearer phone" || context.Request.Cookies["session"] != "alice"
+                || context.Request.Headers.Origin != "https://phone.example")
+            {
+                context.Response.StatusCode = 401;
+                return;
+            }
+            using var socket = await context.WebSockets.AcceptWebSocketAsync();
+            await socket.SendAsync("authenticated"u8.ToArray(), WebSocketMessageType.Text, true, context.RequestAborted);
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, context.RequestAborted);
+        });
+
         app.MapGet("/large", (int bytes) => Results.Bytes(TestData.Bytes(bytes), "application/octet-stream"));
 
         app.MapPost("/echo", async (HttpContext context) =>
@@ -79,6 +109,21 @@ public sealed class LocalApp : IAsyncDisposable
                 await context.Response.Body.FlushAsync();
                 await Task.Delay(delay);
             }
+        });
+
+        app.MapGet("/live-forever", async (HttpContext context) =>
+        {
+            context.Response.ContentType = "text/event-stream";
+            try
+            {
+                while (!context.RequestAborted.IsCancellationRequested)
+                {
+                    await context.Response.WriteAsync("data: live\n\n", context.RequestAborted);
+                    await context.Response.Body.FlushAsync(context.RequestAborted);
+                    await Task.Delay(100, context.RequestAborted);
+                }
+            }
+            catch (OperationCanceledException) { }
         });
 
         // Echo every frame back exactly as received: same type, same end-of-message flag. Accepts the first

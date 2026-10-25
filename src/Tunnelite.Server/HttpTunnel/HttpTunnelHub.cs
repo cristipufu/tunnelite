@@ -6,7 +6,7 @@ using Tunnelite.Server.WsTunnel;
 
 namespace Tunnelite.Server.HttpTunnel;
 
-public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRequestsQueue, SseRequestsQueue sseRequestsQueue, ILogger<HttpTunnelHub> logger) : Hub
+public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRequestsQueue, SseRequestsQueue sseRequestsQueue, HttpRequestsQueue httpRequests, ILogger<HttpTunnelHub> logger) : Hub
 {
     private readonly HttpTunnelStore _httpTunnelStore = httpTunnelStore;
     private readonly WsRequestsQueue _wsRequestsQueue = wsRequestsQueue;
@@ -18,9 +18,23 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        _httpTunnelStore.Connections.AddOrUpdate(clientId, Context.ConnectionId, (key, oldValue) => Context.ConnectionId);
+        var session = new HttpTunnelSession(Context.ConnectionId, Context.ConnectionAborted);
+        Context.Items["tunnelite.session"] = session;
+        _httpTunnelStore.Connections.AddOrUpdate(clientId, session, (_, _) => session);
 
         return base.OnConnectedAsync();
+    }
+
+    public async Task CloseWsAsync(WsConnection connection)
+    {
+        var clientId = GetClientId(Context);
+        var socket = _wsRequestsQueue.GetWebSocket(clientId, connection.RequestId);
+        try
+        {
+            if (socket is { State: WebSocketState.Open })
+                await socket.CloseOutputAsync(WebSocketCloseStatus.EndpointUnavailable, "Tunnel connection ended.", Context.ConnectionAborted);
+        }
+        finally { await _wsRequestsQueue.CompleteAsync(clientId, connection.RequestId); }
     }
 
     /// <summary>
@@ -85,13 +99,13 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
 
             if (result?.MessageType == WebSocketMessageType.Close && webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
-                await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, CancellationToken.None);
+                await webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, Context.ConnectionAborted);
             }
         }
         finally
         {
             // Complete the deferred websocket request
-            await _wsRequestsQueue.CompleteAsync(wsConnection.RequestId);
+            await _wsRequestsQueue.CompleteAsync(clientId, wsConnection.RequestId);
 
             _logger.LogInformation("Done reading.. Closing WebSocketConnection {RequestId}", wsConnection.RequestId);
 
@@ -122,7 +136,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
                 {
                     if (webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                     {
-                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                        await webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, string.Empty, Context.ConnectionAborted);
                     }
                 }
                 else if (webSocket.State == WebSocketState.Open)
@@ -193,15 +207,12 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        if (_httpTunnelStore.Clients.TryGetValue(clientId, out var subdomain))
-        {
-            _httpTunnelStore.Tunnels.Remove(subdomain, out var _);
-            _httpTunnelStore.Connections.Remove(clientId, out var _);
-            _httpTunnelStore.Clients.Remove(clientId, out _);
-        }
-
-        await _wsRequestsQueue.CompleteAsync(clientId);
-        await _sseRequestsQueue.CompleteAsync(clientId);
+        if (Context.Items["tunnelite.session"] is not HttpTunnelSession session) return;
+        _httpTunnelStore.Connections.TryRemove(new KeyValuePair<Guid, HttpTunnelSession>(clientId, session));
+        await session.CloseAsync(_httpTunnelStore);
+        await _wsRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
+        await _sseRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
+        await httpRequests.CompleteConnectionAsync(session.ConnectionId);
 
         await base.OnDisconnectedAsync(exception);
     }

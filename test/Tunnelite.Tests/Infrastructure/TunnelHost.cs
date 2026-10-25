@@ -15,6 +15,7 @@ public class TunnelHost : IAsyncLifetime
     private WebApplication? _server;
 
     public string PublicUrl { get; private set; } = "";
+    public IServiceProvider ServerServices => _server!.Services;
     public LocalApp App { get; private set; } = null!;
     public HttpTunnelClient? HttpTunnel { get; private set; }
     public TcpTunnelClient? TcpTunnel { get; private set; }

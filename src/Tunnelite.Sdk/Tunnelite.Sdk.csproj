@@ -26,17 +26,19 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<Compile Include="../Shared/EndpointIdentity.cs" Link="Protocol/EndpointIdentity.cs" />
+		<Compile Include="../Shared/ViewerTicket.cs" Link="Protocol/ViewerTicket.cs" />
 		<PackageReference Include="Nerdbank.MessagePack.SignalR" Version="1.3.85" />
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
-		<PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.31" />
+		<PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.32" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.1" />
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
-		<PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.12" />
-		<PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.12" />
+		<PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.13" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
 	</ItemGroup>
 
 </Project>

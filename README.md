@@ -1,13 +1,43 @@
-# ⚡ Tunnelite
+<p align="center">
+  <a href="https://tunnelite.com">
+    <img src="https://raw.githubusercontent.com/cristipufu/tunnelite/master/src/Tunnelite.Server/wwwroot/apple-touch-icon.png" width="96" height="96" alt="Tunnelite logo">
+  </a>
+</p>
 
-[![CI](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&label=CI&logo=github)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
-[![CD](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/deploy.yml?branch=master&label=CD&logo=microsoftazure)](https://github.com/cristipufu/tunnelite/actions/workflows/deploy.yml)
-[![NuGet](https://img.shields.io/nuget/v/Tunnelite?logo=nuget&label=NuGet)](https://www.nuget.org/packages/Tunnelite/)
-[![NuGet downloads](https://img.shields.io/nuget/dt/Tunnelite?logo=nuget&label=downloads)](https://www.nuget.org/packages/Tunnelite/)
-[![Release](https://img.shields.io/github/v/release/cristipufu/tunnelite?logo=github&label=release)](https://github.com/cristipufu/tunnelite/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<h1 align="center">Tunnelite</h1>
 
-Tunnelite is a .NET tool that lets you set up a secure connection between a public web address and an application running on your local machine. It effectively makes your local app accessible from the internet.
+<p align="center">
+  <strong>Your localhost. One link away.</strong><br>
+  Share a local app, test a webhook, or connect your phone to your desktop.
+</p>
+
+<p align="center">
+  <a href="https://github.com/cristipufu/tunnelite/releases/latest"><img src="https://img.shields.io/github/v/release/cristipufu/tunnelite?style=flat-square&amp;label=release&amp;labelColor=0f172a&amp;color=0ea5e9" alt="Latest release" height="22"></a>
+  <a href="https://www.nuget.org/packages/Tunnelite/"><img src="https://img.shields.io/nuget/v/Tunnelite?style=flat-square&amp;logo=nuget&amp;logoColor=white&amp;label=NuGet&amp;labelColor=0f172a&amp;color=0284c7" alt="NuGet version" height="22"></a>
+  <a href="https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&amp;style=flat-square&amp;label=build&amp;logo=github&amp;logoColor=white&amp;labelColor=0f172a" alt="Build status" height="22"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-64748b?style=flat-square&amp;labelColor=0f172a" alt="MIT license" height="22"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start"><strong>Get started</strong></a> &nbsp;·&nbsp;
+  <a href="https://tunnelite.com">Website</a> &nbsp;·&nbsp;
+  <a href="docs/sdk.md">SDK docs</a> &nbsp;·&nbsp;
+  <a href="https://webhooks.tunnelite.com">Webhook tester</a>
+</p>
+
+<p align="center">
+  <a href="#installation"><img src="https://img.shields.io/badge/Windows-0078d4?style=flat-square" alt="Windows supported" height="22"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/macOS-334155?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="macOS supported" height="22"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/Linux-fcc624?style=flat-square&amp;logo=linux&amp;logoColor=black" alt="Linux supported" height="22"></a>
+</p>
+
+<p align="center">
+  <sub>HTTP · WebSockets · Server-Sent Events</sub>
+</p>
+
+---
+
+## Quick start
 
 ```bash
 # macOS / Linux with Homebrew
@@ -17,27 +47,7 @@ tunnelite http://localhost:3000
 
 You can also install the [.NET tool](#net-tool) or download a [standalone binary](#standalone-binaries).
 
-**Website:** [tunnelite.com](https://tunnelite.com) · **Webhook tester:** [webhooks.tunnelite.com](https://webhooks.tunnelite.com)
-
-## Contents
-
-- [Use Cases](#-use-cases)
-- [Installation](#-installation)
-- [Usage](#-usage)
-- [How It Works](#-how-it-works)
-- [Self-Hosting](#-self-hosting)
-- [Packages](#-packages)
-- [Tests](#-tests)
-- [License](#-license)
-
-## 🚀 Use Cases
-
-- Exposing locally-hosted web applications to the internet for testing or demo purposes.
-- Quickly sharing dev builds during hackathons.
-- Testing and debugging webhook integrations.
-- Providing internet access to services running behind firewalls without exposing incoming ports.
-
-## 📦 Installation
+## Installation
 
 ### Homebrew
 
@@ -84,7 +94,7 @@ Every [release](https://github.com/cristipufu/tunnelite/releases/latest) also sh
 
 A `SHA256SUMS` file is attached to each release for verification.
 
-## 💻 Usage
+## Usage
 
 Once installed, you can use the `tunnelite` command to create a tunnel to your local application:
 
@@ -101,98 +111,54 @@ This command returns a public URL with an auto-generated subdomain.
 | `<localUrl>` | The local URL to tunnel to. Use `http://` or `https://` for web applications, or `tcp://host:port` for raw TCP (self-hosted servers only). |
 | `--publicUrl <url>` | The tunnel server to connect to. Defaults to `https://tunnelite.com`. |
 | `--log <level>` | Client log verbosity: `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical`. |
+| `--name <name>` | Optional label for a saved paired-tunnel setup on your computer (default: `default`). Does not choose the public hostname. |
+| `--identity-file <path>` | Use an explicit desktop profile file in paired mode. |
+| `--qr` | Display a QR code that opens the public URL. Anyone with that URL can access the site. |
+| `--insecure-local` | Explicitly allow an untrusted HTTPS development certificate on a loopback target. Relay certificates are always verified. |
 
 While the tunnel is running, press `c` to clear the screen and `q` to quit.
 
-## 🔍 How It Works
+### Test your local website from your phone
 
-Tunnelite creates a bridge between your local application and the internet using a WebSocket connection. It streams incoming data from a public URL directly to your local server, making your local app accessible from anywhere.
-
-The managed version of Tunnelite supports HTTP(S), WebSocket (WS/WSS) and Server-Sent Events tunneling. If you need TCP tunneling, you'll have to host the server yourself.
-
-### HTTP connection
-
-```mermaid
-sequenceDiagram
-    actor EC as External Client
-    participant PTS as Public Tunneling Server<br/>(Multiple Pods)
-    participant AS as Azure SignalR
-    participant TC as Tunneling Client
-    participant IS as Intranet Server
-
-    EC->>PTS: 1. HTTP Request
-    PTS->>AS: 2. Notify Client (based on subdomain)
-    AS-->>TC: 3. WSS Notification (contains pod name)
-    TC->>PTS: 4. HTTP GET (with headers for pod routing)
-    PTS-->>TC: 5. Stream HTTP Request Body
-    TC->>IS: 6. Forward Request
-    IS-->>TC: 7. Forward Response
-    TC->>PTS: 8. HTTP POST (with headers for pod routing)
-    PTS-->>EC: 9. Stream Response
-    Note right of PTS: Steps 4-5 and 8-9 are routed<br/>to the same pod based on<br/>HTTP headers
+```bash
+tunnelite http://localhost:3000 --qr
 ```
 
-<details>
-<summary><b>TCP overview</b></summary>
+Start your website on your computer, then run the command above, replacing `3000` with your website's port. Scan the QR code with your phone's camera and open the link. Your website opens in the phone's browser. Keep your website and Tunnelite running on your computer.
 
-<br/>
+Your phone doesn't need Tunnelite installed or the same Wi-Fi connection. **Anyone with the public URL can open the site.**
 
-```mermaid
-sequenceDiagram
-    actor TC as Tunneling Client
-    box rgb(222, 235, 247) Public Tunneling Server
-        participant WS as WebSocket Handler
-        participant TL as TCP Listener
-    end
-    actor EC as External Client
+If your dev server rejects the tunnel's hostname, see [dev-server host settings](docs/paired-access.md#development-servers-with-host-checks).
 
-    TC->>WS: Connect via WebSocket
-    TC->>WS: Register tunnel request
-    WS->>TL: Start listening on random port
-    TL-->>WS: Port number
-    WS-->>TC: Tunnel registered (port number)
+### Only allow phones or browsers you pair
 
-    Note over TC,EC: Some time later
+If you want access restricted to paired browsers, run this instead:
 
-    EC->>TL: Connect to generated port
-    TL->>WS: New TCP connection
-    WS-->>TC: Notify of new TCP connection
-    TC->>WS: Begin tunneling data
-    WS<<->>TC: Bi-directional data transfer
-    TL<<->>EC: Bi-directional data transfer
+```bash
+tunnelite serve http://localhost:3000
 ```
 
-</details>
+Scan the QR code to authorize your phone's browser and open the website. Other browsers cannot access it without pairing.
 
-<details>
-<summary><b>TCP connection</b></summary>
+While Tunnelite is running:
 
-<br/>
+- Press `p` to create a fresh QR code for another browser.
+- Press `d` to see paired devices.
+- Press `r` to remove a device's access.
 
-```mermaid
-sequenceDiagram
-    actor EC as External Client
-    participant PTS as Public Tunneling Server<br/>(Multiple Pods)
-    participant AS as Azure SignalR
-    participant TC as Tunneling Client
-    participant IS as Intranet Server
+### Optional: save separate setups
 
-    EC->>PTS: 1. TCP Connection
-    PTS->>AS: 2. Notify Client (NewTcpConnection)
-    AS-->>TC: 3. WSS Notification (contains connection details)
-    TC->>IS: 4. Open TCP Connection
-    TC->>PTS: 5. Start StreamIncomingAsync
-    PTS-->>TC: 6. Stream TCP Data (incoming)
-    TC->>IS: 7. Forward Incoming Data
-    IS-->>TC: 8. Send Outgoing Data
-    TC->>PTS: 9. StreamOutgoingAsync (with outgoing data)
-    PTS-->>EC: 10. Forward Outgoing Data
-    Note right of PTS: Steps 5-6 and 9-10 use<br/>bi-directional streaming<br/>over SignalR
+Tunnelite automatically saves the address and paired devices on your computer. To keep separate setups for different projects, give each one a name:
+
+```bash
+tunnelite serve http://localhost:3000 --name my-website
 ```
 
-</details>
+`my-website` is just a local profile label. It does **not** name your website or choose its public URL. Use that same name next time to reuse its address and paired devices.
 
-## 🏠 Self-Hosting
+See [paired access](docs/paired-access.md) for profile options and device management.
+
+## Self-hosting
 
 Tunnelite allows you to self-host the server, giving you full control over your tunneling infrastructure. To set up your own Tunnelite server, you'll need:
 
@@ -207,7 +173,7 @@ Once your server is up, point the client at it:
 tunnelite http://localhost:3000 --publicUrl https://your-server-domain
 ```
 
-## 📚 Packages
+## .NET integration
 
 | Package | Description |
 | --- | --- |
@@ -223,16 +189,19 @@ app.UseTunnelite(); // prints the public URL once the tunnel is connected
 app.Run();
 ```
 
-## 🧪 Tests
+See [SDK integration](docs/sdk.md) to embed paired access in a desktop or ASP.NET Core application.
 
-`test/Tunnelite.Tests` starts the tunnel server and a local app in-process and drives real traffic through the tunnel: HTTP, Server-Sent Events, WebSockets (including large and fragmented messages), TCP, and a client speaking the original WebSocket wire format. Set `TUNNELITE_CLI` to a built `tunnelite` binary to also run the CLI end-to-end.
+## Development
+
+Build and run the integration suite:
 
 ```bash
-dotnet test test/Tunnelite.Tests
+dotnet build -c Release
+dotnet test test/Tunnelite.Tests -c Release --no-build
 ```
 
-CI runs the suite on every pull request, plus a NativeAOT publish of the CLI that is tested the same way.
+See [cross-platform validation](docs/cross-platform.md) for native CLI checks and [how it works](docs/how-it-works.md) for the transport diagrams.
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).

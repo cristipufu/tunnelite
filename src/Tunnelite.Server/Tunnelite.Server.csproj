@@ -7,7 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.12" />
+    <Compile Include="../Shared/EndpointIdentity.cs" Link="Protocol/EndpointIdentity.cs" />
+    <Compile Include="../Shared/ViewerTicket.cs" Link="Protocol/ViewerTicket.cs" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.13" />
+    <!-- Pin the patched MessagePack 2.x line while retaining legacy wire compatibility. -->
+    <PackageReference Include="MessagePack" Version="2.5.303" />
     <PackageReference Include="Microsoft.Azure.SignalR" Version="1.33.1" />
   </ItemGroup>
 

@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.SignalR.Client;
+﻿using QRCoder;
+using System.CommandLine.Invocation;
+using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using System.CommandLine;
@@ -11,78 +13,74 @@ public class Program
     private static ITunnelClient? Client;
     private static readonly Guid ClientId = Guid.NewGuid();
 
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
-        var localUrlArgument = new Argument<string>("localUrl", "The local URL to tunnel to.");
-        var logLevelOption = new Option<LogLevel?>(
-            "--log",
-            () => null,
-            "The logging level (e.g., Trace, Debug, Information, Warning, Error, Critical)");
-        var publicUrlOption = new Option<string>(
-            "--publicUrl",
-            () => "https://tunnelite.com",
-            "The public server URL.");
+        var root = new RootCommand("CLI tool to create a tunnel to a local server.");
+        Configure(root, pairedMode: false);
+        var serve = new Command("serve", "Serve a local web app to paired browsers with a QR code.");
+        Configure(serve, pairedMode: true);
+        root.AddCommand(serve);
+        return await root.InvokeAsync(args);
+    }
 
-        var rootCommand = new RootCommand
+    private static void Configure(Command command, bool pairedMode)
+    {
+        var local = new Argument<string>("localUrl", "The local URL to tunnel to.");
+        var relay = new Option<string>("--publicUrl", () => "https://tunnelite.com", "The relay server URL.");
+        var log = new Option<LogLevel?>("--log", () => null, "Client log verbosity.");
+        var pair = new Option<bool>("--pair", "Require QR pairing before allowing browser access.");
+        var name = new Option<string>("--name", () => "default", "Desktop profile name; the same profile keeps the same address.");
+        var identity = new Option<string?>("--identity-file", "Desktop profile file (identity and paired devices).");
+        var qr = new Option<bool>("--qr", "Display a QR code for an ordinary public tunnel.");
+        var insecureLocal = new Option<bool>("--insecure-local", "Allow an untrusted HTTPS certificate only on a loopback local server.");
+        command.AddArgument(local);
+        foreach (var option in new Option[] { relay, log, pair, name, identity, qr, insecureLocal }) command.AddOption(option);
+        command.SetHandler(async (InvocationContext invocation) =>
         {
-            localUrlArgument,
-            publicUrlOption,
-            logLevelOption
-        };
-        rootCommand.Description = "CLI tool to create a tunnel to a local server.";
-
-        rootCommand.SetHandler(async (string localUrl, string publicUrl, LogLevel? logLevel) =>
-        {
-            if (string.IsNullOrWhiteSpace(localUrl))
-            {
-                AnsiConsole.MarkupLine("[red]Error: Local URL is required.[/]");
-                return;
-            }
-
-            Uri uri;
             try
             {
-                uri = new Uri(localUrl);
+                await RunAsync(invocation.ParseResult.GetValueForArgument(local), invocation.ParseResult.GetValueForOption(relay)!,
+                    invocation.ParseResult.GetValueForOption(log), pairedMode || invocation.ParseResult.GetValueForOption(pair),
+                    invocation.ParseResult.GetValueForOption(name)!, invocation.ParseResult.GetValueForOption(identity),
+                    invocation.ParseResult.GetValueForOption(qr), invocation.ParseResult.GetValueForOption(insecureLocal), invocation.GetCancellationToken());
             }
-            catch (UriFormatException)
+            catch (OperationCanceledException) { }
+            catch (Exception exception)
             {
-                AnsiConsole.MarkupLine("[red]Error: Invalid URL format.[/]");
-                return;
+                AnsiConsole.MarkupLine("[red]" + Markup.Escape(exception.Message) + "[/]");
+                invocation.ExitCode = 1;
             }
+        });
+    }
 
-            var scheme = uri.Scheme.ToLowerInvariant();
-            publicUrl = publicUrl.TrimEnd('/');
-
-            await AnsiConsole.Status()
-                .StartAsync("Initializing tunnel...", async ctx =>
-                {
-                    ctx.Spinner(Spinner.Known.Dots);
-                    ctx.SpinnerStyle(Style.Parse("green"));
-
-                    switch (scheme)
-                    {
-                        case "tcp":
-
-                            await InitializeTcpTunnel(localUrl, publicUrl, uri, logLevel, ctx);
-                            break;
-
-                        case "http":
-                        case "https":
-
-                            await InitializeHttpTunnel(localUrl, publicUrl, logLevel, ctx);
-                            break;
-
-                        default:
-                            AnsiConsole.MarkupLine("[red]Error: Unsupported protocol. Use tcp:// or http(s)://[/]");
-                            return;
-                    }
-                });
-
-            await RunMainLoop(localUrl);
-
-        }, localUrlArgument, publicUrlOption, logLevelOption);
-
-        await rootCommand.InvokeAsync(args);
+    private static async Task RunAsync(string localUrl, string publicUrl, LogLevel? logLevel, bool pair,
+        string profileName, string? identityFile, bool qr, bool insecureLocal, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(localUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https" or "tcp"))
+            throw new ArgumentException("Use an absolute http://, https:// or tcp:// local URL.");
+        publicUrl = publicUrl.TrimEnd('/');
+        if (pair && uri.Scheme == "tcp") throw new ArgumentException("Pairing is available for HTTP(S) web apps.");
+        if (pair && (!Uri.TryCreate(publicUrl, UriKind.Absolute, out var relay)
+            || (relay.Scheme != "https" && !(relay.Scheme == "http" && relay.IsLoopback))))
+            throw new ArgumentException("Paired mode requires an HTTPS relay.");
+        if (!pair && identityFile is not null) throw new ArgumentException("--identity-file requires serve or --pair.");
+        await using var profile = pair ? await DesktopProfile.OpenAsync(identityFile, profileName, publicUrl, cancellationToken) : null;
+        using var access = profile is null ? null : new PairedAccess(profile.Identity, profile.Access, profile.SaveAsync);
+        try
+        {
+            await AnsiConsole.Status().StartAsync("Initializing tunnel...", async status =>
+            {
+                status.Spinner(Spinner.Known.Dots);
+                if (uri.Scheme == "tcp") await InitializeTcpTunnel(localUrl, publicUrl, uri, logLevel, status);
+                else await InitializeHttpTunnel(localUrl, publicUrl, logLevel, status, access, insecureLocal, cancellationToken);
+            });
+            await RunMainLoop(localUrl, access, qr, cancellationToken);
+        }
+        finally
+        {
+            if (Client is IAsyncDisposable disposable) await disposable.DisposeAsync();
+            Client = null;
+        }
     }
 
     private static async Task InitializeTcpTunnel(string localUrl, string publicUrl, Uri uri, LogLevel? logLevel, StatusContext ctx)
@@ -107,10 +105,12 @@ public class Program
         ctx.Status("TCP tunnel established.");
     }
 
-    private static async Task InitializeHttpTunnel(string localUrl, string publicUrl, LogLevel? logLevel, StatusContext ctx)
+    private static async Task InitializeHttpTunnel(string localUrl, string publicUrl, LogLevel? logLevel, StatusContext ctx, PairedAccess? access, bool insecureLocal, CancellationToken cancellationToken)
     {
         var httpTunnel = new HttpTunnelRequest
         {
+            Access = access!,
+            AllowUntrustedLocalCertificates = insecureLocal ? true : null,
             ClientId = ClientId,
             LocalUrl = localUrl,
             PublicUrl = publicUrl,
@@ -122,62 +122,118 @@ public class Program
 
         AddLogging(Client);
 
-        await Client.ConnectAsync();
+        await ((HttpTunnelClient)Client).ConnectAsync(cancellationToken);
 
         ctx.Status("HTTP tunnel established.");
     }
 
-    private static async Task RunMainLoop(string localUrl)
+    private static async Task RunMainLoop(string localUrl, PairedAccess? access, bool qr, CancellationToken cancellationToken)
     {
-        if (Client == null)
-        {
-            return;
-        }
-
-        Table statusTable = WriteStatusTable(localUrl, Client.TunnelUrl, "green", "Connected");
-
+        if (Client is null) return;
+        var table = WriteStatusTable(localUrl, Client.TunnelUrl, "green", "Connected");
+        ShowQr(access, qr);
         Client.Connected += () =>
         {
-            statusTable = WriteStatusTable(localUrl, Client.TunnelUrl, "green", "Connected");
+            table = WriteStatusTable(localUrl, Client.TunnelUrl, "green", "Connected");
+            ShowQr(access, qr);
             return Task.CompletedTask;
         };
-
-        Client.Connection.Closed += (error) =>
+        Client.Connection.Reconnecting += _ =>
         {
-            statusTable = WriteStatusTable(localUrl, Client.TunnelUrl, "red", "Disconnected");
+            table = WriteStatusTable(localUrl, Client.TunnelUrl, "yellow", "Reconnecting");
             return Task.CompletedTask;
         };
-
-        Client.Connection.Reconnecting += (error) =>
+        Client.Connection.Closed += _ =>
         {
-            statusTable = WriteStatusTable(localUrl, Client.TunnelUrl, "yellow", "Reconnecting");
+            table = WriteStatusTable(localUrl, Client.TunnelUrl, "red", "Disconnected");
             return Task.CompletedTask;
         };
-
-        Client.Connection.Reconnected += (connectionId) =>
+        // Console's synchronized reader can block inside ReadLineAsync on Windows and Unix.
+        Task<string?>? input = Console.IsInputRedirected ? Task.Run(Console.ReadLine) : null;
+        while (!cancellationToken.IsCancellationRequested)
         {
-            statusTable = WriteStatusTable(localUrl, Client.TunnelUrl, "green", "Connected");
-            return Task.CompletedTask;
-        };
-
-        while (true)
-        {
-            if (!Console.IsInputRedirected && Console.KeyAvailable)
+            string? action = null;
+            if (input?.IsCompleted == true)
             {
-                var key = Console.ReadKey(true);
-                switch (key.KeyChar)
+                action = await input;
+                input = action is null ? null : Task.Run(Console.ReadLine);
+            }
+            else if (!Console.IsInputRedirected && Console.KeyAvailable)
+            {
+                action = Console.ReadKey(true).KeyChar.ToString();
+                if (action == "r" && access is not null && access.State.Devices.Count > 0)
                 {
-                    case 'c':
-                        ClearScreen();
-                        AnsiConsole.Write(statusTable);
-                        WriteHelp();
-                        break;
-                    case 'q':
-                        return;
+                    var devices = access.State.Devices;
+                    for (var index = 0; index < devices.Count; index++)
+                        Console.WriteLine($"{index + 1}. {devices[index].Name} ({devices[index].Id})");
+                    Console.Write("Device number to revoke (Enter to cancel): ");
+                    var selected = await Task.Run(Console.ReadLine).WaitAsync(cancellationToken);
+                    action = int.TryParse(selected, out var number) && number > 0 && number <= devices.Count
+                        ? "revoke " + devices[number - 1].Id : null;
                 }
             }
+            if (action is "q" or "quit") return;
+            if (action is "c" or "clear") { ClearScreen(); AnsiConsole.Write(table); WriteHelp(); }
+            if (action is "p" or "pair") ShowQr(access, qr);
+            if (action is "d" or "devices")
+                foreach (var device in access?.State.Devices ?? []) AnsiConsole.WriteLine($"{device.Id}  {device.Name}  expires {device.ExpiresAt:u}");
+            if (action?.StartsWith("revoke ", StringComparison.Ordinal) == true && access is not null)
+            {
+                if (Guid.TryParse(action[7..].Trim(), out var id)) { await access.RevokeAsync(id, cancellationToken); AnsiConsole.WriteLine("Device access revoked."); }
+                else AnsiConsole.WriteLine("Use revoke <device-id>.");
+            }
+            await Task.Delay(100, cancellationToken);
+        }
+    }
 
-            await Task.Delay(100);
+    private static void ShowQr(PairedAccess? access, bool qr)
+    {
+        if (Client?.TunnelUrl is null || (access is null && !qr)) return;
+        var url = access is null ? Client.TunnelUrl : ((HttpTunnelClient)Client).CreatePairingUrl();
+        if (url is null) return;
+        Console.WriteLine((access is null ? "Public URL: " : "Pairing URL: ") + url);
+        if (access is not null) AnsiConsole.WriteLine("This code expires in five minutes and can pair one device. Press p for a new code.");
+        if (!Console.IsOutputRedirected)
+        {
+            try { RenderQr(url); }
+            catch (Exception exception) when (exception is IOException or PlatformNotSupportedException or InvalidOperationException)
+            {
+                Console.WriteLine("This terminal cannot render the QR code. Open the URL above.");
+            }
+        }
+    }
+
+    private static void RenderQr(string url)
+    {
+        using var data = QRCodeGenerator.GenerateQrCode(url, QRCodeGenerator.ECCLevel.M);
+        using var code = new AsciiQRCode(data);
+        var graphic = AnsiConsole.Profile.Capabilities.Unicode
+            ? code.GetGraphicSmall(invert: true)
+            : code.GetGraphic(1, darkColorString: "##", whiteSpaceString: "  ");
+        var width = graphic.Split('\n')[0].Length;
+        if (width > AnsiConsole.Profile.Width)
+        {
+            Console.WriteLine($"Widen the terminal to {width} columns to display the QR code, or open the URL above.");
+            return;
+        }
+        if (AnsiConsole.Profile.Capabilities.Ansi)
+            AnsiConsole.Write(new Text(graphic + Environment.NewLine, new Style(Color.Black, Color.White)));
+        else
+        {
+            var foreground = Console.ForegroundColor;
+            var background = Console.BackgroundColor;
+            try
+            {
+                Console.ForegroundColor = ConsoleColor.Black;
+                Console.BackgroundColor = ConsoleColor.White;
+                Console.WriteLine(graphic);
+            }
+            finally
+            {
+                Console.ResetColor();
+                if ((uint)foreground <= 15) Console.ForegroundColor = foreground;
+                if ((uint)background <= 15) Console.BackgroundColor = background;
+            }
         }
     }
 
@@ -188,8 +244,8 @@ public class Program
         var table = new Table()
             .Border(TableBorder.Rounded)
             .AddColumn(new TableColumn(new Markup($"[{color}]{currentStatus}[/]")).Centered())
-            .AddRow($"Local URL: {localUrl}")
-            .AddRow($"Public URL: {tunnelUrl}");
+            .AddRow(Markup.Escape($"Local URL: {localUrl}"))
+            .AddRow(Markup.Escape($"Public URL: {tunnelUrl}"));
 
         AnsiConsole.Write(table);
 
@@ -209,7 +265,7 @@ public class Program
 
     private static void WriteHelp()
     {
-        AnsiConsole.MarkupLine("\n[grey]Press 'c' to clear, 'q' to quit[/]");
+        AnsiConsole.MarkupLine("\n[grey]c: clear · q: quit · p: new pairing QR · d: devices · r: revoke[/]");
         AnsiConsole.WriteLine();
     }
 
@@ -239,7 +295,8 @@ public class Program
 
     private static void LogException(Exception ex)
     {
-        AnsiConsole.WriteException(ex);
+        // The rich exception widget reads assembly file metadata that is unavailable in NativeAOT binaries.
+        AnsiConsole.Write(new Text(ex.ToString() + Environment.NewLine, new Style(Color.Red)));
     }
 
     private static void AddLogging(ITunnelClient client)

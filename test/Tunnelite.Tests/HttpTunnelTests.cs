@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
 using Tunnelite.Tests.Infrastructure;
+using Microsoft.AspNetCore.SignalR.Client;
 
 namespace Tunnelite.Tests;
 
@@ -152,6 +153,21 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
 
         Assert.Equal(WebSocketMessageType.Text, type);
         Assert.Equal("ping", Encoding.UTF8.GetString(data));
+    }
+
+    [Fact]
+    public async Task Concurrent_websockets_can_all_exchange_messages()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(async index =>
+        {
+            using var socket = await ConnectWebSocketAsync("/ws", timeout.Token);
+            var message = "concurrent-" + index;
+            await socket.SendAsync(Encoding.UTF8.GetBytes(message), WebSocketMessageType.Text, true, timeout.Token);
+            var (data, _) = await TestData.ReceiveMessageAsync(socket, timeout.Token);
+            Assert.Equal(message, Encoding.UTF8.GetString(data));
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, timeout.Token);
+        }));
     }
 
     [Theory]
@@ -367,10 +383,13 @@ public class SubdomainReservationTests(BareTunnelHost host) : IClassFixture<Bare
     [InlineData("localhost")]
     public async Task Reserved_subdomains_cannot_be_claimed_by_clients(string reserved)
     {
+        var id = Guid.NewGuid();
+        await using var connection = new HubConnectionBuilder().WithUrl(host.PublicUrl + "/wsshttptunnel?clientId=" + id).Build();
+        await connection.StartAsync();
         using var response = await _client.PostAsync(
             "/tunnelite/tunnel",
             new StringContent(
-                $$"""{"clientId":"{{Guid.NewGuid()}}","localUrl":"http://localhost:3000","subdomain":"{{reserved}}"}""",
+                $$"""{"clientId":"{{id}}","localUrl":"http://localhost:3000","subdomain":"{{reserved}}"}""",
                 Encoding.UTF8,
                 "application/json"));
 

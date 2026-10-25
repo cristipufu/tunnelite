@@ -2,6 +2,8 @@
 
 public class HttpDefferedRequest : IDisposable
 {
+    public Guid ClientId { get; set; }
+    public string? ConnectionId { get; set; }
     public HttpContext? HttpContext { get; set; }
 
     public Guid RequestId { get; set; }

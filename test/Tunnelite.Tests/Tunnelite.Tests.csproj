@@ -16,13 +16,14 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <!-- The hub protocol the pre-EndOfMessage SDK used; LegacyClientTests speaks it to prove old clients still work. -->
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.12" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.13" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Tunnelite.Sdk\Tunnelite.Sdk.csproj" />
     <ProjectReference Include="..\..\src\Tunnelite.Server\Tunnelite.Server.csproj" />
+    <ProjectReference Include="..\..\src\Tunnelite.AspNetCore\Tunnelite.AspNetCore.csproj" />
   </ItemGroup>
 
   <ItemGroup>

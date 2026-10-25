@@ -3,6 +3,7 @@ namespace Tunnelite.Server.WsTunnel;
 
 public class WsConnection
 {
+    public Dictionary<string, string[]> Headers { get; set; }
     public Guid RequestId { get; set; }
 
     public string Path { get; set; }

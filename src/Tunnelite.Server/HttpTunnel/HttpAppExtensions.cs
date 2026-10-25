@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Tunnelite.Protocol;
 
 namespace Tunnelite.Server.HttpTunnel;
 
@@ -11,7 +12,7 @@ public static class HttpAppExtensions
         {
             try
             {
-                if (string.IsNullOrEmpty(payload.LocalUrl))
+                if (!Uri.TryCreate(payload.LocalUrl, UriKind.Absolute, out var local) || local.Scheme is not ("http" or "https"))
                 {
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
                     await context.Response.WriteAsync("Missing or invalid 'LocalUrl' property.");
@@ -25,12 +26,49 @@ public static class HttpAppExtensions
                     return;
                 }
 
+                if (EndpointIdentity.IsProtected(payload.ClientId) || EndpointIdentity.IsProtected(payload.Subdomain ?? ""))
+                {
+                    if (!EndpointIdentity.TryDerive(EndpointIdentityMiddleware.Bearer(context), out var ownerId, out var name)
+                        || ownerId != payload.ClientId || !string.Equals(name, payload.Subdomain, StringComparison.OrdinalIgnoreCase)
+                        || payload.ProtocolVersion < 2)
+                    {
+                        context.Response.StatusCode = 401;
+                        return;
+                    }
+                    payload.Subdomain = name;
+                    if (payload.RequirePairing) payload.ViewerKey = EndpointIdentity.ViewerKey(EndpointIdentityMiddleware.Bearer(context)!);
+                }
+                else if (payload.RequirePairing)
+                {
+                    context.Response.StatusCode = 400;
+                    return;
+                }
+
+                // Allow the hub's OnConnected callback to finish, without retaining registrations for absent clients.
+                HttpTunnelSession? session = null;
+                for (var attempt = 0; attempt < 10; attempt++)
+                {
+                    if (tunnelStore.Connections.TryGetValue(payload.ClientId, out session)
+                        && (payload.ConnectionId is null || payload.ConnectionId == session.ConnectionId)) break;
+                    session = null;
+                    await Task.Delay(10, context.RequestAborted);
+                }
+                if (session is null) { context.Response.StatusCode = 425; return; }
+
                 if (string.IsNullOrEmpty(payload.Subdomain))
                 {
-                    payload.Subdomain = RandomSubdomain();
+                    do { payload.Subdomain = RandomSubdomain(); }
+                    while (ReservedSubdomains.Contains(payload.Subdomain) || tunnelStore.Tunnels.ContainsKey(payload.Subdomain));
                 }
                 else
                 {
+                    payload.Subdomain = payload.Subdomain.ToLowerInvariant();
+                    if (payload.Subdomain.Length > 63 || payload.Subdomain.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-')
+                        || payload.Subdomain.StartsWith('-') || payload.Subdomain.EndsWith('-'))
+                    {
+                        context.Response.StatusCode = 400;
+                        return;
+                    }
                     // reserved
                     if (ReservedSubdomains.Contains(payload.Subdomain))
                     {
@@ -51,8 +89,8 @@ public static class HttpAppExtensions
 
                 payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
 
-                tunnelStore.Tunnels.AddOrUpdate(payload.Subdomain, payload, (key, oldValue) => payload);
-                tunnelStore.Clients.AddOrUpdate(payload.ClientId, payload.Subdomain, (key, oldValue) => payload.Subdomain);
+                var status = await session.RegisterAsync(payload, tunnelStore, context.RequestAborted);
+                if (status != 201) { context.Response.StatusCode = status; return; }
 
                 var subdomain = context.Request.Host.Host.Split('.')[0];
 
@@ -72,17 +110,21 @@ public static class HttpAppExtensions
                 {
                     TunnelUrl = tunnelUrl,
                     payload.Subdomain,
+                    SupportsWebSocketClose = true,
+                    ProtectedEndpoint = EndpointIdentity.IsProtected(payload.ClientId),
+                    payload.RequirePairing,
                 });
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error creating tunnel: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while creating the tunnel",
-                    Error = ex.Message,
                 });
             }
         });
@@ -111,15 +153,16 @@ public static class HttpAppExtensions
                 // Stream the body
                 await deferredHttpContext.Request.Body.CopyToAsync(context.Response.Body);
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error fetching request body: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while fetching the request body",
-                    Error = ex.Message,
                 });
             }
         });
@@ -175,7 +218,13 @@ public static class HttpAppExtensions
                 }
 
                 // Stream the body from the tunneling client's request to the deferred response
-                await context.Request.Body.CopyToAsync(deferredHttpContext.Response.Body);
+                var buffer = new byte[16 * 1024];
+                int read;
+                while ((read = await context.Request.Body.ReadAsync(buffer, deferredHttpContext.RequestAborted)) != 0)
+                {
+                    await deferredHttpContext.Response.Body.WriteAsync(buffer.AsMemory(0, read), deferredHttpContext.RequestAborted);
+                    await deferredHttpContext.Response.Body.FlushAsync(deferredHttpContext.RequestAborted);
+                }
 
                 // Complete the deferred response
                 await requestsQueue.CompleteAsync(requestId);
@@ -184,15 +233,16 @@ public static class HttpAppExtensions
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while forwarding the response body",
-                    Error = ex.Message,
                 });
             }
         });
@@ -209,7 +259,8 @@ public static class HttpAppExtensions
                     return;
                 }
 
-                await ServerErrorAsync(app, deferredHttpContext);
+                if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
+                else await ServerErrorAsync(app, deferredHttpContext);
 
                 // Complete the deferred response
                 await requestsQueue.CompleteAsync(requestId);
@@ -218,15 +269,16 @@ public static class HttpAppExtensions
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while forwarding the response body",
-                    Error = ex.Message,
                 });
             }
         });
@@ -250,6 +302,7 @@ public static class HttpAppExtensions
 
     static async Task TunnelRequestAsync(WebApplication app, HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore tunnelStore, string path, ILogger<Program> logger)
     {
+        var requestId = Guid.Empty;
         try
         {
             HttpTunnelRequest? tunnel = null;
@@ -258,7 +311,7 @@ public static class HttpAppExtensions
 
             if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
             {
-                tunnel = tunnelStore.Tunnels.FirstOrDefault().Value;
+                tunnel = tunnelStore.Tunnels.Values.FirstOrDefault(t => tunnelStore.Connections.ContainsKey(t.ClientId));
             }
             else if (context.Request.Host.Host.Length > 4
                 && context.Request.Host.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
@@ -295,21 +348,23 @@ public static class HttpAppExtensions
                 return;
             }
 
-            var requestId = Guid.NewGuid();
+            requestId = Guid.NewGuid();
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, connectionId.Disconnected);
 
-            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: TimeSpan.FromSeconds(30), context.RequestAborted);
+            var streaming = context.Request.Headers.Accept.Any(h => h?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
+            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), lifetime.Token, tunnel.ClientId, connectionId.ConnectionId);
 
-            await hubContext.Clients.Client(connectionId).SendAsync("NewHttpConnection", new HttpConnection
+            await hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewHttpConnection", new HttpConnection
             {
                 RequestId = requestId,
                 ContentType = context.Request.ContentType,
                 Method = context.Request.Method,
                 Path = $"{tunnel.LocalUrl}/{path}{context.Request.QueryString}",
-            });
+            }, lifetime.Token);
 
             await completionTask;
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
             // ignore
         }
@@ -323,6 +378,7 @@ public static class HttpAppExtensions
 
             logger.LogError(ex, "Error processing request tunnel: {Message}", ex.Message);
         }
+        finally { if (requestId != Guid.Empty) await requestsQueue.CompleteAsync(requestId); }
     }
 
     static readonly HashSet<string> ReservedSubdomains = new(StringComparer.OrdinalIgnoreCase)
@@ -382,17 +438,15 @@ public static class HttpAppExtensions
     static async Task ServerErrorAsync(WebApplication app, HttpContext context)
     {
         var filePath = Path.Combine(app.Environment.WebRootPath, "500.html");
-        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        context.Response.StatusCode = StatusCodes.Status502BadGateway;
         context.Response.ContentType = "text/html";
         await context.Response.SendFileAsync(filePath);
     }
 
     static string RandomSubdomain(int length = 8)
     {
-        Random random = new();
         const string chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-        return new(Enumerable.Repeat(chars, length)
-            .Select(s => s[random.Next(s.Length)]).ToArray());
+        return new(Enumerable.Range(0, length).Select(_ => chars[System.Security.Cryptography.RandomNumberGenerator.GetInt32(chars.Length)]).ToArray());
     }
 
     // Case-insensitive for the same reason the prefixes above are: these names arrive lowercased from

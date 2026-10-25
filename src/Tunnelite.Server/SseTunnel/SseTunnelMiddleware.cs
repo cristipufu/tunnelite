@@ -41,7 +41,7 @@ public class SseTunnelMiddleware(
 
         if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
         {
-            tunnel = _tunnelStore.Tunnels.FirstOrDefault().Value;
+            tunnel = _tunnelStore.Tunnels.Values.FirstOrDefault(t => _tunnelStore.Connections.ContainsKey(t.ClientId));
         }
         else if (subdomain.Equals("tunnelite"))
         {
@@ -59,6 +59,13 @@ public class SseTunnelMiddleware(
             return;
         }
 
+        // New clients stream the full HTTP response, preserving authentication, errors and resume headers.
+        if (tunnel.ProtocolVersion >= 2)
+        {
+            await _next(context);
+            return;
+        }
+
         if (!_tunnelStore.Connections.TryGetValue(tunnel.ClientId, out var connectionId))
         {
             await _next(context);
@@ -66,6 +73,7 @@ public class SseTunnelMiddleware(
         }
 
         var requestId = Guid.NewGuid();
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, connectionId.Disconnected);
         try
         {
             // Set up SSE connection headers
@@ -79,27 +87,29 @@ public class SseTunnelMiddleware(
             var completionTask = _requestsQueue.WaitForCompletionAsync(
                 tunnel.ClientId,
                 requestId,
-                context);
+                context, connectionId.ConnectionId);
 
             using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
-            var content = await reader.ReadToEndAsync();
+            var content = await reader.ReadToEndAsync(lifetime.Token);
 
             // Notify the client about new SSE connection
-            await _hubContext.Clients.Client(connectionId).SendAsync("NewSseConnection", new SseConnection
+            await _hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection
             {
                 RequestId = requestId,
                 Content = content,
                 ContentType = context.Request.ContentType,
                 Method = context.Request.Method,
                 Path = $"{tunnel.LocalUrl}{path}{context.Request.QueryString}",
-            });
+            }, lifetime.Token);
 
             // Wait for the connection to complete
-            await completionTask;
+            await completionTask.WaitAsync(lifetime.Token);
         }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error handling SSE connection");
         }
+        finally { await _requestsQueue.CompleteAsync(tunnel.ClientId, requestId); }
     }
 }
