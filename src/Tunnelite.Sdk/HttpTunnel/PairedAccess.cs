@@ -11,12 +11,14 @@ namespace Tunnelite.Sdk;
 public sealed class PairedAccess : IDisposable
 {
     private readonly SemaphoreSlim _updates = new(1, 1);
-    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _revocations = new();
+    private readonly ConcurrentDictionary<Guid, DeviceCancellation> _revocations = new();
+    private readonly ConcurrentDictionary<Guid, PairedDevice> _devices;
     private readonly Func<PairedAccessState, CancellationToken, Task>? _save;
     private readonly TimeProvider _clock;
     private readonly byte[] _key;
     private PairedAccessState _state;
     private PairingChallenge? _challenge;
+    private int _disposed;
 
     public TunnelIdentity Identity { get; }
     public PairedAccessState State => Volatile.Read(ref _state);
@@ -26,7 +28,12 @@ public sealed class PairedAccess : IDisposable
     {
         Identity = identity;
         _key = EndpointIdentity.ViewerKey(identity.Secret);
-        _state = state ?? new();
+        var devices = state?.Devices ?? (state is null ? [] : throw new ArgumentException("Device records cannot be null.", nameof(state)));
+        if (devices.Count > 32 || devices.Any(d => d is null || d.Id == Guid.Empty || d.TokenHash is not { Length: 64 }
+            || !d.TokenHash.All(char.IsAsciiHexDigit) || d.ExpiresAt <= d.CreatedAt) || devices.Select(d => d.Id).Distinct().Count() != devices.Count)
+            throw new ArgumentException("The saved device records are invalid.", nameof(state));
+        _devices = new(devices.Select(d => new KeyValuePair<Guid, PairedDevice>(d.Id, d with { Name = DeviceName(d.Name) })));
+        _state = Snapshot(_devices.Values);
         _save = save;
         _clock = clock ?? TimeProvider.System;
     }
@@ -34,6 +41,7 @@ public sealed class PairedAccess : IDisposable
     /// <summary>Replaces the previous challenge with a single-use code that expires in five minutes.</summary>
     public PairingChallenge CreateChallenge()
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         var challenge = new PairingChallenge(ViewerTicket.Encode(RandomNumberGenerator.GetBytes(32)), _clock.GetUtcNow().AddMinutes(5));
         Interlocked.Exchange(ref _challenge, challenge);
         return challenge;
@@ -41,13 +49,19 @@ public sealed class PairedAccess : IDisposable
 
     public async Task RevokeAsync(Guid deviceId, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         await _updates.WaitAsync(cancellationToken);
         try
         {
-            var updated = new PairedAccessState { Devices = State.Devices.Where(d => d.Id != deviceId).ToArray() };
+            var updated = Snapshot(State.Devices.Where(d => d.Id != deviceId));
             if (_save is not null) await _save(updated, cancellationToken);
             Volatile.Write(ref _state, updated);
-            if (_revocations.TryGetValue(deviceId, out var active)) await active.CancelAsync();
+            _devices.TryRemove(deviceId, out _);
+            if (_revocations.TryRemove(deviceId, out var active))
+            {
+                await active.Source.CancelAsync();
+                active.Source.Dispose();
+            }
         }
         finally { _updates.Release(); }
     }
@@ -55,17 +69,22 @@ public sealed class PairedAccess : IDisposable
     internal bool Authorize(string? cookies, bool secure, out CancellationToken revoked)
     {
         revoked = default;
+        if (Volatile.Read(ref _disposed) != 0) return false;
         var now = _clock.GetUtcNow();
         if (!ViewerTicket.Validate(_key, ViewerTicket.Cookie(cookies, secure), now, out var id, out var token)) return false;
-        var device = State.Devices.FirstOrDefault(d => d.Id == id && d.ExpiresAt > now);
-        if (device is null || !CryptographicOperations.FixedTimeEquals(
+        if (!_devices.TryGetValue(id, out var device) || device.ExpiresAt <= now || !CryptographicOperations.FixedTimeEquals(
             Encoding.ASCII.GetBytes(device.TokenHash), Encoding.ASCII.GetBytes(ViewerTicket.Hash(token)))) return false;
-        revoked = _revocations.GetOrAdd(id, _ => new()).Token;
-        return !revoked.IsCancellationRequested && State.Devices.Any(d => d.Id == id);
+        var session = _revocations.GetOrAdd(id, _ => new());
+        session.ExpireAfter(device.ExpiresAt - now);
+        revoked = session.Token;
+        if (_devices.ContainsKey(id)) return !revoked.IsCancellationRequested;
+        if (_revocations.TryRemove(id, out var late)) { late.Source.Cancel(); late.Source.Dispose(); }
+        return false;
     }
 
     internal async Task<HttpResponseMessage> PairAsync(Stream body, bool secure, CancellationToken cancellationToken)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         using var limited = new MemoryStream();
         var buffer = new byte[4097];
         while (limited.Length <= 4096)
@@ -88,12 +107,18 @@ public sealed class PairedAccess : IDisposable
                 return Response(HttpStatusCode.Unauthorized, "Pairing code expired or already used. Scan a new QR code.");
             var now = _clock.GetUtcNow();
             var token = ViewerTicket.Encode(RandomNumberGenerator.GetBytes(32));
-            var name = new string((request.Name ?? "Phone").Where(c => !char.IsControl(c)).Take(64).ToArray());
-            var device = new PairedDevice(Guid.NewGuid(), string.IsNullOrWhiteSpace(name) ? "Phone" : name,
+            var device = new PairedDevice(Guid.NewGuid(), DeviceName(request.Name),
                 now, now.AddDays(30), ViewerTicket.Hash(token));
-            var updated = new PairedAccessState { Devices = State.Devices.Where(d => d.ExpiresAt > now).Append(device).ToArray() };
+            var updated = Snapshot(State.Devices.Where(d => d.ExpiresAt > now).Append(device));
             if (updated.Devices.Count > 32) return Response(HttpStatusCode.Conflict, "Remove a paired device before adding another.");
             if (_save is not null) await _save(updated, cancellationToken);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            _devices[device.Id] = device;
+            foreach (var expired in _devices.Values.Where(d => d.ExpiresAt <= now))
+            {
+                _devices.TryRemove(expired.Id, out _);
+                if (_revocations.TryRemove(expired.Id, out var stale)) { stale.Source.Cancel(); stale.Source.Dispose(); }
+            }
             Volatile.Write(ref _state, updated);
             var response = Response(HttpStatusCode.NoContent, "");
             response.Headers.TryAddWithoutValidation("Set-Cookie", $"{ViewerTicket.CookieName(secure)}={ViewerTicket.Create(_key, device.Id, device.ExpiresAt, token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000{(secure ? "; Secure" : "")}");
@@ -156,8 +181,28 @@ public sealed class PairedAccess : IDisposable
 
     public void Dispose()
     {
-        foreach (var cancellation in _revocations.Values) { cancellation.Cancel(); cancellation.Dispose(); }
-        _updates.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        foreach (var cancellation in _revocations.Values) { cancellation.Source.Cancel(); cancellation.Source.Dispose(); }
+    }
+
+    private static PairedAccessState Snapshot(IEnumerable<PairedDevice> devices) => new() { Devices = Array.AsReadOnly(devices.ToArray()) };
+    private static string DeviceName(string? name)
+    {
+        var clean = new string((name ?? "Phone").Where(c => !char.IsControl(c)).Take(64).ToArray());
+        return string.IsNullOrWhiteSpace(clean) ? "Phone" : clean;
+    }
+    private sealed class DeviceCancellation
+    {
+        private int _expires;
+        internal CancellationTokenSource Source { get; } = new();
+        internal CancellationToken Token { get; }
+        internal DeviceCancellation() => Token = Source.Token;
+        internal void ExpireAfter(TimeSpan remaining)
+        {
+            if (Interlocked.Exchange(ref _expires, 1) != 0) return;
+            try { Source.CancelAfter(remaining > TimeSpan.FromDays(30) ? TimeSpan.FromDays(30) : remaining); }
+            catch (ObjectDisposedException) { } // Revocation won the race; the cached token is already cancelled.
+        }
     }
 }
 

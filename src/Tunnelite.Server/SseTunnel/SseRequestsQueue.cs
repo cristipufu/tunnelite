@@ -6,10 +6,11 @@ public class SseRequestsQueue
     // client, [requestId, SseDeferredRequest]
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, SseDeferredRequest>> PendingRequests = new();
 
-    public Task WaitForCompletionAsync(Guid clientId, Guid requestId, HttpContext context)
+    public Task WaitForCompletionAsync(Guid clientId, Guid requestId, HttpContext context, string? connectionId = null)
     {
         SseDeferredRequest request = new()
         {
+            ConnectionId = connectionId,
             HttpContext = context,
             RequestId = requestId,
             TaskCompletionSource = new TaskCompletionSource(),
@@ -65,6 +66,16 @@ public class SseRequestsQueue
         }
 
         return Task.CompletedTask;
+    }
+
+    public async Task CompleteConnectionAsync(Guid clientId, string connectionId)
+    {
+        if (!PendingRequests.TryGetValue(clientId, out var requests)) return;
+        foreach (var request in requests.Values.Where(r => r.ConnectionId == connectionId))
+        {
+            request.HttpContext?.Abort();
+            await CompleteAsync(clientId, request.RequestId);
+        }
     }
 
     public virtual Task CompleteAsync(Guid clientId)

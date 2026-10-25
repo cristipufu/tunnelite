@@ -24,6 +24,28 @@ public class ClientLifecycleTests(BareTunnelHost host) : IClassFixture<BareTunne
     }
 
     [Fact]
+    public async Task Concurrent_connect_calls_share_one_registration_and_ready_notification()
+    {
+        await using var client = new HttpTunnelClient(new HttpTunnelRequest { LocalUrl = host.App.Url, PublicUrl = host.PublicUrl }, null);
+        var notifications = 0;
+        client.Connected += () => { Interlocked.Increment(ref notifications); return Task.CompletedTask; };
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => client.ConnectAsync())).WaitAsync(TestData.Timeout);
+        Assert.Equal(1, notifications);
+        Assert.Equal(host.PublicUrl, client.TunnelUrl);
+    }
+
+    [Fact]
+    public async Task A_failing_diagnostic_callback_does_not_block_traffic()
+    {
+        await using var client = new HttpTunnelClient(new HttpTunnelRequest { LocalUrl = host.App.Url, PublicUrl = host.PublicUrl }, null);
+        client.LogRequest += (_, _) => throw new InvalidOperationException("Broken diagnostic subscriber.");
+        client.LogException += _ => throw new InvalidOperationException("Broken error subscriber.");
+        await client.ConnectAsync().WaitAsync(TestData.Timeout);
+        using var browser = new HttpClient { Timeout = TestData.Timeout };
+        Assert.Equal("hello from local app", await browser.GetStringAsync(host.PublicUrl + "/hello"));
+    }
+
+    [Fact]
     public async Task Initial_connection_retry_can_be_cancelled_and_disposed()
     {
         await using var client = new HttpTunnelClient(new HttpTunnelRequest

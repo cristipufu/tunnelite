@@ -13,7 +13,8 @@ public sealed class PairingHost : IAsyncLifetime
     public ManualClock Clock { get; } = new();
     public PairedAccess Access { get; }
     public PairingHost() : this(TunnelIdentity.Create(), null) { }
-    internal PairingHost(TunnelIdentity identity, PairedAccessState? state) => Access = new(identity, state, clock: Clock);
+    internal PairingHost(TunnelIdentity identity, PairedAccessState? state, Func<PairedAccessState, CancellationToken, Task>? save = null)
+        => Access = new(identity, state, save, Clock);
     public HttpTunnelClient Tunnel { get; private set; } = null!;
     public async Task InitializeAsync()
     {
@@ -193,5 +194,55 @@ public class PairingTests(PairingHost host) : IClassFixture<PairingHost>
         await host.Access.RevokeAsync(host.Access.State.Devices.Single(d => d.Name == "Live phone").Id);
         try { await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
         catch (IOException) { } // An aborted HTTP stream reports a reset instead of EOF.
+    }
+
+    [Fact]
+    public async Task A_failed_desktop_save_does_not_enroll_a_browser()
+    {
+        var failing = new PairingHost(TunnelIdentity.Create(), null, (_, _) => Task.FromException(new IOException("Profile save failed.")));
+        await failing.InitializeAsync();
+        try
+        {
+            using var browser = new HttpClient { Timeout = TestData.Timeout };
+            using var response = await browser.PostAsJsonAsync(failing.Relay.PublicUrl + "/_tunnelite/pair",
+                new { code = failing.Tunnel.CreatePairingUrl().Split("#code=")[1] });
+            Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+            Assert.False(response.Headers.Contains("Set-Cookie"));
+            Assert.Empty(failing.Access.State.Devices);
+        }
+        finally { await failing.DisposeAsync(); }
+    }
+
+    [Fact]
+    public void Invalid_saved_device_state_is_rejected_at_startup() => Assert.Throws<ArgumentException>(() =>
+        new PairedAccess(TunnelIdentity.Create(), new PairedAccessState { Devices = null! }));
+
+    [Fact]
+    public async Task Expiring_a_device_also_ends_its_existing_stream()
+    {
+        using var browser = Browser();
+        using var paired = await browser.PostAsJsonAsync("/_tunnelite/pair", new { code = Code(), name = "Expiring phone" });
+        paired.EnsureSuccessStatusCode();
+        var cookie = paired.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
+        var state = new PairedAccessState
+        {
+            Devices = host.Access.State.Devices.Where(d => d.Name == "Expiring phone")
+                .Select(d => d with { ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(5) }).ToArray(),
+        };
+        var expiring = new PairingHost(new TunnelIdentity(host.Access.Identity.Secret), state);
+        await expiring.InitializeAsync();
+        try
+        {
+            using var restored = new HttpClient { Timeout = TestData.Timeout };
+            using var request = new HttpRequestMessage(HttpMethod.Get, expiring.Relay.PublicUrl + "/live-forever");
+            request.Headers.Add("Cookie", cookie);
+            request.Headers.Add("Accept", "text/event-stream");
+            using var response = await restored.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+            Assert.Equal("data: live", await reader.ReadLineAsync().WaitAsync(TestData.Timeout));
+            try { await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(8)); }
+            catch (IOException) { }
+        }
+        finally { await expiring.DisposeAsync(); }
     }
 }

@@ -12,7 +12,7 @@ public static class HttpAppExtensions
         {
             try
             {
-                if (string.IsNullOrEmpty(payload.LocalUrl))
+                if (!Uri.TryCreate(payload.LocalUrl, UriKind.Absolute, out var local) || local.Scheme is not ("http" or "https"))
                 {
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
                     await context.Response.WriteAsync("Missing or invalid 'LocalUrl' property.");
@@ -44,12 +44,29 @@ public static class HttpAppExtensions
                     return;
                 }
 
+                // Allow the hub's OnConnected callback to finish, without retaining registrations for absent clients.
+                HttpTunnelSession? session = null;
+                for (var attempt = 0; attempt < 10; attempt++)
+                {
+                    if (tunnelStore.Connections.TryGetValue(payload.ClientId, out session)) break;
+                    await Task.Delay(10, context.RequestAborted);
+                }
+                if (session is null) { context.Response.StatusCode = 425; return; }
+
                 if (string.IsNullOrEmpty(payload.Subdomain))
                 {
-                    payload.Subdomain = RandomSubdomain();
+                    do { payload.Subdomain = RandomSubdomain(); }
+                    while (ReservedSubdomains.Contains(payload.Subdomain) || tunnelStore.Tunnels.ContainsKey(payload.Subdomain));
                 }
                 else
                 {
+                    payload.Subdomain = payload.Subdomain.ToLowerInvariant();
+                    if (payload.Subdomain.Length > 63 || payload.Subdomain.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-')
+                        || payload.Subdomain.StartsWith('-') || payload.Subdomain.EndsWith('-'))
+                    {
+                        context.Response.StatusCode = 400;
+                        return;
+                    }
                     // reserved
                     if (ReservedSubdomains.Contains(payload.Subdomain))
                     {
@@ -70,15 +87,8 @@ public static class HttpAppExtensions
 
                 payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
 
-                // Atomic registration; a competing registration cannot replace another client's route.
-                var registered = tunnelStore.Tunnels.AddOrUpdate(payload.Subdomain, payload,
-                    (_, oldValue) => oldValue.ClientId == payload.ClientId ? payload : oldValue);
-                if (!ReferenceEquals(registered, payload))
-                {
-                    context.Response.StatusCode = 409;
-                    return;
-                }
-                tunnelStore.Clients.AddOrUpdate(payload.ClientId, payload.Subdomain, (key, oldValue) => payload.Subdomain);
+                var status = await session.RegisterAsync(payload, tunnelStore, context.RequestAborted);
+                if (status != 201) { context.Response.StatusCode = status; return; }
 
                 var subdomain = context.Request.Host.Host.Split('.')[0];
 
@@ -102,15 +112,16 @@ public static class HttpAppExtensions
                     payload.RequirePairing,
                 });
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error creating tunnel: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while creating the tunnel",
-                    Error = ex.Message,
                 });
             }
         });
@@ -139,15 +150,16 @@ public static class HttpAppExtensions
                 // Stream the body
                 await deferredHttpContext.Request.Body.CopyToAsync(context.Response.Body);
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error fetching request body: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while fetching the request body",
-                    Error = ex.Message,
                 });
             }
         });
@@ -218,15 +230,16 @@ public static class HttpAppExtensions
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while forwarding the response body",
-                    Error = ex.Message,
                 });
             }
         });
@@ -253,15 +266,16 @@ public static class HttpAppExtensions
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
 
+                if (context.Response.HasStarted) { context.Abort(); return; }
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 await context.Response.WriteAsJsonAsync(new
                 {
                     Message = "An error occurred while forwarding the response body",
-                    Error = ex.Message,
                 });
             }
         });
@@ -333,9 +347,9 @@ public static class HttpAppExtensions
             var requestId = Guid.NewGuid();
 
             var streaming = context.Request.Headers.Accept.Any(h => h?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
-            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), context.RequestAborted, tunnel.ClientId);
+            var completionTask = requestsQueue.WaitForCompletionAsync(requestId, context, timeout: streaming ? null : TimeSpan.FromSeconds(30), context.RequestAborted, tunnel.ClientId, connectionId.ConnectionId);
 
-            await hubContext.Clients.Client(connectionId).SendAsync("NewHttpConnection", new HttpConnection
+            await hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewHttpConnection", new HttpConnection
             {
                 RequestId = requestId,
                 ContentType = context.Request.ContentType,
@@ -425,10 +439,8 @@ public static class HttpAppExtensions
 
     static string RandomSubdomain(int length = 8)
     {
-        Random random = new();
         const string chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-        return new(Enumerable.Repeat(chars, length)
-            .Select(s => s[random.Next(s.Length)]).ToArray());
+        return new(Enumerable.Range(0, length).Select(_ => chars[System.Security.Cryptography.RandomNumberGenerator.GetInt32(chars.Length)]).ToArray());
     }
 
     // Case-insensitive for the same reason the prefixes above are: these names arrive lowercased from

@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.WebSockets;
@@ -47,6 +48,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     private readonly HttpTunnelRequest Tunnel;
     private int _disposed;
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _connectionGate = new(1, 1);
     private readonly ConcurrentDictionary<long, Task> _requests = new();
     private long _operationId;
 
@@ -110,7 +112,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
         Connection.On<HttpConnection>("NewHttpConnection", (httpConnection) =>
         {
-            LogRequest?.Invoke(httpConnection.Method, httpConnection.Path);
+            Emit(LogRequest, httpConnection.Method, httpConnection.Path);
 
             Track(() => TunnelHttpConnectionAsync(httpConnection));
 
@@ -119,7 +121,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
         Connection.On<WsConnection>("NewWsConnection", (wsConnection) =>
         {
-            LogRequest?.Invoke("WS", wsConnection.Path);
+            Emit(LogRequest, "WS", wsConnection.Path);
 
             Track(() => TunnelWsConnectionAsync(wsConnection));
 
@@ -128,7 +130,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
         Connection.On<SseConnection>("NewSseConnection", (sseConnection) =>
         {
-            LogRequest?.Invoke("SSE", sseConnection.Path);
+            Emit(LogRequest, "SSE", sseConnection.Path);
 
             Track(() => TunnelSseConnectionAsync(sseConnection));
 
@@ -146,11 +148,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             if (Volatile.Read(ref _disposed) != 0) return;
             _currentTunnel = null;
             await Task.Delay(Random.Shared.Next(0, 5000), _lifetime.Token);
-            if (await ConnectWithRetryAsync(Connection, _lifetime.Token))
-            {
-                _currentTunnel = await RegisterTunnelAsync(tunnel, _lifetime.Token);
-                await NotifyReadyAsync();
-            }
+            await ConnectAsync(_lifetime.Token);
         });
     }
 
@@ -175,11 +173,19 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
-        if (await ConnectWithRetryAsync(Connection, attempt.Token))
+        await _connectionGate.WaitAsync(attempt.Token);
+        var ready = false;
+        try
         {
-            _currentTunnel = await RegisterTunnelAsync(Tunnel, attempt.Token);
-            await NotifyReadyAsync();
+            if (Connection.State == HubConnectionState.Connected && _currentTunnel is not null) return;
+            if (await ConnectWithRetryAsync(Connection, attempt.Token))
+            {
+                _currentTunnel = await RegisterTunnelAsync(Tunnel, attempt.Token);
+                ready = true;
+            }
         }
+        finally { _connectionGate.Release(); }
+        if (ready) await NotifyReadyAsync();
         attempt.Token.ThrowIfCancellationRequested();
     }
 
@@ -203,20 +209,36 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     {
         try { await operation(); }
         catch (OperationCanceledException) { }
-        catch (Exception exception) { if (Volatile.Read(ref _disposed) == 0) LogException?.Invoke(exception); }
+        catch (Exception exception)
+        {
+            // Diagnostic subscribers must not fault a detached request/reconnect task.
+            if (Volatile.Read(ref _disposed) == 0) Emit(LogException, exception);
+        }
     }
 
     /// <summary>Creates a one-use pairing URL. Render it as a QR code in the host application.</summary>
     public string CreatePairingUrl()
     {
-        if (Tunnel.Access is null || TunnelUrl is null) throw new InvalidOperationException("A paired tunnel must be connected first.");
-        return TunnelUrl.TrimEnd('/') + "/_tunnelite/pair#code=" + Tunnel.Access.CreateChallenge().Code;
+        var url = TunnelUrl;
+        if (Tunnel.Access is null || url is null) throw new InvalidOperationException("A paired tunnel must be connected first.");
+        return url.TrimEnd('/') + "/_tunnelite/pair#code=" + Tunnel.Access.CreateChallenge().Code;
+    }
+
+    private static void Emit<T>(Action<T>? diagnostic, T value)
+    {
+        try { diagnostic?.Invoke(value); } catch { /* Diagnostics cannot interrupt transport cleanup. */ }
+    }
+
+    private static void Emit(Action<string, string>? diagnostic, string method, string path)
+    {
+        try { diagnostic?.Invoke(method, path); } catch { /* Diagnostics cannot interrupt transport cleanup. */ }
     }
 
     private async Task TunnelHttpConnectionAsync(HttpConnection httpConnection)
     {
         var publicUrl = Tunnel.PublicUrl;
         var requestUrl = $"{publicUrl}/tunnelite/request/{httpConnection.RequestId}";
+        CancellationToken revoked = default;
         try
         {
             // Start the request to the public server
@@ -243,11 +265,17 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 localRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(httpConnection.ContentType);
             }
 
-            CancellationToken revoked = default;
             if (Tunnel.Access is { } access)
             {
+                var endpoint = TunnelUrl;
+                if (endpoint is null)
+                {
+                    using var pending = PairedAccess.Response(System.Net.HttpStatusCode.ServiceUnavailable, "The desktop is reconnecting.");
+                    await ForwardResponseAsync(requestUrl, pending, _lifetime.Token);
+                    return;
+                }
                 var path = httpConnection.Path[Tunnel.LocalUrl.TrimEnd('/').Length..].Split('?')[0];
-                var decision = await access.CheckHttpAsync(localRequest, path, new Uri(TunnelUrl!), _lifetime.Token);
+                var decision = await access.CheckHttpAsync(localRequest, path, new Uri(endpoint), _lifetime.Token);
                 if (decision.Response is { } denied)
                 {
                     using (denied) await ForwardResponseAsync(requestUrl, denied, _lifetime.Token);
@@ -260,10 +288,15 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             await ForwardResponseAsync(requestUrl, localResponse, active.Token);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (revoked.IsCancellationRequested)
+        {
+            using var ended = ControlRequest(HttpMethod.Delete, requestUrl);
+            using var response = await ServerHttpClient.SendAsync(ended, _lifetime.Token);
+        }
         catch (Exception ex)
         {
-            LogFailedRequest?.Invoke(httpConnection.Method, httpConnection.Path);
-            LogException?.Invoke(ex);
+            Emit(LogFailedRequest, httpConnection.Method, httpConnection.Path);
+            Emit(LogException, ex);
             using var errorRequest = ControlRequest(HttpMethod.Delete, requestUrl);
             using var response = await ServerHttpClient.SendAsync(errorRequest, _lifetime.Token);
         }
@@ -307,10 +340,11 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
     private async Task TunnelWsConnectionAsync(WsConnection wsConnection)
     {
         CancellationToken revoked = default;
+        var endpoint = TunnelUrl;
         if (Tunnel.Access is { } access)
         {
             var cookies = wsConnection.Headers?.FirstOrDefault(h => h.Key.Equals("Cookie", StringComparison.OrdinalIgnoreCase)).Value;
-            if (!access.Authorize(cookies is null ? null : string.Join("; ", cookies), new Uri(TunnelUrl!).Scheme == "https", out revoked))
+            if (endpoint is null || !access.Authorize(cookies is null ? null : string.Join("; ", cookies), new Uri(endpoint).Scheme == "https", out revoked))
             {
                 await Connection.InvokeAsync("CloseWsAsync", wsConnection, _lifetime.Token);
                 return;
@@ -336,7 +370,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     var value = string.Join(name.Equals("Cookie", StringComparison.OrdinalIgnoreCase) ? "; " : ", ", values);
                     if (Tunnel.Access is not null && name.Equals("Cookie", StringComparison.OrdinalIgnoreCase))
                         value = string.Join("; ", value.Split(';').Select(s => s.Trim()).Where(s =>
-                            !s.StartsWith(ViewerTicket.CookieName(new Uri(TunnelUrl!).Scheme == "https") + "=", StringComparison.Ordinal)));
+                            !s.StartsWith(ViewerTicket.CookieName(new Uri(endpoint!).Scheme == "https") + "=", StringComparison.Ordinal)));
                     if (value.Length > 0) webSocket.Options.SetRequestHeader(name, value);
                 }
             }
@@ -346,26 +380,39 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
             var incomingTask = StreamIncomingWsAsync(webSocket, wsConnection, cts.Token);
             var outgoingTask = StreamOutgoingWsAsync(webSocket, wsConnection, cts.Token);
 
-            await Task.WhenAny(incomingTask, outgoingTask);
+            try
+            {
+                var completed = await Task.WhenAny(incomingTask, outgoingTask);
+                await completed;
+            }
+            finally
+            {
+                await cts.CancelAsync();
+                try { await Task.WhenAll(incomingTask, outgoingTask); }
+                catch (Exception) when (cts.IsCancellationRequested) { } // Both tasks are observed; cancellation ends the companion stream.
+            }
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            LogFailedRequest?.Invoke("WS", wsConnection.Path);
-            LogException?.Invoke(ex);
+            Emit(LogFailedRequest, "WS", wsConnection.Path);
+            Emit(LogException, ex);
         }
         finally
         {
             await cts.CancelAsync();
             if (Tunnel.Access is not null && !_lifetime.IsCancellationRequested) await Connection.InvokeAsync("CloseWsAsync", wsConnection, _lifetime.Token);
 
-            Log?.Invoke($"[WS] Connection {wsConnection.RequestId} closed.");
+            Emit(Log, $"[WS] Connection {wsConnection.RequestId} closed.");
         }
     }
 
     private static bool IsWebSocketTransportHeader(string name) =>
         name.StartsWith("Sec-WebSocket-", StringComparison.OrdinalIgnoreCase)
-        || new[] { "Host", "Connection", "Upgrade", "Content-Length", "Transfer-Encoding", "Keep-Alive", "Proxy-Connection" }
-            .Contains(name, StringComparer.OrdinalIgnoreCase);
+        || WebSocketTransportHeaders.Contains(name);
+    private static readonly FrozenSet<string> WebSocketTransportHeaders = new[]
+        { "Host", "Connection", "Upgrade", "Content-Length", "Transfer-Encoding", "Keep-Alive", "Proxy-Connection" }
+        .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     private async Task StreamIncomingWsAsync(WebSocket webSocket, WsConnection wsConnection, CancellationToken cancellationToken)
     {
@@ -379,7 +426,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 {
                     if (webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                     {
-                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                        await webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, string.Empty, cancellationToken);
                     }
                 }
                 else if (webSocket.State == WebSocketState.Open)
@@ -394,7 +441,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
         finally
         {
-            Log?.Invoke($"[WS] Writing data to connection {wsConnection.RequestId} finished.");
+            Emit(Log, $"[WS] Writing data to connection {wsConnection.RequestId} finished.");
         }
     }
 
@@ -427,7 +474,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
         finally
         {
-            Log?.Invoke($"[WS] Reading data from connection {wsConnection.RequestId} finished.");
+            Emit(Log, $"[WS] Reading data from connection {wsConnection.RequestId} finished.");
 
             ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -465,14 +512,14 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LogFailedRequest?.Invoke("SSE", sseConnection.Path);
-            LogException?.Invoke(ex);
+            Emit(LogFailedRequest, "SSE", sseConnection.Path);
+            Emit(LogException, ex);
         }
         finally
         {
             await cts.CancelAsync();
 
-            Log?.Invoke($"[SSE] Connection {sseConnection.RequestId} closed.");
+            Emit(Log, $"[SSE] Connection {sseConnection.RequestId} closed.");
         }
     }
 
@@ -504,7 +551,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         }
         finally
         {
-            Log?.Invoke($"[SSE] Reading data from connection {sseConnection.RequestId} finished.");
+            Emit(Log, $"[SSE] Reading data from connection {sseConnection.RequestId} finished.");
 
             ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -525,6 +572,11 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(TimeSpan.FromSeconds(30));
                 using var response = await ServerHttpClient.SendAsync(request, timeout.Token);
+                if ((int)response.StatusCode == 425)
+                {
+                    await Task.Delay(100, cancellationToken);
+                    continue;
+                }
                 if ((int)response.StatusCode is >= 400 and < 500)
                     throw new InvalidOperationException($"Tunnel registration was refused ({(int)response.StatusCode}).");
                 response.EnsureSuccessStatusCode();
@@ -537,15 +589,15 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    LogError?.Invoke($"{tunnelResponse!.Message}:{tunnelResponse.Error}");
+                    Emit(LogError, $"{tunnelResponse!.Message}:{tunnelResponse.Error}");
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (InvalidOperationException) { throw; }
             catch (Exception ex)
             {
-                LogError?.Invoke($"[HTTP] An error occurred while registering the tunnel:");
-                LogException?.Invoke(ex);
+                Emit(LogError, $"[HTTP] An error occurred while registering the tunnel:");
+                Emit(LogException, ex);
 
                 await Task.Delay(5000, cancellationToken);
             }
@@ -567,6 +619,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         {
             try
             {
+                if (connection.State == HubConnectionState.Connected) return true;
                 await connection.StartAsync(token);
 
                 return true;
@@ -582,7 +635,7 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
                     return false;
                 }
 
-                LogError?.Invoke($"[HTTP] Cannot connect to the public server on {Tunnel.PublicUrl}.");
+                Emit(LogError, $"[HTTP] Cannot connect to the public server on {Tunnel.PublicUrl}.");
 
                 await Task.Delay(5000, token);
             }

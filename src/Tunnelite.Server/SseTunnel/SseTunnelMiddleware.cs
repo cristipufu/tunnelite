@@ -86,13 +86,13 @@ public class SseTunnelMiddleware(
             var completionTask = _requestsQueue.WaitForCompletionAsync(
                 tunnel.ClientId,
                 requestId,
-                context);
+                context, connectionId.ConnectionId);
 
             using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
             var content = await reader.ReadToEndAsync();
 
             // Notify the client about new SSE connection
-            await _hubContext.Clients.Client(connectionId).SendAsync("NewSseConnection", new SseConnection
+            await _hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection
             {
                 RequestId = requestId,
                 Content = content,

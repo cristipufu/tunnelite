@@ -27,7 +27,7 @@ public static class Extensions
 
         var signalRBuilder = builder.Services.AddSignalR(hubOptions =>
         {
-            hubOptions.EnableDetailedErrors = true;
+            hubOptions.EnableDetailedErrors = builder.Environment.IsDevelopment();
 
             // Stream items carry up to TunnelProtocol.ChunkSize bytes of payload (older clients send 32 KB), plus
             // the MessagePack envelope. The SignalR default of 32 KB rejected those messages and tore the whole hub

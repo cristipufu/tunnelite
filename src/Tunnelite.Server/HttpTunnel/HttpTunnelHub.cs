@@ -18,7 +18,9 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        _httpTunnelStore.Connections.AddOrUpdate(clientId, Context.ConnectionId, (key, oldValue) => Context.ConnectionId);
+        var session = new HttpTunnelSession(Context.ConnectionId, Context.ConnectionAborted);
+        Context.Items["tunnelite.session"] = session;
+        _httpTunnelStore.Connections.AddOrUpdate(clientId, session, (_, _) => session);
 
         return base.OnConnectedAsync();
     }
@@ -94,7 +96,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
 
             if (result?.MessageType == WebSocketMessageType.Close && webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
-                await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, CancellationToken.None);
+                await webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, Context.ConnectionAborted);
             }
         }
         finally
@@ -131,7 +133,7 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
                 {
                     if (webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                     {
-                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                        await webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, string.Empty, Context.ConnectionAborted);
                     }
                 }
                 else if (webSocket.State == WebSocketState.Open)
@@ -202,18 +204,12 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
 
-        if (!_httpTunnelStore.Connections.TryRemove(new KeyValuePair<Guid, string>(clientId, Context.ConnectionId))) return;
-        // Protected addresses can be reconstituted by their owner after a restart. Keep only their transient route
-        // while this process lives, so a late disconnect cannot remove a freshly registered replacement.
-        if (!Tunnelite.Protocol.EndpointIdentity.IsProtected(clientId) && _httpTunnelStore.Clients.TryGetValue(clientId, out var subdomain))
-        {
-            _httpTunnelStore.Tunnels.Remove(subdomain, out var _);
-            _httpTunnelStore.Clients.Remove(clientId, out _);
-        }
-
-        await _wsRequestsQueue.CompleteAsync(clientId);
-        await _sseRequestsQueue.CompleteAsync(clientId);
-        await httpRequests.CompleteClientAsync(clientId);
+        if (Context.Items["tunnelite.session"] is not HttpTunnelSession session) return;
+        _httpTunnelStore.Connections.TryRemove(new KeyValuePair<Guid, HttpTunnelSession>(clientId, session));
+        await session.CloseAsync(_httpTunnelStore);
+        await _wsRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
+        await _sseRequestsQueue.CompleteConnectionAsync(clientId, session.ConnectionId);
+        await httpRequests.CompleteConnectionAsync(session.ConnectionId);
 
         await base.OnDisconnectedAsync(exception);
     }

@@ -8,10 +8,11 @@ public class WsRequestsQueue
     // client, [requestId, WsDefferedRequest]
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, WsDefferedRequest>> PendingRequests = new();
 
-    public virtual Task WaitForCompletionAsync(Guid clientId, Guid requestId, WebSocket webSocket)
+    public virtual Task WaitForCompletionAsync(Guid clientId, Guid requestId, WebSocket webSocket, string? connectionId = null)
     {
         WsDefferedRequest request = new()
         {
+            ConnectionId = connectionId,
             WebSocket = webSocket,
             RequestId = requestId,
             TaskCompletionSource = new TaskCompletionSource(),
@@ -82,5 +83,15 @@ public class WsRequestsQueue
             request.Value.TaskCompletionSource?.TrySetResult();
         }
         return Task.CompletedTask;
+    }
+
+    public async Task CompleteConnectionAsync(Guid clientId, string connectionId)
+    {
+        if (!PendingRequests.TryGetValue(clientId, out var requests)) return;
+        foreach (var request in requests.Values.Where(r => r.ConnectionId == connectionId))
+        {
+            request.WebSocket?.Abort();
+            await CompleteAsync(clientId, request.RequestId);
+        }
     }
 }

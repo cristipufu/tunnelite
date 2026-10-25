@@ -121,6 +121,8 @@ The code expires after five minutes and can enroll one browser. Press `p` for an
 
 The relay needs **no disk, database, or external storage**: its connection maps and browser-verification keys are in memory. The desktop re-registers them on reconnect. Deploy the updated relay before using paired mode; protected clients refuse relays that do not advertise support. The existing single-node SignalR deployment is supported.
 
+Custom tunnel clients must connect to the SignalR hub before registering an HTTP tunnel. A registration without an active connection returns HTTP 425 and retains no route. Each connection owns one route, and disconnecting releases that route and its pending requests. The SDK handles this order and retries a registration while hub startup finishes.
+
 Public HTTPS terminates at the relay, which can read the traffic. Paired mode adds access control; it does not provide end-to-end encryption that hides traffic from the relay. Use HTTPS for the relay; HTTP is accepted only on loopback for local development.
 
 For an ordinary public URL with a terminal QR code, use `tunnelite http://localhost:3000 --qr`.
