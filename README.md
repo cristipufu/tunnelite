@@ -1,13 +1,31 @@
-# ⚡ Tunnelite
+<p align="center">
+  <a href="https://tunnelite.com">
+    <img src="https://raw.githubusercontent.com/cristipufu/tunnelite/master/src/Tunnelite.Server/wwwroot/apple-touch-icon.png" width="112" height="112" alt="Tunnelite logo">
+  </a>
+</p>
 
-[![CI](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&label=CI&logo=github)](https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml)
-[![CD](https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/deploy.yml?branch=master&label=CD&logo=microsoftazure)](https://github.com/cristipufu/tunnelite/actions/workflows/deploy.yml)
-[![NuGet](https://img.shields.io/nuget/v/Tunnelite?logo=nuget&label=NuGet)](https://www.nuget.org/packages/Tunnelite/)
-[![NuGet downloads](https://img.shields.io/nuget/dt/Tunnelite?logo=nuget&label=downloads)](https://www.nuget.org/packages/Tunnelite/)
-[![Release](https://img.shields.io/github/v/release/cristipufu/tunnelite?logo=github&label=release)](https://github.com/cristipufu/tunnelite/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<h1 align="center">Tunnelite</h1>
 
-Tunnelite is a .NET tool that lets you set up a secure connection between a public web address and an application running on your local machine. It effectively makes your local app accessible from the internet.
+<p align="center">
+  <strong>Your local apps, within reach.</strong><br>
+  Share a local server or pair your phone with your desktop.
+</p>
+
+<p align="center">
+  <a href="https://github.com/cristipufu/tunnelite/releases/latest"><img src="https://img.shields.io/github/v/release/cristipufu/tunnelite?style=flat&amp;label=release&amp;color=3b82f6" alt="Latest release" height="20"></a>
+  <a href="https://www.nuget.org/packages/Tunnelite/"><img src="https://img.shields.io/nuget/v/Tunnelite?style=flat&amp;logo=nuget&amp;label=NuGet&amp;color=2563eb" alt="NuGet version" height="20"></a>
+  <a href="https://github.com/cristipufu/tunnelite/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/cristipufu/tunnelite/ci.yml?branch=master&amp;style=flat&amp;label=build&amp;logo=github" alt="Build status" height="20"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-64748b?style=flat" alt="MIT license" height="20"></a>
+</p>
+
+<p align="center">
+  <a href="https://tunnelite.com">Website</a> ·
+  <a href="#-installation">Get started</a> ·
+  <a href="docs/sdk.md">SDK docs</a> ·
+  <a href="https://webhooks.tunnelite.com">Webhook tester</a>
+</p>
+
+---
 
 ```bash
 # macOS / Linux with Homebrew
@@ -16,8 +34,6 @@ tunnelite http://localhost:3000
 ```
 
 You can also install the [.NET tool](#net-tool) or download a [standalone binary](#standalone-binaries).
-
-**Website:** [tunnelite.com](https://tunnelite.com) · **Webhook tester:** [webhooks.tunnelite.com](https://webhooks.tunnelite.com)
 
 ## Contents
 
@@ -101,6 +117,10 @@ This command returns a public URL with an auto-generated subdomain.
 | `<localUrl>` | The local URL to tunnel to. Use `http://` or `https://` for web applications, or `tcp://host:port` for raw TCP (self-hosted servers only). |
 | `--publicUrl <url>` | The tunnel server to connect to. Defaults to `https://tunnelite.com`. |
 | `--log <level>` | Client log verbosity: `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical`. |
+| `--pair` | Require QR pairing for an HTTP(S) tunnel. |
+| `--name <name>` | Select a local profile for paired mode (default: `default`). |
+| `--identity-file <path>` | Use an explicit desktop profile file in paired mode. |
+| `--qr` | Display a QR code for a public tunnel. |
 | `--insecure-local` | Explicitly allow an untrusted HTTPS development certificate on a loopback target. Relay certificates are always verified. |
 
 While the tunnel is running, press `c` to clear the screen and `q` to quit.
@@ -109,25 +129,13 @@ While the tunnel is running, press `c` to clear the screen and `q` to quit.
 
 ```bash
 tunnelite serve http://127.0.0.1:2584 --name desktop
-# Equivalent paired mode on the original command:
-tunnelite http://127.0.0.1:2584 --pair --name desktop
 ```
 
-Scan the terminal QR code with the phone's camera. The browser pairs once and opens the local app's web UI. The desktop must already serve a web UI/API; Tunnelite provides access to it. No phone-side VPN or Tunnelite app is required.
+Scan the QR code with your phone to open the app. Press `p` for a new code, `d` to list paired devices, or `r` to revoke access. Use the same profile name on later launches to keep the address and paired devices.
 
-The code expires after five minutes and can enroll one browser. Press `p` for another code, `d` to list devices, and `r` to revoke a device. Revocation closes that device's active SSE/WebSocket streams. Browser sessions expire after 30 days. Redirected stdin also accepts `pair`, `devices`, `revoke <device-id>`, and `q` as lines.
+You can also use `tunnelite http://localhost:3000 --pair`. For a public tunnel with a QR code, use `--qr`.
 
-`--name` selects a **local desktop profile**, not a custom public hostname. Its secret derives a stable `p-<id>.tunnelite.com` address that the relay can verify after a restart. Identity and device records live only on the desktop, under its application-data directory. Use `--identity-file <path>` to select a file explicitly. Unix profile files have owner-only permissions, and one CLI process can open a profile at a time. Keep the file to retain the address and paired browsers; losing it requires pairing again.
-
-The relay needs **no disk, database, or external storage**: its connection maps and browser-verification keys are in memory. The desktop re-registers them on reconnect. Deploy the updated relay before using paired mode; protected clients refuse relays that do not advertise support. The existing single-node SignalR deployment is supported.
-
-Custom tunnel clients must connect to the SignalR hub before registering an HTTP tunnel. A registration without an active connection returns HTTP 425 and retains no route. Each connection owns one route, and disconnecting releases that route and its pending requests. The SDK handles this order and retries a registration while hub startup finishes.
-
-Public HTTPS terminates at the relay, which can read the traffic. Paired mode adds access control; it does not provide end-to-end encryption that hides traffic from the relay. Use HTTPS for the relay; HTTP is accepted only on loopback for local development.
-
-For an ordinary public URL with a terminal QR code, use `tunnelite http://localhost:3000 --qr`.
-
-Windows Terminal, PowerShell, cmd, macOS and Linux terminals are supported. The QR renderer detects Unicode and ANSI support, uses a text fallback for older consoles, and preserves a copyable URL when output is redirected or the terminal is too narrow. On Windows, desktop profiles use the current user's application-data folder and its inherited access controls.
+See [paired access](docs/paired-access.md) for profile options and device management.
 
 ## 🔍 How It Works
 
@@ -248,31 +256,7 @@ app.UseTunnelite(); // prints the public URL once the tunnel is connected
 app.Run();
 ```
 
-For an embedded desktop app, register a host-owned background service before building the app:
-
-```csharp
-using Tunnelite.AspNetCore;
-using Tunnelite.Sdk;
-
-// Load the same identity and device state from your desktop application's storage on each launch.
-var identity = new TunnelIdentity(savedDesktopSecret);
-using var access = new PairedAccess(identity, savedDeviceState, saveDeviceStateAsync);
-builder.Services.AddTunnelite(options =>
-{
-    options.Access = access;
-    options.OnReady = (client, cancellationToken) =>
-    {
-        ShowPairingQr(client.CreatePairingUrl());
-        return Task.CompletedTask;
-    };
-});
-```
-
-`OnReady` runs after registration and reconnects. Render its URL using the host application's QR library. `access.State.Devices` lists enrolled browsers; `await access.RevokeAsync(deviceId)` revokes one. The asynchronous save callback runs before enrollment or revocation is acknowledged. `PairedAccessState` contains token hashes, not browser tokens. The host service starts after the local HTTP server and disposes the tunnel during shutdown. `PublicUrl` and `LocalUrl` can be configured in the same options.
-
-Applications can also instantiate `HttpTunnelClient` directly with `HttpTunnelRequest.Access`. Use `await using` for the client and `ConnectAsync(cancellationToken)` for cancellable startup. Keep the local web server bound to loopback, and allow the public tunnel hostname in any host validation performed by your app.
-
-Ordinary HTTP tunnels retain their existing acceptance of untrusted development certificates. The new paired mode verifies local HTTPS certificates by default. For a loopback development server in paired mode, explicitly set `HttpTunnelRequest.AllowUntrustedLocalCertificates`, the matching hosted-service option, or the CLI's `--insecure-local` flag. SDK callers can explicitly set the option to `false` to require validation in ordinary tunnels too. An explicit bypass cannot disable relay TLS validation or bypass validation for a remote target.
+See [SDK integration](docs/sdk.md) to embed paired access in a desktop or ASP.NET Core application.
 
 ## 🧪 Tests
 
