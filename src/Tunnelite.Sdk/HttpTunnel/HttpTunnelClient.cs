@@ -401,7 +401,8 @@ public class HttpTunnelClient : ITunnelClient, IAsyncDisposable
         finally
         {
             await cts.CancelAsync();
-            if (Tunnel.Access is not null && !_lifetime.IsCancellationRequested) await Connection.InvokeAsync("CloseWsAsync", wsConnection, _lifetime.Token);
+            if (!_lifetime.IsCancellationRequested && (Tunnel.Access is not null || _currentTunnel?.SupportsWebSocketClose == true))
+                await Connection.InvokeAsync("CloseWsAsync", wsConnection, _lifetime.Token);
 
             Emit(Log, $"[WS] Connection {wsConnection.RequestId} closed.");
         }

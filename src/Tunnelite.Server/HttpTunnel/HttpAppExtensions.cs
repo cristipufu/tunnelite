@@ -108,6 +108,7 @@ public static class HttpAppExtensions
                 {
                     TunnelUrl = tunnelUrl,
                     payload.Subdomain,
+                    SupportsWebSocketClose = true,
                     ProtectedEndpoint = EndpointIdentity.IsProtected(payload.ClientId),
                     payload.RequirePairing,
                 });

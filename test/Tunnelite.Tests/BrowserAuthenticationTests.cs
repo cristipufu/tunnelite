@@ -55,6 +55,17 @@ public class BrowserAuthenticationTests(TunnelHost host) : IClassFixture<TunnelH
     }
 
     [Fact]
+    public async Task WebSocket_backend_rejection_closes_the_public_connection()
+    {
+        using var socket = new ClientWebSocket();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await socket.ConnectAsync(new Uri(host.PublicUrl.Replace("http://", "ws://") + "/authenticated-ws"), timeout.Token);
+        var result = await socket.ReceiveAsync(new ArraySegment<byte>(new byte[128]), timeout.Token);
+        Assert.Equal(WebSocketMessageType.Close, result.MessageType);
+        Assert.Equal(WebSocketCloseStatus.EndpointUnavailable, result.CloseStatus);
+    }
+
+    [Fact]
     public async Task WebSocket_preserves_browser_credentials_and_origin()
     {
         using var socket = new ClientWebSocket();

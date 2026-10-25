@@ -29,9 +29,12 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
     {
         var clientId = GetClientId(Context);
         var socket = _wsRequestsQueue.GetWebSocket(clientId, connection.RequestId);
-        if (socket is { State: WebSocketState.Open })
-            await socket.CloseOutputAsync(WebSocketCloseStatus.PolicyViolation, "Desktop access ended.", Context.ConnectionAborted);
-        await _wsRequestsQueue.CompleteAsync(clientId, connection.RequestId);
+        try
+        {
+            if (socket is { State: WebSocketState.Open })
+                await socket.CloseOutputAsync(WebSocketCloseStatus.EndpointUnavailable, "Tunnel connection ended.", Context.ConnectionAborted);
+        }
+        finally { await _wsRequestsQueue.CompleteAsync(clientId, connection.RequestId); }
     }
 
     /// <summary>
