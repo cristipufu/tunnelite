@@ -18,14 +18,17 @@ public sealed class LocalApp : IAsyncDisposable
     private readonly WebApplication _app;
     private readonly TcpListener _tcp;
     private readonly CancellationTokenSource _cts = new();
+    private readonly TaskCompletionSource _releaseSse;
+    public void ReleaseGatedSse() => _releaseSse.TrySetResult();
 
     public string Url { get; }
     public int TcpPort { get; }
 
-    private LocalApp(WebApplication app, TcpListener tcp)
+    private LocalApp(WebApplication app, TcpListener tcp, TaskCompletionSource releaseSse)
     {
         _app = app;
         _tcp = tcp;
+        _releaseSse = releaseSse;
 
         Url = $"http://localhost:{new Uri(app.Urls.First()).Port}";
         TcpPort = ((IPEndPoint)tcp.LocalEndpoint).Port;
@@ -46,6 +49,15 @@ public sealed class LocalApp : IAsyncDisposable
         app.UseWebSockets();
 
         app.MapGet("/hello", () => "hello from local app");
+        var releaseSse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        app.MapGet("/gated-sse", async (HttpContext context) =>
+        {
+            context.Response.ContentType = "text/event-stream";
+            await context.Response.WriteAsync("data: first\n\n", context.RequestAborted);
+            await context.Response.Body.FlushAsync(context.RequestAborted);
+            await releaseSse.Task.WaitAsync(context.RequestAborted);
+            await context.Response.WriteAsync("data: last\n\n", context.RequestAborted);
+        });
 
         app.MapGet("/robots.txt", () => "User-agent: *\nDisallow: /local-secret");
 
@@ -188,7 +200,7 @@ public sealed class LocalApp : IAsyncDisposable
         var tcp = new TcpListener(IPAddress.Loopback, 0);
         tcp.Start();
 
-        return new LocalApp(app, tcp);
+        return new LocalApp(app, tcp, releaseSse);
     }
 
     private async Task AcceptTcpAsync(CancellationToken cancellationToken)

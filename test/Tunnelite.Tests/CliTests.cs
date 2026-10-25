@@ -88,12 +88,19 @@ public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
             Assert.Equal("hello from local app", await http.GetStringAsync("/hello", cts.Token));
 
             // SSE
-            using var request = new HttpRequestMessage(HttpMethod.Get, "/sse?count=2&size=8&delay=50");
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/gated-sse");
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-            var sse = await response.Content.ReadAsStringAsync(cts.Token);
-            Assert.Contains("data: aaaaaaaa", sse);
-            Assert.Contains("data: bbbbbbbb", sse);
+            using (var reader = new StreamReader(await response.Content.ReadAsStreamAsync(cts.Token)))
+            {
+                // The backend cannot send the last event or finish until the CLI has delivered the first.
+                Assert.Equal("data: first", await reader.ReadLineAsync(cts.Token));
+                Assert.Equal("", await reader.ReadLineAsync(cts.Token));
+                host.App.ReleaseGatedSse();
+                Assert.Equal("data: last", await reader.ReadLineAsync(cts.Token));
+                Assert.Equal("", await reader.ReadLineAsync(cts.Token));
+                Assert.Null(await reader.ReadLineAsync(cts.Token));
+            }
 
             // WebSocket: text, then a message spanning several chunks
             using var socket = new ClientWebSocket();
@@ -117,6 +124,7 @@ public class CliTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
         }
         finally
         {
+            host.App.ReleaseGatedSse();
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
