@@ -85,7 +85,7 @@ public class Program
         client.LogException += exception => display.Error(exception.Message);
         var readyVersion = 0;
         client.Connected += () => { Interlocked.Increment(ref readyVersion); return Task.CompletedTask; };
-        var connecting = client is HttpTunnelClient http ? http.ConnectAsync(lifetime.Token) : client.ConnectAsync().WaitAsync(lifetime.Token);
+        var connecting = client.ConnectAsync(lifetime.Token);
         try
         {
             await display.RunAsync(token => RunMainLoop(client, connecting, display, access,
@@ -96,7 +96,7 @@ public class Program
             await lifetime.CancelAsync();
             if (client is IAsyncDisposable disposable) await disposable.DisposeAsync();
             try { await connecting; }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+            catch (Exception) when (lifetime.IsCancellationRequested) { }
         }
     }
 
@@ -110,84 +110,115 @@ public class Program
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!initialReady && connecting.IsCompleted) { await connecting; initialReady = true; }
-            var status = initialReady ? client.Connection.State == HubConnectionState.Connected && client.TunnelUrl is not null
-                ? "Connected" : "Reconnecting" : "Connecting";
-            if (status != display.View.Status) display.SetView(display.View with { Status = status, Qr = null });
-            if (status == "Connected" && (observedVersion != readyVersion() || display.View.PublicUrl != client.TunnelUrl))
-            {
-                RefreshQr(client, display, access);
-                observedVersion = readyVersion();
-            }
-            if (access is not null)
-            {
-                var devices = access.State.Devices;
-                display.SetView(display.View.WithDevices(devices));
-            }
-            string? action = null;
-            if (input?.IsCompleted == true)
-            {
-                action = await input;
-                input = action is null ? null : Task.Run(Console.ReadLine);
-            }
-            else if (!lineInput)
-            {
-                try
-                {
-                    if (Console.KeyAvailable)
-                    {
-                        var key = Console.ReadKey(intercept: true);
-                        action = key.Key switch
-                        {
-                            ConsoleKey.UpArrow => "up", ConsoleKey.DownArrow => "down",
-                            ConsoleKey.Escape => "back", ConsoleKey.Enter => "select",
-                            _ => key.KeyChar.ToString().ToLowerInvariant(),
-                        };
-                    }
-                }
-                catch (Exception exception) when (exception is IOException or InvalidOperationException or PlatformNotSupportedException)
-                { lineInput = true; input = Task.Run(Console.ReadLine); }
-            }
-            action = action?.Trim();
+            (initialReady, observedVersion) = await UpdateConnectionStatusAsync(
+                client, connecting, display, access, readyVersion, initialReady, observedVersion);
+            (var action, lineInput, input) = await ReadActionAsync(lineInput, input);
             if (action is "q" or "quit") return;
-            try
-            {
-                if (action is "c" or "clear") { display.ClearActivity(); display.Notice("Activity cleared."); }
-                if (action is "p" or "pair" && access is not null) RefreshQr(client, display, access);
-                if (action == "back") display.SetView(display.View with { Panel = DevicePanel.Closed, Notice = "" });
-                if (action is "d" or "devices" && access is not null)
-                    display.ShowDevices(display.View.Panel == DevicePanel.List ? DevicePanel.Closed : DevicePanel.List, access.State.Devices);
-                if (action == "r" && access is not null) display.ShowDevices(DevicePanel.Revoke, access.State.Devices);
-                if (action is "up" or "down" && display.View.Panel != DevicePanel.Closed)
-                {
-                    var view = display.View;
-                    var count = view.Devices?.Count ?? 0;
-                    var selected = Math.Clamp(view.SelectedDevice + (action == "up" ? -1 : 1), 0, Math.Max(0, count - 1));
-                    display.SetView(view with { SelectedDevice = selected });
-                    if (!display.Live && count > 0) display.Notice("Selected: " + TerminalText.Clean(view.Devices![selected].Name));
-                }
-                if (action == "select" && display.View.Panel == DevicePanel.Revoke && access is not null)
-                {
-                    var devices = display.View.Devices ?? [];
-                    if (display.View.SelectedDevice >= 0 && display.View.SelectedDevice < devices.Count)
-                        action = "revoke " + devices[display.View.SelectedDevice].Id;
-                }
-                if (action?.StartsWith("revoke ", StringComparison.Ordinal) == true && access is not null)
-                {
-                    if (Guid.TryParse(action[7..].Trim(), out var id))
-                    {
-                        await access.RevokeAsync(id, cancellationToken);
-                        display.SetView(display.View with { Panel = DevicePanel.List, Devices = access.State.Devices });
-                        display.Notice("Device access revoked.");
-                    }
-                    else display.Notice("Use revoke <device-id>.");
-                }
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            { display.Error(exception.Message); display.Notice("Could not complete that action. Try again."); }
+            if (!string.IsNullOrEmpty(action))
+                await ExecuteActionAsync(action, client, display, access, cancellationToken);
             display.RefreshPlain();
             await Task.Delay(100, cancellationToken);
         }
+    }
+
+    private static async Task<(bool InitialReady, int ObservedVersion)> UpdateConnectionStatusAsync(
+        ITunnelClient client, Task connecting, CliDisplay display, PairedAccess? access,
+        Func<int> readyVersion, bool initialReady, int observedVersion)
+    {
+        if (!initialReady && connecting.IsCompleted) { await connecting; initialReady = true; }
+        var status = initialReady ? client.Connection.State == HubConnectionState.Connected && client.TunnelUrl is not null
+            ? "Connected" : "Reconnecting" : "Connecting";
+        if (status != display.View.Status) display.SetView(display.View with { Status = status, Qr = null });
+        if (status == "Connected" && (observedVersion != readyVersion() || display.View.PublicUrl != client.TunnelUrl))
+        {
+            RefreshQr(client, display, access);
+            observedVersion = readyVersion();
+        }
+        if (access is not null) display.SetView(display.View.WithDevices(access.State.Devices));
+        return (initialReady, observedVersion);
+    }
+
+    private static async Task<(string? Action, bool LineInput, Task<string?>? Input)> ReadActionAsync(
+        bool lineInput, Task<string?>? input)
+    {
+        string? action = null;
+        if (input?.IsCompleted == true)
+        {
+            action = await input;
+            input = action is null ? null : Task.Run(Console.ReadLine);
+        }
+        else if (!lineInput)
+        {
+            try
+            {
+                if (Console.KeyAvailable)
+                {
+                    var key = Console.ReadKey(intercept: true);
+                    action = key.Key switch
+                    {
+                        ConsoleKey.UpArrow => "up", ConsoleKey.DownArrow => "down",
+                        ConsoleKey.Escape => "back", ConsoleKey.Enter => "select",
+                        _ => key.KeyChar.ToString().ToLowerInvariant(),
+                    };
+                }
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or PlatformNotSupportedException)
+            { lineInput = true; input = Task.Run(Console.ReadLine); }
+        }
+        return (action?.Trim(), lineInput, input);
+    }
+
+    private static async Task ExecuteActionAsync(string action, ITunnelClient client, CliDisplay display,
+        PairedAccess? access, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (action is "c" or "clear") { display.ClearActivity(); display.Notice("Activity cleared."); return; }
+            if (action is "p" or "pair" && access is not null) { RefreshQr(client, display, access); return; }
+            if (action == "back") { display.SetView(display.View with { Panel = DevicePanel.Closed, Notice = "" }); return; }
+            if (action is "d" or "devices" && access is not null)
+            {
+                display.ShowDevices(display.View.Panel == DevicePanel.List ? DevicePanel.Closed : DevicePanel.List, access.State.Devices);
+                return;
+            }
+            if (action == "r" && access is not null) { display.ShowDevices(DevicePanel.Revoke, access.State.Devices); return; }
+            if (action is "up" or "down" && display.View.Panel != DevicePanel.Closed)
+            {
+                MoveDeviceSelection(display, action == "up" ? -1 : 1);
+                return;
+            }
+            if (action == "select" && display.View.Panel == DevicePanel.Revoke && access is not null)
+            {
+                var devices = display.View.Devices ?? [];
+                if (display.View.SelectedDevice >= 0 && display.View.SelectedDevice < devices.Count)
+                    action = "revoke " + devices[display.View.SelectedDevice].Id;
+            }
+            if (action.StartsWith("revoke ", StringComparison.Ordinal) && access is not null)
+                await RevokeDeviceAsync(action[7..].Trim(), display, access, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        { display.Error(exception.Message); display.Notice("Could not complete that action. Try again."); }
+    }
+
+    private static void MoveDeviceSelection(CliDisplay display, int delta)
+    {
+        var view = display.View;
+        var count = view.Devices?.Count ?? 0;
+        var selected = Math.Clamp(view.SelectedDevice + delta, 0, Math.Max(0, count - 1));
+        display.SetView(view with { SelectedDevice = selected });
+        if (!display.Live && count > 0) display.Notice("Selected: " + TerminalText.Clean(view.Devices![selected].Name));
+    }
+
+    private static async Task RevokeDeviceAsync(string rawId, CliDisplay display, PairedAccess access,
+        CancellationToken cancellationToken)
+    {
+        if (Guid.TryParse(rawId, out var id))
+        {
+            await access.RevokeAsync(id, cancellationToken);
+            display.SetView(display.View with { Panel = DevicePanel.List, Devices = access.State.Devices });
+            display.Notice("Device access revoked.");
+        }
+        else display.Notice("Use revoke <device-id>.");
     }
 
     private static void RefreshQr(ITunnelClient client, CliDisplay display, PairedAccess? access)

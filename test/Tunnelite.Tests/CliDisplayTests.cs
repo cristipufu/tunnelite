@@ -115,4 +115,30 @@ public class CliDisplayTests
         Assert.Contains("Pairing code expired", output.ToString());
         Assert.DoesNotContain("Scan to pair", output.ToString());
     }
+
+    [Fact]
+    public void Switching_from_device_list_to_revoke_preserves_the_selected_device()
+    {
+        var (display, _, _) = Create(100, 30, paired: true);
+        var first = new Tunnelite.Sdk.PairedDevice(Guid.NewGuid(), "First", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(30), "hash");
+        var second = first with { Id = Guid.NewGuid(), Name = "Second" };
+        IReadOnlyList<Tunnelite.Sdk.PairedDevice> devices = [first, second];
+
+        display.ShowDevices(DevicePanel.List, devices);
+        Assert.Equal(0, display.View.SelectedDevice);
+
+        display.SetView(display.View with { SelectedDevice = 1 });
+        display.ShowDevices(DevicePanel.Revoke, devices);
+        Assert.Equal(1, display.View.SelectedDevice);
+        Assert.Equal(DevicePanel.Revoke, display.View.Panel);
+    }
+
+    [Fact]
+    public void Status_prefix_animates_spinner_while_connecting_and_stays_static_when_connected()
+    {
+        Assert.Equal("● ", CliTheme.StatusPrefix("Connected", unicode: true, animationFrame: 3));
+        Assert.Equal("* ", CliTheme.StatusPrefix("Connected", unicode: false, animationFrame: 3));
+        Assert.NotEqual("● ", CliTheme.StatusPrefix("Connecting", unicode: true, animationFrame: 1));
+        Assert.NotEqual("* ", CliTheme.StatusPrefix("Reconnecting", unicode: false, animationFrame: 1));
+    }
 }

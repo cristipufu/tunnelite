@@ -24,10 +24,12 @@ internal sealed record CliView(string Status, string? PublicUrl = null, Terminal
 internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool paired, bool live, TextWriter? plainOutput = null)
 {
     private readonly TextWriter _output = plainOutput ?? Console.Out;
+    private readonly bool _outputRedirected = plainOutput is not null || Console.IsOutputRedirected;
     private CliView _view = new("Connecting");
     internal CliActivity Activity { get; } = new();
     private long _printedRequests, _printedFailures, _printedError, _viewRevision;
     private long _lastPlainUpdate;
+    private int _animationFrame;
 
     internal bool Live { get; } = live;
     internal CliView View => Volatile.Read(ref _view);
@@ -50,7 +52,7 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
     internal void Ready(string url, string? qrUrl)
     {
         TerminalQr? qr = null;
-        if (qrUrl is not null && !Console.IsOutputRedirected)
+        if (qrUrl is not null && (Live || !_outputRedirected))
         {
             try { qr = TerminalQr.Create(qrUrl, console.Profile.Capabilities.Unicode); }
             catch (Exception exception) when (exception is IOException or PlatformNotSupportedException or InvalidOperationException)
@@ -66,19 +68,26 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         _output.WriteLine(paired ? "Access: Paired browsers" : "Access: Public link");
         if (qr is not null && qr.Width <= console.Profile.Width)
         {
-            var foreground = Console.ForegroundColor;
-            var background = Console.BackgroundColor;
-            try
+            if (!_outputRedirected && console.Profile.Capabilities.Ansi)
             {
-                Console.ForegroundColor = ConsoleColor.Black;
-                Console.BackgroundColor = ConsoleColor.White;
-                _output.WriteLine(qr.Graphic);
+                var foreground = Console.ForegroundColor;
+                var background = Console.BackgroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Black;
+                    Console.BackgroundColor = ConsoleColor.White;
+                    _output.WriteLine(qr.Graphic);
+                }
+                finally
+                {
+                    Console.ResetColor();
+                    if ((uint)foreground <= 15) Console.ForegroundColor = foreground;
+                    if ((uint)background <= 15) Console.BackgroundColor = background;
+                }
             }
-            finally
+            else
             {
-                Console.ResetColor();
-                if ((uint)foreground <= 15) Console.ForegroundColor = foreground;
-                if ((uint)background <= 15) Console.BackgroundColor = background;
+                _output.WriteLine(qr.Graphic);
             }
         }
         _output.WriteLine(Help());
@@ -86,7 +95,11 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
 
     internal void ShowDevices(DevicePanel panel, IReadOnlyList<PairedDevice> devices)
     {
-        SetView(View with { Panel = panel, Devices = devices, SelectedDevice = 0, Notice = "" });
+        var updated = View.WithDevices(devices);
+        var selected = View.Panel != DevicePanel.Closed && updated.SelectedDevice >= 0 && updated.SelectedDevice < devices.Count
+            ? updated.SelectedDevice
+            : 0;
+        SetView(updated with { Panel = panel, SelectedDevice = selected, Notice = "" });
         if (Live) return;
         if (devices.Count == 0) _output.WriteLine("No paired devices yet.");
         foreach (var device in devices)
@@ -109,28 +122,36 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         _output.Write("\u001b[?1049h");
         try
         {
-            console.Clear();
-            while (!running.IsCompleted)
+            try
             {
-                var width = console.Profile.Width;
-                var height = console.Profile.Height;
-                await console.Live(Render()).AutoClear(true).Overflow(VerticalOverflow.Crop).StartAsync(async context =>
+                console.Clear();
+                while (!running.IsCompleted)
                 {
-                    (long, long, long)? rendered = null;
-                    while (!running.IsCompleted && width == console.Profile.Width && height == console.Profile.Height)
+                    var width = console.Profile.Width;
+                    var height = console.Profile.Height;
+                    await console.Live(Render()).AutoClear(true).Overflow(VerticalOverflow.Crop).StartAsync(async context =>
                     {
-                        var revision = (Volatile.Read(ref _viewRevision), Activity.Revision, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-                        if (rendered != revision)
+                        (long, long, long)? rendered = null;
+                        while (!running.IsCompleted && width == console.Profile.Width && height == console.Profile.Height)
                         {
-                            context.UpdateTarget(Render());
-                            context.Refresh();
-                            rendered = revision;
+                            var revision = (Volatile.Read(ref _viewRevision), Activity.Revision, NextTimeTick());
+                            if (rendered != revision)
+                            {
+                                context.UpdateTarget(Render());
+                                context.Refresh();
+                                rendered = revision;
+                            }
+                            await Task.WhenAny(running, Task.Delay(200, lifetime.Token));
+                            lifetime.Token.ThrowIfCancellationRequested();
                         }
-                        await Task.WhenAny(running, Task.Delay(200, lifetime.Token));
-                        lifetime.Token.ThrowIfCancellationRequested();
-                    }
-                });
-                if (!running.IsCompleted) console.Clear();
+                    });
+                    if (!running.IsCompleted) console.Clear();
+                }
+            }
+            finally
+            {
+                _output.Write("\u001b[?1049l");
+                _output.Flush();
             }
             await running;
         }
@@ -139,9 +160,23 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
             await lifetime.CancelAsync();
             try { await running; }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-            finally { _output.Write("\u001b[?1049l"); }
         }
         _output.WriteLine("Tunnel closed.");
+    }
+
+    private long NextTimeTick()
+    {
+        var view = View;
+        if (view.Status != "Connected")
+        {
+            return Interlocked.Increment(ref _animationFrame);
+        }
+        Volatile.Write(ref _animationFrame, 0);
+        if (view.QrExpires is { } expires && DateTimeOffset.UtcNow <= expires.AddSeconds(1))
+        {
+            return DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        }
+        return 0;
     }
 
     internal void RefreshPlain(bool force = false)
@@ -162,7 +197,8 @@ internal sealed class CliDisplay(IAnsiConsole console, string localUrl, bool pai
         }
     }
 
-    internal IRenderable Render() => CliDashboardRenderer.Render(console, localUrl, paired, View, Activity.Snapshot());
+    internal IRenderable Render() =>
+        CliDashboardRenderer.Render(console, localUrl, paired, View, Activity.Snapshot(), Volatile.Read(ref _animationFrame));
 
     private string Help() => View.Panel switch
     {
