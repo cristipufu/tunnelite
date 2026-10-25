@@ -163,10 +163,13 @@ public class Program
                 action = Console.ReadKey(true).KeyChar.ToString();
                 if (action == "r" && access is not null && access.State.Devices.Count > 0)
                 {
-                    var choices = access.State.Devices.Select(d => $"{d.Id} {d.Name}").Prepend("Cancel");
-                    var selected = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Revoke which device?")
-                        .UseConverter(Markup.Escape).AddChoices(choices));
-                    action = selected == "Cancel" ? null : "revoke " + selected.Split(' ')[0];
+                    var devices = access.State.Devices;
+                    for (var index = 0; index < devices.Count; index++)
+                        Console.WriteLine($"{index + 1}. {devices[index].Name} ({devices[index].Id})");
+                    Console.Write("Device number to revoke (Enter to cancel): ");
+                    var selected = await Task.Run(Console.ReadLine).WaitAsync(cancellationToken);
+                    action = int.TryParse(selected, out var number) && number > 0 && number <= devices.Count
+                        ? "revoke " + devices[number - 1].Id : null;
                 }
             }
             if (action is "q" or "quit") return;
@@ -192,30 +195,44 @@ public class Program
         if (access is not null) AnsiConsole.WriteLine("This code expires in five minutes and can pair one device. Press p for a new code.");
         if (!Console.IsOutputRedirected)
         {
-            using var data = QRCodeGenerator.GenerateQrCode(url, QRCodeGenerator.ECCLevel.M);
-            using var code = new AsciiQRCode(data);
-            var graphic = AnsiConsole.Profile.Capabilities.Unicode
-                ? code.GetGraphicSmall(invert: true)
-                : code.GetGraphic(1, darkColorString: "##", whiteSpaceString: "  ");
-            var width = graphic.Split('\n')[0].Length;
-            if (width > AnsiConsole.Profile.Width)
+            try { RenderQr(url); }
+            catch (Exception exception) when (exception is IOException or PlatformNotSupportedException or InvalidOperationException)
             {
-                Console.WriteLine($"Widen the terminal to {width} columns to display the QR code, or open the URL above.");
-                return;
+                Console.WriteLine("This terminal cannot render the QR code. Open the URL above.");
             }
-            if (AnsiConsole.Profile.Capabilities.Ansi)
-                AnsiConsole.Write(new Text(graphic + Environment.NewLine, new Style(Color.Black, Color.White)));
-            else
+        }
+    }
+
+    private static void RenderQr(string url)
+    {
+        using var data = QRCodeGenerator.GenerateQrCode(url, QRCodeGenerator.ECCLevel.M);
+        using var code = new AsciiQRCode(data);
+        var graphic = AnsiConsole.Profile.Capabilities.Unicode
+            ? code.GetGraphicSmall(invert: true)
+            : code.GetGraphic(1, darkColorString: "##", whiteSpaceString: "  ");
+        var width = graphic.Split('\n')[0].Length;
+        if (width > AnsiConsole.Profile.Width)
+        {
+            Console.WriteLine($"Widen the terminal to {width} columns to display the QR code, or open the URL above.");
+            return;
+        }
+        if (AnsiConsole.Profile.Capabilities.Ansi)
+            AnsiConsole.Write(new Text(graphic + Environment.NewLine, new Style(Color.Black, Color.White)));
+        else
+        {
+            var foreground = Console.ForegroundColor;
+            var background = Console.BackgroundColor;
+            try
             {
-                var foreground = Console.ForegroundColor;
-                var background = Console.BackgroundColor;
-                try
-                {
-                    Console.ForegroundColor = ConsoleColor.Black;
-                    Console.BackgroundColor = ConsoleColor.White;
-                    Console.WriteLine(graphic);
-                }
-                finally { Console.ForegroundColor = foreground; Console.BackgroundColor = background; }
+                Console.ForegroundColor = ConsoleColor.Black;
+                Console.BackgroundColor = ConsoleColor.White;
+                Console.WriteLine(graphic);
+            }
+            finally
+            {
+                Console.ResetColor();
+                if ((uint)foreground <= 15) Console.ForegroundColor = foreground;
+                if ((uint)background <= 15) Console.BackgroundColor = background;
             }
         }
     }
@@ -278,7 +295,8 @@ public class Program
 
     private static void LogException(Exception ex)
     {
-        AnsiConsole.WriteException(ex);
+        // The rich exception widget reads assembly file metadata that is unavailable in NativeAOT binaries.
+        AnsiConsole.Write(new Text(ex.ToString() + Environment.NewLine, new Style(Color.Red)));
     }
 
     private static void AddLogging(ITunnelClient client)

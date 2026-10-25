@@ -9,8 +9,15 @@ on:
 
 jobs:
   test:
-    name: Build and test
-    runs-on: ubuntu-latest
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, exe: '' }
+          - { os: windows-latest, exe: '.exe' }
+          - { os: macos-latest, exe: '' }
 
     steps:
       - uses: actions/checkout@v4
@@ -21,26 +28,35 @@ jobs:
           dotnet-version: '10.x'
 
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore -p:NuGetAuditMode=all -p:TreatWarningsAsErrors=true
 
       - name: Build
         run: dotnet build -c Release --no-restore
 
       - name: Integration tests (HTTP, SSE, WebSocket, TCP, legacy clients) and CLI end-to-end
         env:
-          TUNNELITE_CLI: ${{ github.workspace }}/src/Tunnelite.Client/bin/Release/net10.0/Tunnelite.Client
+          TUNNELITE_CLI: ${{ github.workspace }}/src/Tunnelite.Client/bin/Release/net10.0/Tunnelite.Client${{ matrix.exe }}
         run: dotnet test test/Tunnelite.Tests -c Release --no-build --logger "trx;LogFileName=tests.trx" --results-directory TestResults
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.os }}
           path: TestResults
 
   native-aot:
-    name: NativeAOT client
-    runs-on: ubuntu-latest
+    name: NativeAOT (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, rid: linux-x64, exe: '' }
+          - { os: ubuntu-24.04-arm, rid: linux-arm64, exe: '' }
+          - { os: windows-latest, rid: win-x64, exe: '.exe' }
+          - { os: macos-15-intel, rid: osx-x64, exe: '' }
+          - { os: macos-latest, rid: osx-arm64, exe: '' }
 
     steps:
       - uses: actions/checkout@v4
@@ -51,19 +67,19 @@ jobs:
           dotnet-version: '10.x'
 
       - name: Publish the CLI with NativeAOT
-        run: dotnet publish src/Tunnelite.Client -c Release -r linux-x64 -p:PublishAot=true -o aot
+        run: dotnet publish src/Tunnelite.Client -c Release -r ${{ matrix.rid }} -p:PublishAot=true -p:InvariantGlobalization=true -o aot
 
       - name: Build the tests
         run: dotnet build test/Tunnelite.Tests -c Release
 
       - name: CLI end-to-end tests against the AOT binary
         env:
-          TUNNELITE_CLI: ${{ github.workspace }}/aot/Tunnelite.Client
+          TUNNELITE_CLI: ${{ github.workspace }}/aot/Tunnelite.Client${{ matrix.exe }}
         run: dotnet test test/Tunnelite.Tests -c Release --no-build --filter "Category=Cli" --logger "trx;LogFileName=aot-tests.trx" --results-directory TestResults
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aot-test-results
+          name: aot-test-results-${{ matrix.rid }}
           path: TestResults

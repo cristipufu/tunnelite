@@ -97,7 +97,7 @@ public class LegacyClientTests(BareTunnelHost host) : IClassFixture<BareTunnelHo
             .AddMessagePackProtocol()
             .Build();
 
-        connection.On<WsConnection>("NewWsConnection", wsConnection =>
+        connection.On<LegacyWsConnection>("NewWsConnection", wsConnection =>
         {
             _ = TunnelAsync(connection, wsConnection, cancellationToken);
             return Task.CompletedTask;
@@ -112,7 +112,7 @@ public class LegacyClientTests(BareTunnelHost host) : IClassFixture<BareTunnelHo
     }
 
     // What the pre-EndOfMessage SDK did for each tunneled WebSocket, condensed.
-    private static async Task TunnelAsync(HubConnection connection, WsConnection wsConnection, CancellationToken cancellationToken)
+    private static async Task TunnelAsync(HubConnection connection, LegacyWsConnection wsConnection, CancellationToken cancellationToken)
     {
         using var local = new ClientWebSocket();
         await local.ConnectAsync(new Uri(wsConnection.Path), cancellationToken);
@@ -151,5 +151,12 @@ public class LegacyClientTests(BareTunnelHost host) : IClassFixture<BareTunnelHo
 
             yield return (buffer[..result.Count], result.MessageType);
         }
+    }
+
+    // Match the installed legacy SDK's metadata exactly, without the newer header or subprotocol fields.
+    public sealed class LegacyWsConnection
+    {
+        public Guid RequestId { get; set; }
+        public string Path { get; set; } = "";
     }
 }
