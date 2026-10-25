@@ -1,5 +1,8 @@
 using System.Net.Sockets;
 using System.Text;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
+using Tunnelite.Server.TcpTunnel;
 using Tunnelite.Tests.Infrastructure;
 
 namespace Tunnelite.Tests;
@@ -9,6 +12,30 @@ namespace Tunnelite.Tests;
 /// </summary>
 public class TcpTunnelTests(TcpTunnelHost host) : IClassFixture<TcpTunnelHost>
 {
+    [Fact]
+    public async Task Tcp_hub_rejects_missing_or_mismatched_client_ids()
+    {
+        await using var missingId = new HubConnectionBuilder()
+            .WithUrl(host.PublicUrl + "/wsstcptunnel")
+            .Build();
+        await Assert.ThrowsAsync<HttpRequestException>(() => missingId.StartAsync());
+
+        var connectedId = Guid.NewGuid();
+        await using var validConnection = new HubConnectionBuilder()
+            .WithUrl(host.PublicUrl + "/wsstcptunnel?clientId=" + connectedId)
+            .AddMessagePackProtocol()
+            .Build();
+        await validConnection.StartAsync();
+
+        var spoofedResponse = await validConnection.InvokeAsync<TcpTunnelResponse>("RegisterTunnelAsync", new TcpTunnelRequest
+        {
+            ClientId = Guid.NewGuid(),
+            Host = "localhost",
+            LocalPort = host.App.TcpPort,
+            LocalUrl = $"tcp://localhost:{host.App.TcpPort}",
+        });
+        Assert.NotEmpty(spoofedResponse.Error);
+    }
     [Fact]
     public async Task Data_sent_by_the_local_service_on_connect_reaches_the_public_client()
     {

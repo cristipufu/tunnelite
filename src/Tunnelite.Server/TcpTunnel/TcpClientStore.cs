@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 
 #nullable disable
@@ -52,7 +52,14 @@ public class TcpClientStore
 
     public void AddTcpListener(Guid clientId, TcpListenerContext tcpListener)
     {
-        Listeners.AddOrUpdate(clientId, tcpListener, (key, oldValue) => tcpListener);
+        Listeners.AddOrUpdate(clientId, tcpListener, (key, oldValue) =>
+        {
+            if (!ReferenceEquals(oldValue, tcpListener))
+            {
+                _ = oldValue?.DisposeAsync().AsTask();
+            }
+            return tcpListener;
+        });
     }
 
     public async Task DisposeTcpListenerAsync(Guid clientId)

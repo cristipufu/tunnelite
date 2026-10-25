@@ -29,31 +29,7 @@ public class WsTunnelMiddleware(RequestDelegate next, WsRequestsQueue requestsQu
             return;
         }
 
-        HttpTunnelRequest? tunnel = null;
-
-        var subdomain = context.Request.Host.Host.Split('.')[0];
-
-        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
-        {
-            tunnel = _tunnelStore.Tunnels.Values.FirstOrDefault(t => _tunnelStore.Connections.ContainsKey(t.ClientId));
-        }
-        else if (subdomain.Equals("tunnelite"))
-        {
-            await _next(context);
-            return;
-        }
-        else
-        {
-            _tunnelStore.Tunnels.TryGetValue(subdomain, out tunnel);
-        }
-
-        if (tunnel == null)
-        {
-            await _next(context);
-            return;
-        }
-
-        if (!_tunnelStore.Connections.TryGetValue(tunnel!.ClientId, out var connectionId))
+        if (!_tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
         {
             await _next(context);
             return;

@@ -1,4 +1,6 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
+using System.Net;
 
 namespace Tunnelite.Server.HttpTunnel;
 
@@ -9,6 +11,50 @@ public class HttpTunnelStore
 
     // clientId, connectionId
     public ConcurrentDictionary<Guid, HttpTunnelSession> Connections { get; } = new();
+
+    /// <summary>
+    /// True only when the request targets a bare <c>localhost</c> host header over a loopback connection.
+    /// Prevents <c>localhost.tunnelite.com</c> or spoofed remote <c>Host: localhost</c> headers from
+    /// matching arbitrary customer tunnels.
+    /// </summary>
+    public static bool IsLoopbackHost(HttpContext context) =>
+        context.Request.Host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+        && (context.Connection.RemoteIpAddress is null || IPAddress.IsLoopback(context.Connection.RemoteIpAddress));
+
+    public HttpTunnelRequest? ResolveTunnel(HttpContext context)
+    {
+        if (IsLoopbackHost(context))
+            return Tunnels.Values.FirstOrDefault(t => Connections.ContainsKey(t.ClientId));
+
+        var host = context.Request.Host.Host;
+        var dot = host.IndexOf('.');
+        if (dot <= 0) return null;
+
+        var subdomain = host[..dot];
+        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase)
+            || subdomain.Equals("www", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return Tunnels.GetValueOrDefault(subdomain);
+    }
+
+    public bool TryResolveActiveTunnel(
+        HttpContext context,
+        [NotNullWhen(true)] out HttpTunnelRequest? tunnel,
+        [NotNullWhen(true)] out HttpTunnelSession? session)
+    {
+        tunnel = ResolveTunnel(context);
+        if (tunnel is not null && Connections.TryGetValue(tunnel.ClientId, out session))
+        {
+            return true;
+        }
+
+        session = null;
+        return false;
+    }
 }
 
 /// <summary>Owns one connection's registration. Only registration and teardown share its asynchronous gate.</summary>

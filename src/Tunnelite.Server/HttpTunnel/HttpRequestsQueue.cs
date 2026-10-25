@@ -1,14 +1,14 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 
 namespace Tunnelite.Server.HttpTunnel;
 
 public class HttpRequestsQueue
 {
-    private readonly ConcurrentDictionary<Guid, HttpDefferedRequest> PendingRequests = new();
+    private readonly ConcurrentDictionary<Guid, HttpDeferredRequest> PendingRequests = new();
 
     public virtual Task WaitForCompletionAsync(Guid requestId, HttpContext context, TimeSpan? timeout = null, CancellationToken cancellationToken = default, Guid clientId = default, string? connectionId = null)
     {
-        HttpDefferedRequest request = new()
+        HttpDeferredRequest request = new()
         {
             ClientId = clientId,
             ConnectionId = connectionId,
@@ -20,8 +20,8 @@ public class HttpRequestsQueue
 
         // Wait until caller cancels or timeout expires
         request.CancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                request.TimeoutCancellationTokenSource.Token);
+            cancellationToken,
+            request.TimeoutCancellationTokenSource.Token);
 
         PendingRequests.TryAdd(request.RequestId, request);
 
@@ -29,23 +29,22 @@ public class HttpRequestsQueue
         {
             request.CancellationTokenRegistration = request.CancellationTokenSource.Token.Register(obj =>
             {
-                // When the request gets canceled
-                var request = (HttpDefferedRequest)obj!;
-
-                if (request.TimeoutCancellationTokenSource!.IsCancellationRequested)
+                var canceled = (HttpDeferredRequest)obj!;
+                if (!PendingRequests.TryRemove(canceled.RequestId, out _))
                 {
-                    request.TaskCompletionSource!.TrySetResult();
+                    return;
+                }
+
+                if (canceled.TimeoutCancellationTokenSource!.IsCancellationRequested)
+                {
+                    canceled.TaskCompletionSource!.TrySetResult();
                 }
                 else
                 {
-                    // Canceled by caller
-                    request.TaskCompletionSource!.TrySetCanceled(request.CancellationTokenSource!.Token);
+                    canceled.TaskCompletionSource!.TrySetCanceled(canceled.CancellationTokenSource!.Token);
                 }
 
-                PendingRequests.TryRemove(request.RequestId, out var _);
-
-                request.Dispose();
-
+                canceled.Dispose();
             }, request);
         }
 
@@ -63,9 +62,16 @@ public class HttpRequestsQueue
         }
     }
 
-    public virtual HttpContext? GetHttpContext(Guid requestId)
+    public virtual HttpContext? GetHttpContext(Guid requestId) =>
+        PendingRequests.TryGetValue(requestId, out var request) ? request.HttpContext : null;
+
+    /// <summary>
+    /// Atomically claims the pending HTTP response so concurrent POST/DELETE calls for the same
+    /// <paramref name="requestId"/> cannot mutate the <see cref="HttpContext"/> simultaneously.
+    /// </summary>
+    public virtual HttpContext? ClaimResponseHttpContext(Guid requestId)
     {
-        if (!PendingRequests.TryGetValue(requestId, out var request))
+        if (!PendingRequests.TryGetValue(requestId, out var request) || !request.TryClaimResponse())
         {
             return null;
         }
@@ -80,19 +86,7 @@ public class HttpRequestsQueue
             return Task.CompletedTask;
         }
 
-        if (!request.TaskCompletionSource!.Task.IsCompleted)
-        {
-            // Try to complete the task 
-            if (request.TaskCompletionSource?.TrySetResult() == false)
-            {
-                // The request was canceled
-            }
-        }
-        else
-        {
-            // The request was canceled while pending
-        }
-
+        request.TaskCompletionSource?.TrySetResult();
         request.Dispose();
 
         return Task.CompletedTask;

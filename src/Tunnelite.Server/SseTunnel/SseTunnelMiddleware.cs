@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR;
 using Tunnelite.Server.HttpTunnel;
 
 namespace Tunnelite.Server.SseTunnel;
@@ -15,6 +15,8 @@ public class SseTunnelMiddleware(
     private readonly SseRequestsQueue _requestsQueue = requestsQueue;
     private readonly IHubContext<HttpTunnelHub> _hubContext = hubContext;
     private readonly ILogger<SseTunnelMiddleware> _logger = logger;
+
+    private const int MaxLegacyBodyChars = 64 * 1024;
 
     public async Task InvokeAsync(HttpContext context)
     {
@@ -36,24 +38,7 @@ public class SseTunnelMiddleware(
             return;
         }
 
-        HttpTunnelRequest? tunnel = null;
-        var subdomain = context.Request.Host.Host.Split('.')[0];
-
-        if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
-        {
-            tunnel = _tunnelStore.Tunnels.Values.FirstOrDefault(t => _tunnelStore.Connections.ContainsKey(t.ClientId));
-        }
-        else if (subdomain.Equals("tunnelite"))
-        {
-            await _next(context);
-            return;
-        }
-        else
-        {
-            _tunnelStore.Tunnels.TryGetValue(subdomain, out tunnel);
-        }
-
-        if (tunnel == null)
+        if (!_tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
         {
             await _next(context);
             return;
@@ -66,16 +51,26 @@ public class SseTunnelMiddleware(
             return;
         }
 
-        if (!_tunnelStore.Connections.TryGetValue(tunnel.ClientId, out var connectionId))
-        {
-            await _next(context);
-            return;
-        }
-
         var requestId = Guid.NewGuid();
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, connectionId.Disconnected);
         try
         {
+            using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
+            var buffer = new char[MaxLegacyBodyChars + 1];
+            var totalChars = 0;
+            while (totalChars <= MaxLegacyBodyChars)
+            {
+                var read = await reader.ReadAsync(buffer.AsMemory(totalChars, buffer.Length - totalChars), lifetime.Token);
+                if (read == 0) break;
+                totalChars += read;
+            }
+            if (totalChars > MaxLegacyBodyChars)
+            {
+                context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+                return;
+            }
+            var content = new string(buffer, 0, totalChars);
+
             // Set up SSE connection headers
             context.Response.Headers.TryAdd("Content-Type", "text/event-stream");
             context.Response.Headers.TryAdd("Cache-Control", "no-cache");
@@ -88,9 +83,6 @@ public class SseTunnelMiddleware(
                 tunnel.ClientId,
                 requestId,
                 context, connectionId.ConnectionId);
-
-            using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
-            var content = await reader.ReadToEndAsync(lifetime.Token);
 
             // Notify the client about new SSE connection
             await _hubContext.Clients.Client(connectionId.ConnectionId).SendAsync("NewSseConnection", new SseConnection

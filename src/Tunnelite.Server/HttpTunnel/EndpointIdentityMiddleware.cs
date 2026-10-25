@@ -9,9 +9,10 @@ public sealed class EndpointIdentityMiddleware(RequestDelegate next)
     {
         Guid clientId = default;
         var path = context.Request.Path.Value ?? "";
-        if (path.StartsWith("/wsshttptunnel", StringComparison.OrdinalIgnoreCase))
+        if (path.StartsWith("/wsshttptunnel", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("/wsstcptunnel", StringComparison.OrdinalIgnoreCase))
         {
-            if (!Guid.TryParse(context.Request.Query["clientId"], out clientId))
+            if (!Guid.TryParse(context.Request.Query["clientId"], out clientId) || clientId == Guid.Empty)
             {
                 context.Response.StatusCode = 400;
                 return;

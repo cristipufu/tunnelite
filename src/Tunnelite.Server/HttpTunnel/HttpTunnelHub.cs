@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR;
 using System.Buffers;
 using System.Net.WebSockets;
 using Tunnelite.Server.SseTunnel;
@@ -217,8 +217,6 @@ public class HttpTunnelHub(HttpTunnelStore httpTunnelStore, WsRequestsQueue wsRe
         await base.OnDisconnectedAsync(exception);
     }
 
-    private static Guid GetClientId(HubCallerContext context)
-    {
-        return Guid.Parse(context.GetHttpContext()!.Request.Query["clientId"].ToString());
-    }
+    private static Guid GetClientId(HubCallerContext context) =>
+        Guid.TryParse(context.GetHttpContext()?.Request.Query["clientId"], out var clientId) ? clientId : Guid.Empty;
 }

@@ -28,7 +28,7 @@ public static class TunneliteServer
 
         app.UseWsTunneling();
 
-        app.UsSseTunneling();
+        app.UseSseTunneling();
 
         app.UseHttpTunneling();
 

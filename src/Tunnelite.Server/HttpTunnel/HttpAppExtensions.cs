@@ -1,3 +1,4 @@
+using System.Buffers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
@@ -7,321 +8,317 @@ namespace Tunnelite.Server.HttpTunnel;
 
 public static class HttpAppExtensions
 {
+    private const int Status425TooEarly = 425;
+    private static readonly string[] SupportedMethods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"];
+
     public static void UseHttpTunneling(this WebApplication app)
     {
-        app.MapPost("/tunnelite/tunnel", async (HttpContext context, [FromBody] HttpTunnelRequest payload, HttpTunnelStore tunnelStore, ILogger<Program> logger) =>
-        {
-            try
-            {
-                if (!Uri.TryCreate(payload.LocalUrl, UriKind.Absolute, out var local) || local.Scheme is not ("http" or "https"))
-                {
-                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                    await context.Response.WriteAsync("Missing or invalid 'LocalUrl' property.");
-                    return;
-                }
+        app.MapPost("/tunnelite/tunnel", (HttpContext context, [FromBody] HttpTunnelRequest payload, HttpTunnelStore tunnelStore, ILogger<Program> logger) =>
+            RegisterTunnelAsync(context, payload, tunnelStore, logger));
 
-                if (payload.ClientId == Guid.Empty)
-                {
-                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                    await context.Response.WriteAsync("Missing or invalid 'ClientId' property.");
-                    return;
-                }
+        app.MapGet("/tunnelite/request/{requestId}", (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
+            GetRequestBodyAsync(context, requestId, requestsQueue, logger));
 
-                if (EndpointIdentity.IsProtected(payload.ClientId) || EndpointIdentity.IsProtected(payload.Subdomain ?? ""))
-                {
-                    if (!EndpointIdentity.TryDerive(EndpointIdentityMiddleware.Bearer(context), out var ownerId, out var name)
-                        || ownerId != payload.ClientId || !string.Equals(name, payload.Subdomain, StringComparison.OrdinalIgnoreCase)
-                        || payload.ProtocolVersion < 2)
-                    {
-                        context.Response.StatusCode = 401;
-                        return;
-                    }
-                    payload.Subdomain = name;
-                    if (payload.RequirePairing) payload.ViewerKey = EndpointIdentity.ViewerKey(EndpointIdentityMiddleware.Bearer(context)!);
-                }
-                else if (payload.RequirePairing)
-                {
-                    context.Response.StatusCode = 400;
-                    return;
-                }
+        app.MapPost("/tunnelite/request/{requestId}", (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
+            ForwardResponseBodyAsync(app, context, requestId, requestsQueue, logger));
 
-                // Allow the hub's OnConnected callback to finish, without retaining registrations for absent clients.
-                HttpTunnelSession? session = null;
-                for (var attempt = 0; attempt < 10; attempt++)
-                {
-                    if (tunnelStore.Connections.TryGetValue(payload.ClientId, out session)
-                        && (payload.ConnectionId is null || payload.ConnectionId == session.ConnectionId)) break;
-                    session = null;
-                    await Task.Delay(10, context.RequestAborted);
-                }
-                if (session is null) { context.Response.StatusCode = 425; return; }
-
-                if (string.IsNullOrEmpty(payload.Subdomain))
-                {
-                    do { payload.Subdomain = RandomSubdomain(); }
-                    while (ReservedSubdomains.Contains(payload.Subdomain) || tunnelStore.Tunnels.ContainsKey(payload.Subdomain));
-                }
-                else
-                {
-                    payload.Subdomain = payload.Subdomain.ToLowerInvariant();
-                    if (payload.Subdomain.Length > 63 || payload.Subdomain.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-')
-                        || payload.Subdomain.StartsWith('-') || payload.Subdomain.EndsWith('-'))
-                    {
-                        context.Response.StatusCode = 400;
-                        return;
-                    }
-                    // reserved
-                    if (ReservedSubdomains.Contains(payload.Subdomain))
-                    {
-                        payload.Subdomain = RandomSubdomain();
-                    }
-
-                    // don't hijack existing subdomain from another client
-                    if (tunnelStore.Tunnels.TryGetValue(payload.Subdomain, out var tunnel))
-                    {
-                        if (tunnel.ClientId != payload.ClientId)
-                        {
-                            context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                            await context.Response.WriteAsync("Missing or invalid 'Subdomain' property.");
-                            return;
-                        }
-                    }
-                }
-
-                payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
-
-                var status = await session.RegisterAsync(payload, tunnelStore, context.RequestAborted);
-                if (status != 201) { context.Response.StatusCode = status; return; }
-
-                var subdomain = context.Request.Host.Host.Split('.')[0];
-
-                var tunnelUrl = string.Empty;
-
-                if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
-                {
-                    tunnelUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
-                }
-                else
-                {
-                    tunnelUrl = $"{context.Request.Scheme}://{payload.Subdomain}.{context.Request.Host}{context.Request.PathBase}";
-                }
-
-                context.Response.StatusCode = StatusCodes.Status201Created;
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    TunnelUrl = tunnelUrl,
-                    payload.Subdomain,
-                    SupportsWebSocketClose = true,
-                    ProtectedEndpoint = EndpointIdentity.IsProtected(payload.ClientId),
-                    payload.RequirePairing,
-                });
-            }
-            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error creating tunnel: {Message}", ex.Message);
-
-                if (context.Response.HasStarted) { context.Abort(); return; }
-                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    Message = "An error occurred while creating the tunnel",
-                });
-            }
-        });
-
-        app.MapGet("/tunnelite/request/{requestId}", async (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
-        {
-            try
-            {
-                var deferredHttpContext = requestsQueue.GetHttpContext(requestId);
-
-                if (deferredHttpContext == null)
-                {
-                    context.Response.StatusCode = StatusCodes.Status404NotFound;
-                    return;
-                }
-
-                // Send method
-                context.Response.Headers.Append("X-T-Method", deferredHttpContext.Request.Method);
-
-                // Send headers
-                foreach (var header in deferredHttpContext.Request.Headers)
-                {
-                    context.Response.Headers.Append($"X-TR-{header.Key}", header.Value.ToString());
-                }
-
-                // Stream the body
-                await deferredHttpContext.Request.Body.CopyToAsync(context.Response.Body);
-            }
-            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error fetching request body: {Message}", ex.Message);
-
-                if (context.Response.HasStarted) { context.Abort(); return; }
-                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    Message = "An error occurred while fetching the request body",
-                });
-            }
-        });
-
-        app.MapPost("/tunnelite/request/{requestId}", async (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
-        {
-            HttpContext? deferredHttpContext = null;
-            try
-            {
-                deferredHttpContext = requestsQueue.GetHttpContext(requestId);
-
-                if (deferredHttpContext == null)
-                {
-                    context.Response.StatusCode = StatusCodes.Status404NotFound;
-                    return;
-                }
-
-                // Set the status code
-                if (context.Request.Headers.TryGetValue("X-T-Status", out var statusCodeHeader)
-                    && int.TryParse(statusCodeHeader, out var statusCode))
-                {
-                    deferredHttpContext.Response.StatusCode = statusCode;
-                }
-                else
-                {
-                    deferredHttpContext.Response.StatusCode = 200; // Default to 200 OK if not specified
-                }
-
-                // Copy headers from the tunneling client's request to the deferred response
-
-                // Ordinal-insensitive on purpose: header names arrive lowercased from any client that
-                // normalises them, which is every browser's fetch and every HTTP/2 client.
-                foreach (var header in context.Request.Headers)
-                {
-                    if (header.Key.StartsWith("X-TR-", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var headerKey = header.Key[5..]; // Remove "X-TR-" prefix
-
-                        if (!NotAllowedHeaders.Contains(headerKey))
-                        {
-                            deferredHttpContext.Response.Headers.TryAdd(headerKey, header.Value);
-                        }
-                    }
-
-                    if (header.Key.StartsWith("X-TC-", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var headerKey = header.Key[5..]; // Remove "X-TR-" prefix
-
-                        if (!NotAllowedHeaders.Contains(headerKey))
-                        {
-                            deferredHttpContext.Response.Headers.TryAdd(headerKey, header.Value);
-                        }
-                    }
-                }
-
-                // SSE is a long-lived, possibly idle response transported as this request body.
-                // Change limits for this transfer only; ordinary requests retain Kestrel's limits.
-                if (deferredHttpContext.Response.ContentType?.Split(';')[0].Trim()
-                    .Equals("text/event-stream", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    if (context.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } rate) rate.MinDataRate = null;
-                    if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
-                        size.MaxRequestBodySize = null;
-                }
-
-                // Stream the body from the tunneling client's request to the deferred response
-                var buffer = new byte[TunnelProtocol.ChunkSize];
-                int read;
-                while ((read = await context.Request.Body.ReadAsync(buffer, deferredHttpContext.RequestAborted)) != 0)
-                {
-                    await deferredHttpContext.Response.Body.WriteAsync(buffer.AsMemory(0, read), deferredHttpContext.RequestAborted);
-                    await deferredHttpContext.Response.Body.FlushAsync(deferredHttpContext.RequestAborted);
-                }
-
-                // Send a confirmation response to the tunneling client
-                context.Response.StatusCode = StatusCodes.Status200OK;
-                await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
-            }
-            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested || deferredHttpContext?.RequestAborted.IsCancellationRequested == true)
-            { deferredHttpContext?.Abort(); }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
-                if (deferredHttpContext is not null)
-                {
-                    try
-                    {
-                        if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
-                        else await ServerErrorAsync(app, deferredHttpContext);
-                    }
-                    catch (Exception failure) when (failure is IOException or OperationCanceledException)
-                    { deferredHttpContext.Abort(); }
-                }
-
-                if (context.Response.HasStarted) { context.Abort(); return; }
-                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    Message = "An error occurred while forwarding the response body",
-                });
-            }
-            finally
-            {
-                if (deferredHttpContext is not null) await requestsQueue.CompleteAsync(requestId);
-            }
-        });
-
-        app.MapDelete("/tunnelite/request/{requestId}", async (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
-        {
-            try
-            {
-                var deferredHttpContext = requestsQueue.GetHttpContext(requestId);
-
-                if (deferredHttpContext == null)
-                {
-                    context.Response.StatusCode = StatusCodes.Status404NotFound;
-                    return;
-                }
-
-                if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
-                else await ServerErrorAsync(app, deferredHttpContext);
-
-                // Complete the deferred response
-                await requestsQueue.CompleteAsync(requestId);
-
-                // Send a confirmation response to the tunneling client
-                context.Response.StatusCode = StatusCodes.Status200OK;
-                await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
-            }
-            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
-
-                if (context.Response.HasStarted) { context.Abort(); return; }
-                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    Message = "An error occurred while forwarding the response body",
-                });
-            }
-        });
-
-        var supportedMethods = new[] { "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD" };
+        app.MapDelete("/tunnelite/request/{requestId}", (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
+            AbortRequestAsync(app, context, requestId, requestsQueue, logger));
 
         app.MapMethods(
             pattern: "/",
-            httpMethods: supportedMethods,
+            httpMethods: SupportedMethods,
             handler: (HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore connectionStore, ILogger<Program> logger) =>
                 TunnelRequestAsync(app, context, hubContext, requestsQueue, connectionStore, path: string.Empty, logger));
 
         app.MapMethods(
             pattern: "/{**path}",
-            httpMethods: supportedMethods,
+            httpMethods: SupportedMethods,
             handler: (HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore connectionStore, string path, ILogger<Program> logger) =>
                 TunnelRequestAsync(app, context, hubContext, requestsQueue, connectionStore, path, logger));
-    
+
         app.MapHub<HttpTunnelHub>("/wsshttptunnel");
+    }
+
+    private static async Task RegisterTunnelAsync(HttpContext context, HttpTunnelRequest payload, HttpTunnelStore tunnelStore, ILogger<Program> logger)
+    {
+        try
+        {
+            if (!Uri.TryCreate(payload.LocalUrl, UriKind.Absolute, out var local) || local.Scheme is not ("http" or "https"))
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("Missing or invalid 'LocalUrl' property.");
+                return;
+            }
+
+            if (payload.ClientId == Guid.Empty)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("Missing or invalid 'ClientId' property.");
+                return;
+            }
+
+            if (EndpointIdentity.IsProtected(payload.ClientId) || EndpointIdentity.IsProtected(payload.Subdomain ?? ""))
+            {
+                if (!EndpointIdentity.TryDerive(EndpointIdentityMiddleware.Bearer(context), out var ownerId, out var name)
+                    || ownerId != payload.ClientId || !string.Equals(name, payload.Subdomain, StringComparison.OrdinalIgnoreCase)
+                    || payload.ProtocolVersion < 2)
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+                payload.Subdomain = name;
+                if (payload.RequirePairing) payload.ViewerKey = EndpointIdentity.ViewerKey(EndpointIdentityMiddleware.Bearer(context)!);
+            }
+            else if (payload.RequirePairing)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+
+            // Allow the hub's OnConnected callback to finish, without retaining registrations for absent clients.
+            HttpTunnelSession? session = null;
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                if (tunnelStore.Connections.TryGetValue(payload.ClientId, out session)
+                    && (payload.ConnectionId is null || payload.ConnectionId == session.ConnectionId)) break;
+                session = null;
+                await Task.Delay(10, context.RequestAborted);
+            }
+            if (session is null) { context.Response.StatusCode = Status425TooEarly; return; }
+
+            if (string.IsNullOrEmpty(payload.Subdomain))
+            {
+                do { payload.Subdomain = RandomSubdomain(); }
+                while (ReservedSubdomains.Contains(payload.Subdomain) || tunnelStore.Tunnels.ContainsKey(payload.Subdomain));
+            }
+            else
+            {
+                payload.Subdomain = payload.Subdomain.ToLowerInvariant();
+                if (payload.Subdomain.Length > 63 || payload.Subdomain.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-')
+                    || payload.Subdomain.StartsWith('-') || payload.Subdomain.EndsWith('-'))
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+
+                if (ReservedSubdomains.Contains(payload.Subdomain))
+                {
+                    payload.Subdomain = RandomSubdomain();
+                }
+
+                // Don't hijack existing subdomain from another client.
+                if (tunnelStore.Tunnels.TryGetValue(payload.Subdomain, out var tunnel) && tunnel.ClientId != payload.ClientId)
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsync("Missing or invalid 'Subdomain' property.");
+                    return;
+                }
+            }
+
+            payload.LocalUrl = payload.LocalUrl.TrimEnd(['/']);
+
+            var status = await session.RegisterAsync(payload, tunnelStore, context.RequestAborted);
+            if (status != StatusCodes.Status201Created) { context.Response.StatusCode = status; return; }
+
+            var tunnelUrl = HttpTunnelStore.IsLoopbackHost(context)
+                ? $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}"
+                : $"{context.Request.Scheme}://{payload.Subdomain}.{context.Request.Host}{context.Request.PathBase}";
+
+            context.Response.StatusCode = StatusCodes.Status201Created;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                TunnelUrl = tunnelUrl,
+                payload.Subdomain,
+                SupportsWebSocketClose = true,
+                ProtectedEndpoint = EndpointIdentity.IsProtected(payload.ClientId),
+                payload.RequirePairing,
+            });
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error creating tunnel: {Message}", ex.Message);
+
+            if (context.Response.HasStarted) { context.Abort(); return; }
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                Message = "An error occurred while creating the tunnel",
+            });
+        }
+    }
+
+    private static async Task GetRequestBodyAsync(HttpContext context, Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger)
+    {
+        HttpContext? deferredHttpContext = null;
+        try
+        {
+            deferredHttpContext = requestsQueue.GetHttpContext(requestId);
+            if (deferredHttpContext == null)
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            context.Response.Headers.Append("X-T-Method", deferredHttpContext.Request.Method);
+
+            foreach (var header in deferredHttpContext.Request.Headers)
+            {
+                context.Response.Headers.Append($"X-TR-{header.Key}", header.Value.ToString());
+            }
+
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, deferredHttpContext.RequestAborted);
+            await deferredHttpContext.Request.Body.CopyToAsync(context.Response.Body, linked.Token);
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested || deferredHttpContext?.RequestAborted.IsCancellationRequested == true)
+        {
+            context.Abort();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error fetching request body: {Message}", ex.Message);
+
+            if (context.Response.HasStarted) { context.Abort(); return; }
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                Message = "An error occurred while fetching the request body",
+            });
+        }
+    }
+
+    private static async Task ForwardResponseBodyAsync(WebApplication app, HttpContext context, Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger)
+    {
+        HttpContext? deferredHttpContext = null;
+        try
+        {
+            deferredHttpContext = requestsQueue.ClaimResponseHttpContext(requestId);
+            if (deferredHttpContext == null)
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            if (context.Request.Headers.TryGetValue("X-T-Status", out var statusCodeHeader)
+                && int.TryParse(statusCodeHeader, out var statusCode))
+            {
+                deferredHttpContext.Response.StatusCode = statusCode;
+            }
+            else
+            {
+                deferredHttpContext.Response.StatusCode = StatusCodes.Status200OK;
+            }
+
+            // Ordinal-insensitive on purpose: header names arrive lowercased from any client that
+            // normalises them, which is every browser's fetch and every HTTP/2 client.
+            foreach (var header in context.Request.Headers)
+            {
+                if (header.Key.StartsWith("X-TR-", StringComparison.OrdinalIgnoreCase)
+                    || header.Key.StartsWith("X-TC-", StringComparison.OrdinalIgnoreCase))
+                {
+                    var headerKey = header.Key[5..];
+                    if (!NotAllowedHeaders.Contains(headerKey))
+                    {
+                        deferredHttpContext.Response.Headers.TryAdd(headerKey, header.Value);
+                    }
+                }
+            }
+
+            // SSE is a long-lived, possibly idle response transported as this request body.
+            // Change limits for this transfer only; ordinary requests retain Kestrel's limits.
+            if (deferredHttpContext.Response.ContentType?.Split(';')[0].Trim()
+                .Equals("text/event-stream", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                if (context.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } rate) rate.MinDataRate = null;
+                if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
+                    size.MaxRequestBodySize = null;
+            }
+
+            using var transferLifetime = CancellationTokenSource.CreateLinkedTokenSource(
+                context.RequestAborted,
+                deferredHttpContext.RequestAborted);
+            var buffer = ArrayPool<byte>.Shared.Rent(TunnelProtocol.ChunkSize);
+            try
+            {
+                int read;
+                while ((read = await context.Request.Body.ReadAsync(buffer.AsMemory(0, TunnelProtocol.ChunkSize), transferLifetime.Token)) != 0)
+                {
+                    await deferredHttpContext.Response.Body.WriteAsync(buffer.AsMemory(0, read), transferLifetime.Token);
+                    await deferredHttpContext.Response.Body.FlushAsync(transferLifetime.Token);
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested || deferredHttpContext?.RequestAborted.IsCancellationRequested == true)
+        {
+            deferredHttpContext?.Abort();
+            context.Abort();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
+            if (deferredHttpContext is not null)
+            {
+                try
+                {
+                    if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
+                    else await ServerErrorAsync(app, deferredHttpContext);
+                }
+                catch (Exception failure) when (failure is IOException or OperationCanceledException)
+                { deferredHttpContext.Abort(); }
+            }
+
+            if (context.Response.HasStarted) { context.Abort(); return; }
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                Message = "An error occurred while forwarding the response body",
+            });
+        }
+        finally
+        {
+            if (deferredHttpContext is not null) await requestsQueue.CompleteAsync(requestId);
+        }
+    }
+
+    private static async Task AbortRequestAsync(WebApplication app, HttpContext context, Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger)
+    {
+        try
+        {
+            var deferredHttpContext = requestsQueue.ClaimResponseHttpContext(requestId);
+            if (deferredHttpContext == null)
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
+            else await ServerErrorAsync(app, deferredHttpContext);
+
+            await requestsQueue.CompleteAsync(requestId);
+
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            await context.Response.WriteAsJsonAsync(new { Message = "Ok" });
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error forwarding response body: {Message}", ex.Message);
+
+            if (context.Response.HasStarted) { context.Abort(); return; }
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                Message = "An error occurred while forwarding the response body",
+            });
+        }
     }
 
     static async Task TunnelRequestAsync(WebApplication app, HttpContext context, IHubContext<HttpTunnelHub> hubContext, HttpRequestsQueue requestsQueue, HttpTunnelStore tunnelStore, string path, ILogger<Program> logger)
@@ -329,18 +326,12 @@ public static class HttpAppExtensions
         var requestId = Guid.Empty;
         try
         {
-            HttpTunnelRequest? tunnel = null;
+            var host = context.Request.Host.Host;
+            var subdomain = host.Split('.')[0];
 
-            var subdomain = context.Request.Host.Host.Split('.')[0];
-
-            if (subdomain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            if (host.Length > 4 && host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
             {
-                tunnel = tunnelStore.Tunnels.Values.FirstOrDefault(t => tunnelStore.Connections.ContainsKey(t.ClientId));
-            }
-            else if (context.Request.Host.Host.Length > 4
-                && context.Request.Host.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
-            {
-                var apexHost = context.Request.Host.Host[4..];
+                var apexHost = host[4..];
                 var hostHeader = context.Request.Host.Port is int port
                     ? new HostString(apexHost, port)
                     : new HostString(apexHost);
@@ -349,24 +340,14 @@ public static class HttpAppExtensions
                 context.Response.Redirect(targetUrl, permanent: true);
                 return;
             }
-            else if (subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase))
+
+            if (subdomain.Equals("tunnelite", StringComparison.OrdinalIgnoreCase))
             {
                 await LandingSiteAsync(app, context, path);
-
-                return;
-            }
-            else
-            {
-                tunnelStore.Tunnels.TryGetValue(subdomain, out tunnel);
-            }
-
-            if (tunnel == null)
-            {
-                await NotFoundAsync(app, context);
                 return;
             }
 
-            if (!tunnelStore.Connections.TryGetValue(tunnel!.ClientId, out var connectionId))
+            if (!tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
             {
                 await NotFoundAsync(app, context);
                 return;

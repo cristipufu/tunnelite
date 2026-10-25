@@ -1,8 +1,8 @@
-﻿using System.Net.WebSockets;
+using System.Net.WebSockets;
 
 namespace Tunnelite.Server.WsTunnel;
 
-public class WsDefferedRequest
+public class WsDeferredRequest
 {
     public string? ConnectionId { get; set; }
     public WebSocket? WebSocket { get; set; }
@@ -11,3 +11,5 @@ public class WsDefferedRequest
 
     public TaskCompletionSource? TaskCompletionSource { get; set; }
 }
+
+public class WsDefferedRequest : WsDeferredRequest;

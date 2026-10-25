@@ -15,9 +15,7 @@ public sealed class PairedEndpointMiddleware(RequestDelegate next)
             await next(context);
             return;
         }
-        var name = context.Request.Host.Host.Split('.')[0];
-        var tunnel = name == "localhost" ? tunnels.Tunnels.Values.FirstOrDefault(t => tunnels.Connections.ContainsKey(t.ClientId))
-            : tunnels.Tunnels.GetValueOrDefault(name);
+        var tunnel = tunnels.ResolveTunnel(context);
         if (tunnel?.RequirePairing != true) { await next(context); return; }
         var bootstrap = path is "/_tunnelite/pair" or "/_tunnelite/pair.js";
         var valid = tunnel.ViewerKey is { } key && ViewerTicket.Validate(key,

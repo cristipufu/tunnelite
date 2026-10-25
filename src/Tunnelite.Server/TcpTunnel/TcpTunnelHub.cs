@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR;
 using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
@@ -25,10 +25,21 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
     public async Task<TcpTunnelResponse> RegisterTunnelAsync(TcpTunnelRequest tunnel)
     {
         var response = new TcpTunnelResponse();
+        var clientId = GetClientId(Context);
+        if (clientId == Guid.Empty || (tunnel.ClientId != Guid.Empty && tunnel.ClientId != clientId))
+        {
+            response.Message = "An error occurred while creating the tunnel";
+            response.Error = "Missing or invalid 'ClientId' property.";
+            return response;
+        }
+        tunnel.ClientId = clientId;
+
         var tcpListenerContext = new TcpListenerContext();
 
         try
         {
+            await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+
             tcpListenerContext.TcpListener = new TcpListener(IPAddress.Any, tunnel.PublicPort ?? 0);
             tcpListenerContext.CancellationTokenSource = new CancellationTokenSource();
 
@@ -38,10 +49,10 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
 
             tcpListenerContext.AcceptConnectionsTask = AcceptConnectionsAsync(
                 tcpListenerContext.TcpListener,
-                tunnel.ClientId,
+                clientId,
                 tcpListenerContext.CancellationTokenSource.Token);
 
-            _tcpClientStore.AddTcpListener(tunnel.ClientId, tcpListenerContext);
+            _tcpClientStore.AddTcpListener(clientId, tcpListenerContext);
 
             var httpContext = Context.GetHttpContext();
             var tunnelUrl = $"tcp://{httpContext!.Request.Host.Host}:{tunnel.PublicPort}";
@@ -148,9 +159,10 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
     {
         var clientId = GetClientId(Context);
 
-        _tunnelStore.Connections.Remove(clientId, out var _);
-
-        await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+        if (_tunnelStore.Connections.TryRemove(new KeyValuePair<Guid, string>(clientId, Context.ConnectionId)))
+        {
+            await _tcpClientStore.DisposeTcpListenerAsync(clientId);
+        }
 
         await base.OnDisconnectedAsync(exception);
     }
@@ -204,8 +216,6 @@ public class TcpTunnelHub(TcpTunnelStore tunnelStore, TcpClientStore tcpClientSt
         }
     }
 
-    private static Guid GetClientId(HubCallerContext context)
-    {
-        return Guid.Parse(context.GetHttpContext()!.Request.Query["clientId"].ToString());
-    }
+    private static Guid GetClientId(HubCallerContext context) =>
+        Guid.TryParse(context.GetHttpContext()?.Request.Query["clientId"], out var clientId) ? clientId : Guid.Empty;
 }
