@@ -36,6 +36,8 @@ public sealed record AcpGatewayTimelineItem
     public string? ToolName { get; init; }
     public string? ToolKind { get; init; }
     public string? ToolStatus { get; init; }
+    public int StepCount { get; init; } = 1;
+    public IReadOnlyList<string>? ActivityLog { get; init; }
     public string? RawInputJson { get; init; }
     public string? RawOutput { get; init; }
     public string? StopReason { get; init; }

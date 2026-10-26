@@ -827,38 +827,50 @@ internal static class AcpMobilePage
       line-height: 1.5;
       color: #e2e8f0;
     }
-    /* Tool Call Card */
+    /* In-Line Terminal Activity Bar */
     .tool-card {
       width: 100%;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: rgba(15, 23, 42, 0.75);
+      border-radius: 11px;
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      background: rgba(2, 6, 23, 0.84);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       overflow: hidden;
     }
     .tool-header {
-      padding: 9px 12px;
+      padding: 8px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      gap: 8px;
       cursor: pointer;
       font-size: 12px;
+      user-select: none;
     }
     .tool-title {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
       min-width: 0;
       flex: 1;
       font-family: var(--mono);
       font-weight: 600;
       color: var(--text-soft);
     }
+    .tool-prompt-glyph {
+      color: #4ade80;
+      font-weight: 700;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .tool-prompt-glyph.running {
+      color: var(--accent);
+      animation: pulse 1s infinite ease-in-out;
+    }
     .tool-name-chip {
       padding: 2px 7px;
       border-radius: 6px;
-      background: rgba(56, 189, 248, 0.1);
-      border: 1px solid rgba(56, 189, 248, 0.24);
+      background: rgba(56, 189, 248, 0.11);
+      border: 1px solid rgba(56, 189, 248, 0.26);
       color: #7dd3fc;
       font-size: 11px;
       font-weight: 700;
@@ -868,15 +880,32 @@ internal static class AcpMobilePage
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      color: var(--text-soft);
+      color: #cbd5e1;
       font-weight: 500;
+      font-size: 11.5px;
+    }
+    .tool-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .tool-step-count {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--muted);
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: rgba(148, 163, 184, 0.1);
+      border: 1px solid rgba(148, 163, 184, 0.18);
     }
     .tool-status {
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      padding: 3px 8px;
+      padding: 2px 7px;
       border-radius: 999px;
       flex-shrink: 0;
     }
@@ -884,18 +913,34 @@ internal static class AcpMobilePage
     .tool-status.done { background: rgba(34, 197, 94, 0.14); color: var(--success); border: 1px solid rgba(34, 197, 94, 0.25); }
     .tool-details {
       display: none;
-      padding: 10px 14px;
+      padding: 10px 12px;
       border-top: 1px solid var(--border);
-      background: rgba(2, 6, 23, 0.85);
+      background: rgba(2, 6, 23, 0.92);
       font-family: var(--mono);
       font-size: 11.5px;
       color: var(--muted);
-      white-space: pre-wrap;
-      max-height: 220px;
+      max-height: 260px;
       overflow-y: auto;
       line-height: 1.5;
     }
-    .tool-card.open .tool-details { display: block; }
+    .tool-card.open .tool-details {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tool-log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    }
+    .tool-log-line {
+      color: #cbd5e1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     /* System / Turn Pill & Interruption Alert */
     .turn-pill {
       font-size: 11px;
@@ -1765,7 +1810,8 @@ internal static class AcpMobilePage
 
   async function loadOlderMessages() {
     if (state.loadingOlder || !state.activeSession || !state.activeSessionKey) return;
-    const currentLen = (state.activeSession.timeline || []).length;
+    const items = state.activeSession.timeline || [];
+    const currentMsgCount = items.filter(i => i.kind === 'message').length;
     const prevScrollHeight = timelineWrap.scrollHeight;
     const prevScrollTop = timelineWrap.scrollTop;
     state.loadingOlder = true;
@@ -1778,7 +1824,7 @@ internal static class AcpMobilePage
       await sendAction({
         action: 'load_older',
         sessionKey: state.activeSessionKey,
-        timelineLimit: currentLen + 40
+        timelineLimit: Math.max(30, currentMsgCount) + 40
       }, {
         scrollMode: 'preserve',
         prevScrollHeight,
@@ -2357,8 +2403,14 @@ internal static class AcpMobilePage
       const header = document.createElement('div');
       header.className = 'tool-header';
 
+      const isRunning = item.toolStatus === 'in_progress';
       const title = document.createElement('div');
       title.className = 'tool-title';
+
+      const glyph = document.createElement('span');
+      glyph.className = 'tool-prompt-glyph' + (isRunning ? ' running' : '');
+      glyph.textContent = '❯';
+      title.appendChild(glyph);
 
       const toolName = (item.toolName || 'tool').trim();
       const nameChip = document.createElement('span');
@@ -2374,18 +2426,58 @@ internal static class AcpMobilePage
         title.appendChild(targetSpan);
       }
 
+      const rightWrap = document.createElement('div');
+      rightWrap.className = 'tool-right';
+
+      const stepCount = item.stepCount || (item.activityLog && item.activityLog.length) || 1;
+      if (stepCount > 1) {
+        const stepPill = document.createElement('span');
+        stepPill.className = 'tool-step-count';
+        stepPill.textContent = `${stepCount} ops`;
+        rightWrap.appendChild(stepPill);
+      }
+
       const badge = document.createElement('span');
-      const isRunning = item.toolStatus === 'in_progress';
       badge.className = 'tool-status ' + (isRunning ? 'running' : 'done');
       badge.textContent = isRunning ? 'Running' : 'Done';
+      rightWrap.appendChild(badge);
 
-      header.append(title, badge);
+      header.append(title, rightWrap);
       card.appendChild(header);
 
-      if (item.rawInputJson || item.rawOutput) {
+      const hasLog = item.activityLog && item.activityLog.length > 0;
+      const hasDetails = hasLog || item.thinking || item.rawInputJson || item.rawOutput;
+      if (hasDetails) {
         const details = document.createElement('div');
         details.className = 'tool-details';
-        details.textContent = [item.rawInputJson, item.rawOutput].filter(Boolean).join('\n\n');
+
+        if (hasLog && item.activityLog.length > 1) {
+          const logBox = document.createElement('div');
+          logBox.className = 'tool-log-list';
+          item.activityLog.forEach((entry, idx) => {
+            const line = document.createElement('div');
+            line.className = 'tool-log-line';
+            const num = String(idx + 1).padStart(2, '0');
+            line.textContent = `${num}  ❯ ${entry}`;
+            logBox.appendChild(line);
+          });
+          details.appendChild(logBox);
+        }
+
+        if (item.thinking) {
+          const thinkDiv = document.createElement('div');
+          thinkDiv.style.color = 'var(--text-soft)';
+          appendFormattedMessageContent(thinkDiv, item.thinking);
+          details.appendChild(thinkDiv);
+        }
+
+        if (item.rawInputJson || item.rawOutput) {
+          const rawDiv = document.createElement('div');
+          rawDiv.style.whiteSpace = 'pre-wrap';
+          rawDiv.textContent = [item.rawInputJson, item.rawOutput].filter(Boolean).join('\n\n');
+          details.appendChild(rawDiv);
+        }
+
         card.appendChild(details);
         header.addEventListener('click', () => card.classList.toggle('open'));
       }
@@ -2563,8 +2655,9 @@ internal static class AcpMobilePage
       btn.type = 'button';
       btn.className = 'load-older-btn';
       const hiddenCount = state.activeSession.hiddenOlderCount || 0;
-      const totalCount = state.activeSession.totalTimelineCount || (items.length + hiddenCount);
-      btn.textContent = `↑ Load earlier messages (${hiddenCount} older · showing last ${items.length} of ${totalCount})`;
+      const visibleMsgCount = items.filter(i => i.kind === 'message').length || items.length;
+      const totalCount = state.activeSession.totalTimelineCount || (visibleMsgCount + hiddenCount);
+      btn.textContent = `↑ Load earlier messages (${hiddenCount} older · showing last ${visibleMsgCount} of ${totalCount} messages)`;
       btn.addEventListener('click', loadOlderMessages);
       bar.appendChild(btn);
       timelineInner.appendChild(bar);

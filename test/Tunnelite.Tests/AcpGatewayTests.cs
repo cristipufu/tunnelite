@@ -176,7 +176,11 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
         await File.WriteAllTextAsync(
             tempTranscript,
             "{\"step_index\":1,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"tool_calls\":[{\"name\":\"read_file\",\"args\":{\"Path\":\"\\\"/Users/dev/tunnelite/src/Program.cs\\\"\",\"StartLine\":\"1\",\"EndLine\":\"50\"}}]}\n" +
-            "{\"step_index\":2,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"content\":\"1: using System;\"}\n");
+            "{\"step_index\":2,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"content\":\"1: using System;\"}\n" +
+            "{\"step_index\":3,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"tool_calls\":[{\"name\":\"edit_file\",\"args\":{\"Path\":\"\\\"/Users/dev/tunnelite/src/AcpMobilePage.cs\\\"\"}}]}\n" +
+            "{\"step_index\":4,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"content\":\"Made 1 replacement\"}\n" +
+            "{\"step_index\":5,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"tool_calls\":[{\"name\":\"run_command\",\"args\":{\"toolSummary\":\"\\\"Release build verification\\\"\",\"CommandLine\":\"\\\"dotnet build -c Release\\\"\"}}]}\n" +
+            "{\"step_index\":6,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"content\":\"Build succeeded.\"}\n");
 
         try
         {
@@ -205,7 +209,7 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
                 MessageCount: 45);
 
             var historyEvents = new List<AcpEvent>();
-            for (var i = 1; i <= 42; i++)
+            for (var i = 1; i <= 43; i++)
             {
                 historyEvents.Add(new AcpTranscriptHistoryEntryEvent(
                     AgentProviderKind.Antigravity,
@@ -214,9 +218,11 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
                     i % 2 == 1 ? "user" : "assistant",
                     $"Historical message #{i}"));
             }
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5), "user", "<USER_REQUEST>\nInitial desktop prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"));
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "assistant", "", Thinking: null, ToolName: "read_file"));
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "assistant", "Desktop response from transcript"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-6), "user", "<USER_REQUEST>\nInitial desktop prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5), "assistant", "", Thinking: "Checking Program.cs", ToolName: "read_file"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "assistant", "", Thinking: null, ToolName: "edit_file"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "assistant", "", Thinking: null, ToolName: "run_command"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-2), "assistant", "Desktop response from transcript"));
 
             var fakeAgy = new ControllableTestAdapter(AgentProviderKind.Antigravity, "agy", "Google Antigravity")
             {
@@ -249,19 +255,22 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             Assert.False(firstEnv.State.Sessions[1].IsActiveNow);
             Assert.Equal("agy:disc-agy-101", firstEnv.State.ActiveSessionKey);
 
-            // 2. Verify default pagination shows only last 30 items with HasOlderMessages == true
+            // 2. Verify default pagination shows last 30 messages + compacted in-line tool bar between them
             var state = firstEnv.State;
             Assert.NotNull(state.ActiveSession);
             Assert.False(state.ActiveSession!.Summary.IsLiveAttached);
-            Assert.Equal(30, state.ActiveSession.Timeline.Count);
+            Assert.Equal(30, state.ActiveSession.Timeline.Count(i => i.Kind == "message"));
+            Assert.Equal(31, state.ActiveSession.Timeline.Count);
             Assert.Equal(45, state.ActiveSession.TotalTimelineCount);
             Assert.Equal(15, state.ActiveSession.HiddenOlderCount);
             Assert.True(state.ActiveSession.HasOlderMessages);
             Assert.Equal("Desktop response from transcript", state.ActiveSession.Timeline[^1].Text);
             Assert.Equal("tool_call", state.ActiveSession.Timeline[^2].Kind);
-            Assert.Equal("read_file", state.ActiveSession.Timeline[^2].ToolName);
-            Assert.Equal("src/Program.cs:1-50", state.ActiveSession.Timeline[^2].Text);
-            Assert.Equal("1: using System;", state.ActiveSession.Timeline[^2].RawOutput);
+            Assert.Equal("run_command", state.ActiveSession.Timeline[^2].ToolName);
+            Assert.Equal("Release build verification (dotnet build -c Release)", state.ActiveSession.Timeline[^2].Text);
+            Assert.Equal(3, state.ActiveSession.Timeline[^2].StepCount);
+            Assert.Equal(3, state.ActiveSession.Timeline[^2].ActivityLog!.Count);
+            Assert.Equal("Build succeeded.", state.ActiveSession.Timeline[^2].RawOutput);
             Assert.Equal("Initial desktop prompt", state.ActiveSession.Timeline[^3].Text);
 
             // 3. Load earlier messages on-demand via load_older action
@@ -273,7 +282,8 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             }, AcpGatewayJsonContext.Default.AcpGatewayActionRequest, cts.Token);
             var loadOlderBody = await loadOlderRes.Content.ReadFromJsonAsync(AcpGatewayJsonContext.Default.AcpGatewayActionResponse, cts.Token);
             Assert.NotNull(loadOlderBody?.Session);
-            Assert.Equal(45, loadOlderBody!.Session!.Timeline.Count);
+            Assert.Equal(45, loadOlderBody!.Session!.Timeline.Count(i => i.Kind == "message"));
+            Assert.Equal(46, loadOlderBody.Session.Timeline.Count);
             Assert.Equal(0, loadOlderBody.Session.HiddenOlderCount);
             Assert.False(loadOlderBody.Session.HasOlderMessages);
             Assert.Equal("Historical message #1", loadOlderBody.Session.Timeline[0].Text);
