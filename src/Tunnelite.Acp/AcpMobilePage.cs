@@ -877,6 +877,35 @@ internal static class AcpMobilePage
     .tool-card.thought-mode {
       border-color: rgba(192, 132, 252, 0.32);
     }
+    .tool-thought-row {
+      padding: 7px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      background: rgba(192, 132, 252, 0.05);
+      cursor: pointer;
+      user-select: none;
+    }
+    .tool-thought-row + .tool-header {
+      border-top: 1px solid rgba(148, 163, 184, 0.12);
+    }
+    .tool-thought-row.wrap .tool-title {
+      align-items: flex-start;
+    }
+    .tool-thought-row.wrap .tool-target-text.thought {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ring.loading {
+      border-color: rgba(56, 189, 248, 0.16);
+      border-top-color: var(--accent);
+      animation: spinRing 0.9s linear infinite;
+    }
+    @keyframes spinRing {
+      to { transform: rotate(360deg); }
+    }
     .tool-header {
       padding: 8px 12px;
       display: flex;
@@ -1630,6 +1659,8 @@ internal static class AcpMobilePage
     searchQuery: '',
     busyActionMode: 'queue',
     loadingOlder: false,
+    loadingSession: false,
+    selectSessionReqId: 0,
     hasUnreadBelow: false,
     ws: null,
     sse: null
@@ -1922,6 +1953,7 @@ internal static class AcpMobilePage
     if (snap.activeSession) {
       state.activeSession = snap.activeSession;
     }
+    state.loadingSession = false;
 
     machineLabel.textContent = state.scopedProvider
       ? `${state.machineName} · ${state.scopedProvider.toUpperCase()} only`
@@ -1940,6 +1972,7 @@ internal static class AcpMobilePage
   function applySessionDetail(detail, options) {
     if (!detail || !detail.summary) return;
     const prevKey = state.activeSessionKey;
+    state.loadingSession = false;
     state.activeSession = detail;
     state.activeSessionKey = detail.summary.sessionKey;
     upsertSessionSummary(detail.summary);
@@ -1955,6 +1988,40 @@ internal static class AcpMobilePage
     renderPermissionTray();
     renderQueueTray();
     updateComposerModeUI();
+  }
+
+  async function selectSessionFromList(s) {
+    if (!s || !s.sessionKey) return;
+    closeOverlays();
+    if (s.sessionKey === state.activeSessionKey && state.activeSession && !state.loadingSession) {
+      scrollToBottom();
+      return;
+    }
+
+    const reqId = ++state.selectSessionReqId;
+    state.loadingSession = true;
+    state.activeSessionKey = s.sessionKey;
+    state.activeSession = {
+      summary: s,
+      timeline: [],
+      queuedPrompts: [],
+      pendingPermissions: []
+    };
+
+    renderSessionList();
+    renderActiveSessionHeader();
+    renderPermissionTray();
+    renderQueueTray();
+    updateComposerModeUI();
+    renderTimeline({ scrollMode: 'bottom' });
+
+    const res = await sendAction({ action: 'select_session', sessionKey: s.sessionKey }, { scrollMode: 'bottom' });
+    if (reqId === state.selectSessionReqId && state.loadingSession) {
+      state.loadingSession = false;
+      renderActiveSessionHeader();
+      renderTimeline({ scrollMode: 'bottom' });
+    }
+    return res;
   }
 
   function upsertSessionSummary(summary) {
@@ -2154,8 +2221,7 @@ internal static class AcpMobilePage
 
     card.append(top, title, meta);
     card.addEventListener('click', () => {
-      closeOverlays();
-      sendAction({ action: 'select_session', sessionKey: s.sessionKey }, { scrollMode: 'bottom' });
+      selectSessionFromList(s);
     });
     return card;
   }
@@ -2219,11 +2285,13 @@ internal static class AcpMobilePage
     }
 
     activeSessionTitle.textContent = `[${s.provider.toUpperCase()}] ${s.title}`;
-    const stateLabel = s.isTurnActive
-      ? '● WORKING'
-      : (s.isActiveNow || s.isLiveAttached)
-        ? '● LIVE'
-        : 'READY';
+    const stateLabel = state.loadingSession
+      ? 'LOADING…'
+      : s.isTurnActive
+        ? '● WORKING'
+        : (s.isActiveNow || s.isLiveAttached)
+          ? '● LIVE'
+          : 'READY';
     activeSessionMeta.textContent = `${formatRepoAndBranch(s.workingDirectory, s.gitBranch)}${s.model ? ' · ' + s.model : ''} · ${stateLabel}`;
   }
 
@@ -2575,111 +2643,157 @@ internal static class AcpMobilePage
   function createTimelineItemNode(item, isLatestItem) {
     if (item.kind === 'tool_call') {
       const isRunning = item.toolStatus === 'in_progress' && !!isLatestItem;
-      const isThought = item.toolKind === 'thought' || item.toolName === 'thinking';
       const cmdLogs = (item.activityLog && item.activityLog.length > 0) ? item.activityLog : [];
       const cmdCount = cmdLogs.length;
+      const hasCommand = cmdCount > 0 || !!(item.toolName && item.toolName !== 'thinking' && item.toolKind !== 'thought');
+      const thoughtText = (item.thinking || (!hasCommand ? item.text : '') || '').trim();
+      const hasThought = thoughtText.length > 0;
 
       const card = document.createElement('div');
       card.className = 'tool-card' +
         (isRunning ? ' running' : '') +
-        (isThought ? ' thought-mode' : '');
+        (!hasCommand && hasThought ? ' thought-mode' : '');
       card.dataset.itemId = item.id;
-      const header = document.createElement('div');
-      header.className = 'tool-header' + (cmdCount > 0 ? ' expandable' : '');
 
-      const title = document.createElement('div');
-      title.className = 'tool-title';
+      if (hasThought) {
+        const thoughtRow = document.createElement('div');
+        thoughtRow.className = 'tool-thought-row';
 
-      const glyph = document.createElement('span');
-      glyph.className = 'tool-prompt-glyph' +
-        (isThought ? ' thought' : (isRunning ? ' running' : ''));
-      glyph.textContent = isThought ? '✻' : '❯';
-      title.appendChild(glyph);
+        const thoughtTitle = document.createElement('div');
+        thoughtTitle.className = 'tool-title';
 
-      const toolName = (item.toolName || (isThought ? 'thinking' : 'tool')).trim();
-      const nameChip = document.createElement('span');
-      nameChip.className = 'tool-name-chip' + (isThought ? ' thought' : '');
-      nameChip.textContent = toolName;
-      title.appendChild(nameChip);
+        const thoughtGlyph = document.createElement('span');
+        thoughtGlyph.className = 'tool-prompt-glyph thought';
+        thoughtGlyph.textContent = '✻';
+        thoughtTitle.appendChild(thoughtGlyph);
 
-      const rawTarget = (item.text || '').trim();
-      if (rawTarget && rawTarget.toLowerCase() !== toolName.toLowerCase()) {
-        const targetSpan = document.createElement('span');
-        targetSpan.className = 'tool-target-text' + (isThought ? ' thought' : '');
-        targetSpan.textContent = rawTarget;
-        title.appendChild(targetSpan);
-      }
+        const thoughtChip = document.createElement('span');
+        thoughtChip.className = 'tool-name-chip thought';
+        thoughtChip.textContent = 'thinking';
+        thoughtTitle.appendChild(thoughtChip);
 
-      const rightWrap = document.createElement('div');
-      rightWrap.className = 'tool-right';
+        const thoughtSpan = document.createElement('span');
+        thoughtSpan.className = 'tool-target-text thought';
+        thoughtSpan.textContent = thoughtText;
+        thoughtTitle.appendChild(thoughtSpan);
 
-      if (cmdCount > 0) {
-        const stepPill = document.createElement('span');
-        stepPill.className = 'tool-step-count';
-        stepPill.textContent = `${cmdCount} ${cmdCount === 1 ? 'cmd' : 'cmds'}`;
-        rightWrap.appendChild(stepPill);
-      }
+        thoughtRow.appendChild(thoughtTitle);
 
-      const badge = document.createElement('span');
-      badge.className = 'tool-status ' + (isRunning ? 'running' : 'done');
-      badge.textContent = isRunning ? 'Running' : 'Done';
-      rightWrap.appendChild(badge);
+        if (!hasCommand) {
+          const thoughtRight = document.createElement('div');
+          thoughtRight.className = 'tool-right';
+          const badge = document.createElement('span');
+          badge.className = 'tool-status ' + (isRunning ? 'running' : 'done');
+          badge.textContent = isRunning ? 'Running' : 'Done';
+          thoughtRight.appendChild(badge);
+          thoughtRow.appendChild(thoughtRight);
+        }
 
-      if (cmdCount > 0) {
-        const chev = document.createElement('span');
-        chev.className = 'tool-chevron';
-        chev.textContent = '▸';
-        rightWrap.appendChild(chev);
-      }
-
-      header.append(title, rightWrap);
-      card.appendChild(header);
-
-      if (cmdCount > 0) {
-        const details = document.createElement('div');
-        details.className = 'tool-details';
-
-        const logBox = document.createElement('div');
-        logBox.className = 'tool-log-list';
-        cmdLogs.forEach((entry, idx) => {
-          const line = document.createElement('div');
-          line.className = 'tool-log-line';
-
-          const num = document.createElement('span');
-          num.className = 'tool-log-num';
-          num.textContent = String(idx + 1).padStart(2, '0');
-
-          const rowGlyph = document.createElement('span');
-          rowGlyph.className = 'tool-log-glyph';
-          rowGlyph.textContent = '❯';
-
-          const sepIdx = entry.indexOf(' · ');
-          const cName = sepIdx >= 0 ? entry.slice(0, sepIdx) : entry;
-          const cTarget = sepIdx >= 0 ? entry.slice(sepIdx + 3) : '';
-
-          const chip = document.createElement('span');
-          chip.className = 'tool-log-chip';
-          chip.textContent = cName;
-
-          line.append(num, rowGlyph, chip);
-
-          if (cTarget) {
-            const targetEl = document.createElement('span');
-            targetEl.className = 'tool-log-target';
-            targetEl.textContent = cTarget;
-            line.appendChild(targetEl);
-          }
-
-          line.addEventListener('click', e => {
-            e.stopPropagation();
-            line.classList.toggle('wrap');
-          });
-          logBox.appendChild(line);
+        thoughtRow.addEventListener('click', e => {
+          e.stopPropagation();
+          thoughtRow.classList.toggle('wrap');
         });
 
-        details.appendChild(logBox);
-        card.appendChild(details);
-        header.addEventListener('click', () => card.classList.toggle('open'));
+        card.appendChild(thoughtRow);
+      }
+
+      if (hasCommand) {
+        const header = document.createElement('div');
+        header.className = 'tool-header' + (cmdCount > 0 ? ' expandable' : '');
+
+        const title = document.createElement('div');
+        title.className = 'tool-title';
+
+        const glyph = document.createElement('span');
+        glyph.className = 'tool-prompt-glyph' + (isRunning ? ' running' : '');
+        glyph.textContent = '❯';
+        title.appendChild(glyph);
+
+        const toolName = (item.toolName || 'tool').trim();
+        const nameChip = document.createElement('span');
+        nameChip.className = 'tool-name-chip';
+        nameChip.textContent = toolName;
+        title.appendChild(nameChip);
+
+        const rawTarget = (item.text || '').trim();
+        if (rawTarget && rawTarget.toLowerCase() !== toolName.toLowerCase()) {
+          const targetSpan = document.createElement('span');
+          targetSpan.className = 'tool-target-text';
+          targetSpan.textContent = rawTarget;
+          title.appendChild(targetSpan);
+        }
+
+        const rightWrap = document.createElement('div');
+        rightWrap.className = 'tool-right';
+
+        if (cmdCount > 0) {
+          const stepPill = document.createElement('span');
+          stepPill.className = 'tool-step-count';
+          stepPill.textContent = `${cmdCount} ${cmdCount === 1 ? 'cmd' : 'cmds'}`;
+          rightWrap.appendChild(stepPill);
+        }
+
+        const badge = document.createElement('span');
+        badge.className = 'tool-status ' + (isRunning ? 'running' : 'done');
+        badge.textContent = isRunning ? 'Running' : 'Done';
+        rightWrap.appendChild(badge);
+
+        if (cmdCount > 0) {
+          const chev = document.createElement('span');
+          chev.className = 'tool-chevron';
+          chev.textContent = '▸';
+          rightWrap.appendChild(chev);
+        }
+
+        header.append(title, rightWrap);
+        card.appendChild(header);
+
+        if (cmdCount > 0) {
+          const details = document.createElement('div');
+          details.className = 'tool-details';
+
+          const logBox = document.createElement('div');
+          logBox.className = 'tool-log-list';
+          cmdLogs.forEach((entry, idx) => {
+            const line = document.createElement('div');
+            line.className = 'tool-log-line';
+
+            const num = document.createElement('span');
+            num.className = 'tool-log-num';
+            num.textContent = String(idx + 1).padStart(2, '0');
+
+            const rowGlyph = document.createElement('span');
+            rowGlyph.className = 'tool-log-glyph';
+            rowGlyph.textContent = '❯';
+
+            const sepIdx = entry.indexOf(' · ');
+            const cName = sepIdx >= 0 ? entry.slice(0, sepIdx) : entry;
+            const cTarget = sepIdx >= 0 ? entry.slice(sepIdx + 3) : '';
+
+            const chip = document.createElement('span');
+            chip.className = 'tool-log-chip';
+            chip.textContent = cName;
+
+            line.append(num, rowGlyph, chip);
+
+            if (cTarget) {
+              const targetEl = document.createElement('span');
+              targetEl.className = 'tool-log-target';
+              targetEl.textContent = cTarget;
+              line.appendChild(targetEl);
+            }
+
+            line.addEventListener('click', e => {
+              e.stopPropagation();
+              line.classList.toggle('wrap');
+            });
+            logBox.appendChild(line);
+          });
+
+          details.appendChild(logBox);
+          card.appendChild(details);
+          header.addEventListener('click', () => card.classList.toggle('open'));
+        }
       }
       return card;
     }
@@ -2854,6 +2968,11 @@ internal static class AcpMobilePage
       if (existingNode.classList.contains('open')) {
         newNode.classList.add('open');
       }
+      const prevThoughtRow = existingNode.querySelector('.tool-thought-row');
+      const nextThoughtRow = newNode.querySelector('.tool-thought-row');
+      if (prevThoughtRow && nextThoughtRow && prevThoughtRow.classList.contains('wrap')) {
+        nextThoughtRow.classList.add('wrap');
+      }
       const prevDetails = existingNode.querySelector('details.thinking-box');
       const nextDetails = newNode.querySelector('details.thinking-box');
       if (prevDetails && nextDetails && prevDetails.open) {
@@ -2888,6 +3007,33 @@ internal static class AcpMobilePage
 
     timelineInner.replaceChildren();
     const items = (state.activeSession && state.activeSession.timeline) || [];
+
+    if (state.loadingSession) {
+      const box = document.createElement('div');
+      box.className = 'hero-card';
+
+      const iconWrap = document.createElement('div');
+      iconWrap.className = 'icon-wrap';
+      const ring = document.createElement('div');
+      ring.className = 'ring loading';
+      const circle = document.createElement('div');
+      circle.className = 'icon-circle';
+      circle.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
+      iconWrap.append(ring, circle);
+
+      const h2 = document.createElement('h2');
+      h2.textContent = 'Loading session messages…';
+      const p = document.createElement('p');
+      const s = state.activeSession && state.activeSession.summary;
+      p.textContent = s
+        ? `[${(s.provider || 'agent').toUpperCase()}] ${s.title}`
+        : 'Reading session transcript…';
+
+      box.append(iconWrap, h2, p);
+      timelineInner.appendChild(box);
+      updateJumpBottomButton();
+      return;
+    }
 
     if (items.length === 0) {
       const box = document.createElement('div');

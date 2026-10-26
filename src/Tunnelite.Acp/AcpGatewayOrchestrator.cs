@@ -107,7 +107,9 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     await existing.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        if (!string.IsNullOrWhiteSpace(disc.Title) && existing.Title.StartsWith("Session ", StringComparison.Ordinal))
+                        if (!string.IsNullOrWhiteSpace(disc.Title) &&
+                            (existing.Title.StartsWith("Session ", StringComparison.Ordinal) ||
+                             existing.Title.StartsWith("Codex session ", StringComparison.OrdinalIgnoreCase)))
                         {
                             existing.Title = disc.Title;
                         }
@@ -125,6 +127,14 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     {
                         existing.Gate.Release();
                     }
+                }
+
+                if (existing.Provider == AgentProviderKind.Codex &&
+                    !existing.CodexMetadataEnriched &&
+                    !string.IsNullOrWhiteSpace(existing.TranscriptPath) &&
+                    File.Exists(existing.TranscriptPath))
+                {
+                    await TryEnrichCodexSessionMetadataAsync(existing, cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -784,25 +794,39 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 var historicalEvents = new List<AcpEvent>();
                 Queue<AntigravityToolSnapshot>? agToolSnapshots = null;
                 long newAgOffset = 0;
+                CodexTranscriptReadResult? codexResult = null;
                 try
                 {
-                    if (session.Provider == AgentProviderKind.Antigravity &&
+                    if (session.Provider == AgentProviderKind.Codex &&
                         File.Exists(discoveredForHistory.TranscriptPath))
                     {
-                        (agToolSnapshots, newAgOffset) = await ExtractAntigravityToolSnapshotsAsync(
+                        codexResult = await ReadCodexTranscriptAsync(
                             discoveredForHistory.TranscriptPath,
+                            session.SessionId,
                             startOffset: 0,
                             cancellationToken).ConfigureAwait(false);
+                        historicalEvents.AddRange(codexResult.Events);
                     }
-
-                    var adapter = _runtime.GetAdapter(session.Provider);
-                    await foreach (var ev in adapter.TailSessionTranscriptAsync(
-                        discoveredForHistory,
-                        includeHistory: true,
-                        followLive: false,
-                        cancellationToken).ConfigureAwait(false))
+                    else
                     {
-                        historicalEvents.Add(ev);
+                        if (session.Provider == AgentProviderKind.Antigravity &&
+                            File.Exists(discoveredForHistory.TranscriptPath))
+                        {
+                            (agToolSnapshots, newAgOffset) = await ExtractAntigravityToolSnapshotsAsync(
+                                discoveredForHistory.TranscriptPath,
+                                startOffset: 0,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+
+                        var adapter = _runtime.GetAdapter(session.Provider);
+                        await foreach (var ev in adapter.TailSessionTranscriptAsync(
+                            discoveredForHistory,
+                            includeHistory: true,
+                            followLive: false,
+                            cancellationToken).ConfigureAwait(false))
+                        {
+                            historicalEvents.Add(ev);
+                        }
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -821,6 +845,23 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     {
                         session.PendingAgToolSnapshots = agToolSnapshots ?? new Queue<AntigravityToolSnapshot>();
                         session.LastParsedAgToolOffset = newAgOffset;
+                        if (codexResult is not null)
+                        {
+                            session.LastParsedCodexOffset = codexResult.NewOffset;
+                            session.CodexMetadataEnriched = true;
+                            if (!string.IsNullOrWhiteSpace(codexResult.FirstUserPrompt) &&
+                                (session.Title.StartsWith("Session ", StringComparison.OrdinalIgnoreCase) ||
+                                 session.Title.StartsWith("Codex session ", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                session.Title = TruncateTitle(codexResult.FirstUserPrompt);
+                            }
+                            if (!string.IsNullOrWhiteSpace(codexResult.WorkingDirectory))
+                            {
+                                session.WorkingDirectory = codexResult.WorkingDirectory;
+                            }
+                            session.GitBranch ??= codexResult.GitBranch;
+                            session.Model ??= codexResult.Model;
+                        }
                         foreach (var ev in historicalEvents)
                         {
                             ApplyEventUnderGate(session, ev, isHistoricalLoad: true, out _, out _, out _, out _);
@@ -894,6 +935,57 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
     {
         try
         {
+            if (session.Provider == AgentProviderKind.Codex)
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken).ConfigureAwait(false);
+                    if (session.LiveHandle is not null || !File.Exists(discovered.TranscriptPath))
+                    {
+                        continue;
+                    }
+
+                    long currentOffset;
+                    await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        currentOffset = session.LastParsedCodexOffset;
+                    }
+                    finally
+                    {
+                        session.Gate.Release();
+                    }
+
+                    var fi = new FileInfo(discovered.TranscriptPath);
+                    if (!fi.Exists || fi.Length <= currentOffset)
+                    {
+                        continue;
+                    }
+
+                    var codexDelta = await ReadCodexTranscriptAsync(
+                        discovered.TranscriptPath,
+                        session.SessionId,
+                        currentOffset,
+                        cancellationToken).ConfigureAwait(false);
+
+                    await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        session.LastParsedCodexOffset = codexDelta.NewOffset;
+                    }
+                    finally
+                    {
+                        session.Gate.Release();
+                    }
+
+                    foreach (var ev in codexDelta.Events)
+                    {
+                        await ApplyEventToSessionAsync(session, ev, isFromTranscriptTail: true, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                return;
+            }
+
             var adapter = _runtime.GetAdapter(session.Provider);
             await foreach (var ev in adapter.TailSessionTranscriptAsync(
                 discovered,
@@ -1266,8 +1358,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                                    hist.Role is not ("tool" or "system") &&
                                    !string.Equals(cleanedText, hist.ToolName, StringComparison.OrdinalIgnoreCase);
 
+                var thoughtPreview = hist.Role != "user" ? FormatThoughtPreview(hist.Thinking, 140) : null;
+
                 // If this step has no user/assistant prose text (only tool execution and/or intermediate thinking),
-                // update the single in-line terminal bar in place with either the running command or current thought.
+                // update the single in-line terminal bar in place with both the latest thought and running command.
                 if (!hasProseText && hist.Role != "user")
                 {
                     if (!string.IsNullOrWhiteSpace(hist.ToolName))
@@ -1290,7 +1384,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                             toolStatus: isHistoricalLoad ? "completed" : "in_progress",
                             rawInputJson: agToolSnap?.RawInputJson,
                             rawOutput: rawOut,
-                            additionalCalls: agToolSnap?.Calls);
+                            additionalCalls: agToolSnap?.Calls,
+                            thoughtPreview: thoughtPreview);
                         break;
                     }
 
@@ -1308,6 +1403,15 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
                 if (hist.Role == "assistant")
                 {
+                    if (!string.IsNullOrWhiteSpace(hist.Thinking) && string.IsNullOrWhiteSpace(hist.ToolName))
+                    {
+                        UpsertInlineThoughtUnderGate(
+                            session,
+                            hist.Timestamp,
+                            hist.Thinking,
+                            isStreamingDelta: false,
+                            toolStatus: "in_progress");
+                    }
                     autoDrainedUserItem = CompleteInlineActivityUnderGate(session);
                 }
 
@@ -1337,7 +1441,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                         toolStatus: "completed",
                         rawInputJson: agToolSnap?.RawInputJson,
                         rawOutput: agToolSnap?.RawOutput,
-                        additionalCalls: agToolSnap?.Calls);
+                        additionalCalls: agToolSnap?.Calls,
+                        thoughtPreview: thoughtPreview);
                 }
                 break;
             }
@@ -1583,10 +1688,16 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             return shortPath;
         }
 
-        var query = GetCleanJsonString(argsObj, "query", "Query", "pattern", "Pattern", "Url", "url");
+        var query = GetCleanJsonString(argsObj, "query", "Query", "pattern", "Pattern", "Url", "url", "objective", "Objective");
         if (!string.IsNullOrWhiteSpace(query))
         {
             return TruncateSingleLine(query, 140);
+        }
+
+        var cellId = GetCleanJsonScalar(argsObj, "cell_id", "cellId");
+        if (!string.IsNullOrWhiteSpace(cellId))
+        {
+            return $"cell {cellId}";
         }
 
         return null;
@@ -1825,6 +1936,600 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         string? RawOutput,
         IReadOnlyList<AntigravityToolCallEntry>? Calls = null);
 
+    private sealed record CodexTranscriptReadResult(
+        IReadOnlyList<AcpEvent> Events,
+        long NewOffset,
+        string? FirstUserPrompt,
+        string? WorkingDirectory,
+        string? GitBranch,
+        string? Model);
+
+    private static async Task TryEnrichCodexSessionMetadataAsync(
+        ManagedSession session,
+        CancellationToken cancellationToken)
+    {
+        var path = session.TranscriptPath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        string? firstUserPrompt = null;
+        string? cwd = null;
+        string? gitBranch = null;
+        string? model = null;
+
+        try
+        {
+            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(fs, Encoding.UTF8);
+            string? line;
+            var linesRead = 0;
+
+            while (linesRead < 60 && (line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+            {
+                linesRead++;
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    var type = GetCleanJsonString(root, "type");
+                    if (!root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(type, "session_meta", StringComparison.Ordinal))
+                    {
+                        cwd ??= GetCleanJsonString(payload, "cwd");
+                        if (payload.TryGetProperty("git", out var gitEl) && gitEl.ValueKind == JsonValueKind.Object)
+                        {
+                            gitBranch ??= GetCleanJsonString(gitEl, "branch");
+                        }
+                    }
+                    else if (string.Equals(type, "turn_context", StringComparison.Ordinal))
+                    {
+                        cwd ??= GetCleanJsonString(payload, "cwd");
+                        model ??= GetCleanJsonString(payload, "model");
+                    }
+                    else if (firstUserPrompt is null && string.Equals(type, "response_item", StringComparison.Ordinal))
+                    {
+                        var pType = GetCleanJsonString(payload, "type");
+                        var role = GetCleanJsonString(payload, "role");
+                        if (string.Equals(pType, "message", StringComparison.Ordinal) &&
+                            string.Equals(role, "user", StringComparison.Ordinal))
+                        {
+                            firstUserPrompt = ExtractCodexMessageText(payload, isUser: true);
+                        }
+                    }
+
+                    if (firstUserPrompt is not null && model is not null && cwd is not null)
+                    {
+                        break;
+                    }
+                }
+                catch
+                {
+                    // Ignore malformed line
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Ignore file access errors during metadata scan
+        }
+
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            session.CodexMetadataEnriched = true;
+            if (!string.IsNullOrWhiteSpace(firstUserPrompt) &&
+                (session.Title.StartsWith("Session ", StringComparison.OrdinalIgnoreCase) ||
+                 session.Title.StartsWith("Codex session ", StringComparison.OrdinalIgnoreCase)))
+            {
+                session.Title = TruncateTitle(firstUserPrompt);
+            }
+            if (!string.IsNullOrWhiteSpace(cwd))
+            {
+                session.WorkingDirectory = cwd;
+            }
+            session.GitBranch ??= gitBranch;
+            session.Model ??= model;
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+    }
+
+    private static async Task<CodexTranscriptReadResult> ReadCodexTranscriptAsync(
+        string transcriptPath,
+        string sessionId,
+        long startOffset,
+        CancellationToken cancellationToken)
+    {
+        var events = new List<AcpEvent>();
+        var nextOffset = startOffset;
+        string? firstUserPrompt = null;
+        string? cwd = null;
+        string? gitBranch = null;
+        string? model = null;
+        var sawResponseItem = false;
+
+        try
+        {
+            await using var fs = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (startOffset > 0 && startOffset <= fs.Length)
+            {
+                fs.Seek(startOffset, SeekOrigin.Begin);
+            }
+
+            using var reader = new StreamReader(fs, Encoding.UTF8);
+            string? line;
+
+            while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    var tsStr = GetCleanJsonString(root, "timestamp");
+                    var ts = DateTimeOffset.TryParse(tsStr, out var parsedTs) ? parsedTs : DateTimeOffset.UtcNow;
+                    var type = GetCleanJsonString(root, "type");
+
+                    if (!root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(type, "session_meta", StringComparison.Ordinal))
+                    {
+                        cwd ??= GetCleanJsonString(payload, "cwd");
+                        if (payload.TryGetProperty("git", out var gitEl) && gitEl.ValueKind == JsonValueKind.Object)
+                        {
+                            gitBranch ??= GetCleanJsonString(gitEl, "branch");
+                        }
+                    }
+                    else if (string.Equals(type, "turn_context", StringComparison.Ordinal))
+                    {
+                        var turnCwd = GetCleanJsonString(payload, "cwd");
+                        var turnModel = GetCleanJsonString(payload, "model");
+                        if (!string.IsNullOrWhiteSpace(turnCwd))
+                        {
+                            cwd = turnCwd;
+                        }
+                        if (!string.IsNullOrWhiteSpace(turnModel))
+                        {
+                            model = turnModel;
+                        }
+                    }
+                    else if (string.Equals(type, "response_item", StringComparison.Ordinal))
+                    {
+                        sawResponseItem = true;
+                        var pType = GetCleanJsonString(payload, "type");
+
+                        if (string.Equals(pType, "message", StringComparison.Ordinal))
+                        {
+                            var role = GetCleanJsonString(payload, "role");
+                            if (string.Equals(role, "user", StringComparison.Ordinal))
+                            {
+                                var userText = ExtractCodexMessageText(payload, isUser: true);
+                                if (!string.IsNullOrWhiteSpace(userText))
+                                {
+                                    firstUserPrompt ??= userText;
+                                    events.Add(new AcpTranscriptHistoryEntryEvent(
+                                        Provider: AgentProviderKind.Codex,
+                                        SessionId: sessionId,
+                                        Timestamp: ts,
+                                        Role: "user",
+                                        Text: userText,
+                                        Thinking: null,
+                                        ToolName: null,
+                                        ToolCallId: null));
+                                }
+                            }
+                            else if (string.Equals(role, "assistant", StringComparison.Ordinal))
+                            {
+                                var assistantText = ExtractCodexMessageText(payload, isUser: false);
+                                if (!string.IsNullOrWhiteSpace(assistantText))
+                                {
+                                    var phase = GetCleanJsonString(payload, "phase");
+                                    if (string.Equals(phase, "commentary", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        events.Add(new AcpTranscriptHistoryEntryEvent(
+                                            Provider: AgentProviderKind.Codex,
+                                            SessionId: sessionId,
+                                            Timestamp: ts,
+                                            Role: "assistant",
+                                            Text: string.Empty,
+                                            Thinking: assistantText,
+                                            ToolName: null,
+                                            ToolCallId: null));
+                                    }
+                                    else
+                                    {
+                                        events.Add(new AcpTranscriptHistoryEntryEvent(
+                                            Provider: AgentProviderKind.Codex,
+                                            SessionId: sessionId,
+                                            Timestamp: ts,
+                                            Role: "assistant",
+                                            Text: assistantText,
+                                            Thinking: null,
+                                            ToolName: null,
+                                            ToolCallId: null));
+                                    }
+                                }
+                            }
+                        }
+                        else if (string.Equals(pType, "reasoning", StringComparison.Ordinal))
+                        {
+                            var reasoningText = ExtractCodexReasoningText(payload);
+                            if (!string.IsNullOrWhiteSpace(reasoningText))
+                            {
+                                events.Add(new AcpTranscriptHistoryEntryEvent(
+                                    Provider: AgentProviderKind.Codex,
+                                    SessionId: sessionId,
+                                    Timestamp: ts,
+                                    Role: "assistant",
+                                    Text: string.Empty,
+                                    Thinking: reasoningText,
+                                    ToolName: null,
+                                    ToolCallId: null));
+                            }
+                        }
+                        else if (string.Equals(pType, "custom_tool_call", StringComparison.Ordinal) ||
+                                 string.Equals(pType, "function_call", StringComparison.Ordinal) ||
+                                 string.Equals(pType, "local_shell_call", StringComparison.Ordinal))
+                        {
+                            var callId = GetCleanJsonString(payload, "call_id", "id");
+                            var rawToolName = GetCleanJsonString(payload, "name") ??
+                                (string.Equals(pType, "local_shell_call", StringComparison.Ordinal) ? "shell" : "tool");
+                            var summary = SummarizeCodexToolPayload(payload, pType!, rawToolName);
+
+                            events.Add(new AcpTranscriptHistoryEntryEvent(
+                                Provider: AgentProviderKind.Codex,
+                                SessionId: sessionId,
+                                Timestamp: ts,
+                                Role: "tool",
+                                Text: summary ?? rawToolName,
+                                Thinking: null,
+                                ToolName: rawToolName,
+                                ToolCallId: callId));
+                        }
+                    }
+                    else if (!sawResponseItem && string.Equals(type, "event_msg", StringComparison.Ordinal))
+                    {
+                        var pType = GetCleanJsonString(payload, "type");
+                        if (string.Equals(pType, "user_message", StringComparison.Ordinal))
+                        {
+                            var msg = GetCleanJsonString(payload, "message", "text");
+                            if (!string.IsNullOrWhiteSpace(msg) && !IsCodexInjectedUserContext(msg))
+                            {
+                                firstUserPrompt ??= msg;
+                                events.Add(new AcpTranscriptHistoryEntryEvent(
+                                    Provider: AgentProviderKind.Codex,
+                                    SessionId: sessionId,
+                                    Timestamp: ts,
+                                    Role: "user",
+                                    Text: msg,
+                                    Thinking: null,
+                                    ToolName: null,
+                                    ToolCallId: null));
+                            }
+                        }
+                        else if (string.Equals(pType, "agent_message", StringComparison.Ordinal))
+                        {
+                            var msg = GetCleanJsonString(payload, "message", "text");
+                            if (!string.IsNullOrWhiteSpace(msg))
+                            {
+                                events.Add(new AcpTranscriptHistoryEntryEvent(
+                                    Provider: AgentProviderKind.Codex,
+                                    SessionId: sessionId,
+                                    Timestamp: ts,
+                                    Role: "assistant",
+                                    Text: msg,
+                                    Thinking: null,
+                                    ToolName: null,
+                                    ToolCallId: null));
+                            }
+                        }
+                        else if (string.Equals(pType, "agent_reasoning", StringComparison.Ordinal))
+                        {
+                            var msg = GetCleanJsonString(payload, "text", "message");
+                            if (!string.IsNullOrWhiteSpace(msg))
+                            {
+                                events.Add(new AcpTranscriptHistoryEntryEvent(
+                                    Provider: AgentProviderKind.Codex,
+                                    SessionId: sessionId,
+                                    Timestamp: ts,
+                                    Role: "assistant",
+                                    Text: string.Empty,
+                                    Thinking: msg,
+                                    ToolName: null,
+                                    ToolCallId: null));
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip malformed JSON line
+                }
+            }
+
+            nextOffset = fs.Position;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Ignore file read errors
+        }
+
+        return new CodexTranscriptReadResult(
+            Events: events,
+            NewOffset: nextOffset,
+            FirstUserPrompt: firstUserPrompt,
+            WorkingDirectory: cwd,
+            GitBranch: gitBranch,
+            Model: model);
+    }
+
+    private static string? ExtractCodexMessageText(JsonElement payload, bool isUser)
+    {
+        if (payload.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.Array)
+        {
+            var sb = new StringBuilder();
+            foreach (var part in contentEl.EnumerateArray())
+            {
+                if (part.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var text = GetCleanJsonString(part, "text");
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    continue;
+                }
+
+                if (isUser && IsCodexInjectedUserContext(text))
+                {
+                    continue;
+                }
+
+                if (sb.Length > 0)
+                {
+                    sb.Append('\n');
+                }
+                sb.Append(text);
+            }
+
+            return sb.Length > 0 ? sb.ToString() : null;
+        }
+
+        var directText = GetCleanJsonString(payload, "text", "message");
+        if (!string.IsNullOrWhiteSpace(directText) && (!isUser || !IsCodexInjectedUserContext(directText)))
+        {
+            return directText;
+        }
+
+        return null;
+    }
+
+    private static bool IsCodexInjectedUserContext(string text)
+    {
+        var trimmed = text.AsSpan().TrimStart();
+        return trimmed.StartsWith("# AGENTS.md instructions", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<INSTRUCTIONS>", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<environment_context>", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<permissions instructions>", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<skills_instructions>", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<collaboration_mode>", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<multi_agent_", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<subagent_notification>", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<codex_internal_context", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("<system-reminder>", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ExtractCodexReasoningText(JsonElement payload)
+    {
+        if (payload.TryGetProperty("summary", out var summaryEl) && summaryEl.ValueKind == JsonValueKind.Array)
+        {
+            var sb = new StringBuilder();
+            foreach (var part in summaryEl.EnumerateArray())
+            {
+                if (part.ValueKind == JsonValueKind.Object)
+                {
+                    var txt = GetCleanJsonString(part, "text");
+                    if (!string.IsNullOrWhiteSpace(txt))
+                    {
+                        if (sb.Length > 0)
+                        {
+                            sb.Append(' ');
+                        }
+                        sb.Append(txt);
+                    }
+                }
+                else if (part.ValueKind == JsonValueKind.String)
+                {
+                    var txt = part.GetString()?.Trim();
+                    if (!string.IsNullOrWhiteSpace(txt))
+                    {
+                        if (sb.Length > 0)
+                        {
+                            sb.Append(' ');
+                        }
+                        sb.Append(txt);
+                    }
+                }
+            }
+
+            if (sb.Length > 0)
+            {
+                return sb.ToString();
+            }
+        }
+
+        return GetCleanJsonString(payload, "text", "message");
+    }
+
+    private static string? SummarizeCodexToolPayload(JsonElement payload, string payloadType, string rawToolName)
+    {
+        if (string.Equals(payloadType, "local_shell_call", StringComparison.Ordinal) &&
+            payload.TryGetProperty("action", out var actionEl) &&
+            actionEl.ValueKind == JsonValueKind.Object &&
+            actionEl.TryGetProperty("command", out var cmdArr) &&
+            cmdArr.ValueKind == JsonValueKind.Array)
+        {
+            var parts = new List<string>();
+            foreach (var item in cmdArr.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } s)
+                {
+                    parts.Add(s);
+                }
+            }
+            if (parts.Count >= 3 && parts[1] is "-c" or "-lc")
+            {
+                return TruncateSingleLine(parts[2], 140);
+            }
+            if (parts.Count > 0)
+            {
+                return TruncateSingleLine(string.Join(' ', parts), 140);
+            }
+        }
+
+        var rawInput = GetCleanJsonString(payload, "arguments", "input");
+        if (string.IsNullOrWhiteSpace(rawInput))
+        {
+            if (payload.TryGetProperty("arguments", out var argsObj) && argsObj.ValueKind == JsonValueKind.Object)
+            {
+                return ExtractToolArgSummary(argsObj);
+            }
+            if (payload.TryGetProperty("input", out var inputObj) && inputObj.ValueKind == JsonValueKind.Object)
+            {
+                return ExtractToolArgSummary(inputObj);
+            }
+            return null;
+        }
+
+        if (rawInput.StartsWith('{'))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(rawInput);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    var summary = ExtractToolArgSummary(doc.RootElement);
+                    if (!string.IsNullOrWhiteSpace(summary))
+                    {
+                        return summary;
+                    }
+                }
+            }
+            catch
+            {
+                // Fall back to string extraction
+            }
+        }
+
+        var extractedJsProp = TryExtractJsStringProperty(rawInput, "cmd") ??
+                              TryExtractJsStringProperty(rawInput, "command") ??
+                              TryExtractJsStringProperty(rawInput, "objective") ??
+                              TryExtractJsStringProperty(rawInput, "path");
+        if (!string.IsNullOrWhiteSpace(extractedJsProp))
+        {
+            return TruncateSingleLine(extractedJsProp, 140);
+        }
+
+        var cleaned = NormalizeToolText(rawToolName, rawInput, null);
+        return cleaned is not null ? TruncateSingleLine(cleaned, 140) : null;
+    }
+
+    private static string? TryExtractJsStringProperty(string text, string key)
+    {
+        ReadOnlySpan<string> patterns = [
+            $"{key}:\"",
+            $"\"{key}\":\"",
+            $"{key}: \"",
+            $"\"{key}\": \""
+        ];
+
+        var bestIdx = -1;
+        var matchLen = 0;
+        foreach (var pat in patterns)
+        {
+            var idx = text.IndexOf(pat, StringComparison.Ordinal);
+            if (idx >= 0 && (bestIdx < 0 || idx < bestIdx))
+            {
+                bestIdx = idx;
+                matchLen = pat.Length;
+            }
+        }
+
+        if (bestIdx < 0)
+        {
+            return null;
+        }
+
+        var sb = new StringBuilder();
+        var i = bestIdx + matchLen;
+        while (i < text.Length)
+        {
+            var ch = text[i];
+            if (ch == '\\' && i + 1 < text.Length)
+            {
+                var next = text[i + 1];
+                if (next is 'n' or 'r' or 't')
+                {
+                    sb.Append(' ');
+                }
+                else
+                {
+                    sb.Append(next);
+                }
+                i += 2;
+                continue;
+            }
+            if (ch == '"')
+            {
+                break;
+            }
+            sb.Append(ch);
+            i++;
+        }
+
+        var result = sb.ToString().Trim();
+        return result.Length > 0 ? result : null;
+    }
+
     private static string? TruncateLargePayload(string? value, int maxChars)
     {
         if (string.IsNullOrEmpty(value) || value.Length <= maxChars)
@@ -1846,35 +2551,41 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             return null;
         }
 
+        var combined = isStreamingDelta
+            ? (session.CurrentStreamingThoughtBuffer ?? string.Empty) + rawThinking
+            : rawThinking;
+        session.CurrentStreamingThoughtBuffer = isStreamingDelta ? TruncateLargePayload(combined, 1200) : null;
+
+        var preview = FormatThoughtPreview(combined, 140);
+        if (string.IsNullOrWhiteSpace(preview))
+        {
+            return session.Timeline.Count > 0 && session.Timeline[^1].Kind == "tool_call"
+                ? session.Timeline[^1]
+                : null;
+        }
+
         var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
         if (last is not null && last.Kind == "tool_call")
         {
-            var combined = isStreamingDelta && string.Equals(last.ToolKind, "thought", StringComparison.Ordinal)
-                ? (last.Thinking ?? string.Empty) + rawThinking
-                : rawThinking;
-            var preview = FormatThoughtPreview(combined, 110);
-            if (string.IsNullOrWhiteSpace(preview))
-            {
-                return last;
-            }
-
-            var updated = last with
-            {
-                Timestamp = timestamp,
-                ToolName = "thinking",
-                ToolKind = "thought",
-                ToolStatus = toolStatus,
-                Text = preview,
-                Thinking = TruncateLargePayload(combined, 300)
-            };
+            var hasCommands = last.ActivityLog is { Count: > 0 };
+            var updated = hasCommands
+                ? last with
+                {
+                    Timestamp = timestamp,
+                    ToolStatus = toolStatus,
+                    Thinking = preview
+                }
+                : last with
+                {
+                    Timestamp = timestamp,
+                    ToolName = "thinking",
+                    ToolKind = "thought",
+                    ToolStatus = toolStatus,
+                    Text = preview,
+                    Thinking = preview
+                };
             session.Timeline[^1] = updated;
             return updated;
-        }
-
-        var initialPreview = FormatThoughtPreview(rawThinking, 110);
-        if (string.IsNullOrWhiteSpace(initialPreview))
-        {
-            return null;
         }
 
         var created = new AcpGatewayTimelineItem
@@ -1886,10 +2597,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             ToolName = "thinking",
             ToolKind = "thought",
             ToolStatus = toolStatus,
-            Text = initialPreview,
+            Text = preview,
             StepCount = 0,
             ActivityLog = [],
-            Thinking = TruncateLargePayload(rawThinking, 300)
+            Thinking = preview
         };
         AddTimelineItemUnderGate(session, created);
         return created;
@@ -1897,6 +2608,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
     private static AcpGatewayTimelineItem? CompleteInlineActivityUnderGate(ManagedSession session)
     {
+        session.CurrentStreamingThoughtBuffer = null;
+
         if (session.Timeline.Count == 0 || session.Timeline[^1].Kind != "tool_call")
         {
             return null;
@@ -1916,8 +2629,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 ToolName = cmdName,
                 Text = cmdTarget,
                 ToolKind = "command",
-                ToolStatus = "completed",
-                Thinking = null
+                ToolStatus = "completed"
             };
             session.Timeline[^1] = settled;
             return settled;
@@ -1927,8 +2639,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         {
             var settled = lastTool with
             {
-                ToolStatus = "completed",
-                Thinking = null
+                ToolStatus = "completed"
             };
             session.Timeline[^1] = settled;
             return settled;
@@ -1948,8 +2659,11 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         string? rawInputJson,
         string? rawOutput,
         bool isUpdateToSameToolCallId = false,
-        IReadOnlyList<AntigravityToolCallEntry>? additionalCalls = null)
+        IReadOnlyList<AntigravityToolCallEntry>? additionalCalls = null,
+        string? thoughtPreview = null)
     {
+        session.CurrentStreamingThoughtBuffer = null;
+
         var entries = new List<AntigravityToolCallEntry>();
         if (additionalCalls is { Count: > 0 })
         {
@@ -2005,7 +2719,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 ToolStatus = toolStatus,
                 StepCount = nextStepCount,
                 ActivityLog = logs,
-                Thinking = null,
+                Thinking = !string.IsNullOrWhiteSpace(thoughtPreview) ? thoughtPreview : last.Thinking,
                 RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars) ?? last.RawInputJson,
                 RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars) ?? last.RawOutput
             };
@@ -2033,7 +2747,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             ToolStatus = toolStatus,
             StepCount = initialLogs.Count,
             ActivityLog = initialLogs,
-            Thinking = null,
+            Thinking = thoughtPreview,
             RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars),
             RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars)
         };
@@ -2313,6 +3027,9 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         public int VisibleTimelineLimit { get; set; } = DefaultTimelinePageSize;
         public Queue<AntigravityToolSnapshot>? PendingAgToolSnapshots { get; set; }
         public long LastParsedAgToolOffset { get; set; }
+        public long LastParsedCodexOffset { get; set; }
+        public bool CodexMetadataEnriched { get; set; }
+        public string? CurrentStreamingThoughtBuffer { get; set; }
 
         public IAcpSessionHandle? LiveHandle { get; set; }
         public CancellationTokenSource? TailCts { get; set; }

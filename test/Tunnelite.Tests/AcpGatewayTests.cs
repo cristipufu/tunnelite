@@ -271,6 +271,7 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             Assert.Equal("tool_call", state.ActiveSession.Timeline[^2].Kind);
             Assert.Equal("run_command", state.ActiveSession.Timeline[^2].ToolName);
             Assert.Equal("Release build verification (dotnet build -c Release)", state.ActiveSession.Timeline[^2].Text);
+            Assert.Equal("Final response thought", state.ActiveSession.Timeline[^2].Thinking);
             Assert.Equal(3, state.ActiveSession.Timeline[^2].StepCount);
             Assert.Equal(3, state.ActiveSession.Timeline[^2].ActivityLog!.Count);
             Assert.Equal("Build succeeded.", state.ActiveSession.Timeline[^2].RawOutput);
@@ -309,6 +310,78 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             if (File.Exists(tempTranscript))
             {
                 File.Delete(tempTranscript);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AcpGatewayServer_parses_and_tails_codex_response_item_transcript_with_inline_thoughts_and_commands()
+    {
+        var tempCodexTranscript = Path.Combine(Path.GetTempPath(), $"codex-rollout-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllTextAsync(
+            tempCodexTranscript,
+            "{\"timestamp\":\"2026-10-26T18:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"01a14b83\",\"cwd\":\"/Users/dev/petrina-ai\",\"git\":{\"branch\":\"feat/analytics\"}}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:01Z\",\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/Users/dev/petrina-ai\",\"model\":\"gpt-5.4\"}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /Users/dev/petrina-ai\\n<INSTRUCTIONS>rules</INSTRUCTIONS>\"},{\"type\":\"input_text\",\"text\":\"<environment_context>\\n<cwd>/Users/dev/petrina-ai</cwd>\\n</environment_context>\"}]}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"please continue with the stuck claude limit session on petrina-ai\"}]}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:04Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"I'll inspect the git worktree and test suite first.\"}]}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:05Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call\",\"call_id\":\"call_1\",\"name\":\"exec\",\"input\":\"const results = await Promise.allSettled([\\n  tools.exec_command({cmd:\\\"git status --short --branch\\\",max_output_tokens:1800})\\n])\"}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:06Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"wait\",\"arguments\":\"{\\\"cell_id\\\":\\\"4362\\\"}\"}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:07Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"All 187 neighboring cases passed and branches are merged.\"}]}}\n");
+
+        try
+        {
+            var codexSession = new AcpDiscoveredSession(
+                Provider: AgentProviderKind.Codex,
+                SessionId: "01a14b83-codex",
+                Title: "Codex session 01a14b83",
+                WorkingDirectory: null,
+                TranscriptPath: tempCodexTranscript,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                CreatedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
+                Model: null,
+                GitBranch: null,
+                MessageCount: 0);
+
+            var fakeCodex = new ControllableTestAdapter(AgentProviderKind.Codex, "codex", "OpenAI Codex")
+            {
+                DiscoveredSessions = [codexSession]
+            };
+
+            await using var runtime = new AcpliteRuntime([fakeCodex]);
+            await using var orchestrator = new AcpGatewayOrchestrator(scopedProvider: AgentProviderKind.Codex, Path.GetTempPath(), runtime);
+            await orchestrator.InitializeAsync();
+
+            var snap = await orchestrator.GetStateSnapshotAsync();
+            Assert.NotNull(snap.ActiveSession);
+            Assert.Equal("please continue with the stuck claude limit session on petrina-ai", snap.ActiveSession!.Summary.Title);
+            Assert.Equal("gpt-5.4", snap.ActiveSession.Summary.Model);
+            Assert.Equal("feat/analytics", snap.ActiveSession.Summary.GitBranch);
+
+            var timeline = snap.ActiveSession.Timeline;
+            Assert.Equal(3, timeline.Count);
+            Assert.Equal("message", timeline[0].Kind);
+            Assert.Equal("user", timeline[0].Role);
+            Assert.Equal("please continue with the stuck claude limit session on petrina-ai", timeline[0].Text);
+
+            Assert.Equal("tool_call", timeline[1].Kind);
+            Assert.Equal("I'll inspect the git worktree and test suite first.", timeline[1].Thinking);
+            Assert.Equal("wait", timeline[1].ToolName);
+            Assert.Equal("cell 4362", timeline[1].Text);
+            Assert.Equal(2, timeline[1].StepCount);
+            Assert.Equal(2, timeline[1].ActivityLog!.Count);
+            Assert.Equal("exec · git status --short --branch", timeline[1].ActivityLog![0]);
+            Assert.Equal("wait · cell 4362", timeline[1].ActivityLog![1]);
+
+            Assert.Equal("message", timeline[2].Kind);
+            Assert.Equal("assistant", timeline[2].Role);
+            Assert.Equal("All 187 neighboring cases passed and branches are merged.", timeline[2].Text);
+        }
+        finally
+        {
+            if (File.Exists(tempCodexTranscript))
+            {
+                File.Delete(tempCodexTranscript);
             }
         }
     }
