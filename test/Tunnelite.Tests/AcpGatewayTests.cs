@@ -6,6 +6,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Acplite.Sdk;
+using Acplite.Sdk.Adapters;
 using Acplite.Sdk.Protocol;
 using Acplite.Sdk.Runtime;
 using Tunnelite.Acp;
@@ -220,10 +221,11 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             }
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-6), "user", "<USER_REQUEST>\nInitial desktop prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5.5), "assistant", "", Thinking: "**Initial thought**: Let's inspect Program.cs first.", ToolName: null));
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5), "assistant", "", Thinking: "Checking Program.cs", ToolName: "read_file"));
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "assistant", "", Thinking: null, ToolName: "edit_file"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5), "assistant", "", Thinking: "Checking Program.cs", ToolName: null));
+            historyEvents.Add(new AcpToolCallEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5), "step_1_0", "read_file", "src/Program.cs:1-50", "read", "completed", RawInputJson: "{\"Path\":\"/Users/dev/tunnelite/src/Program.cs\"}", RawOutput: "1: using System;"));
+            historyEvents.Add(new AcpToolCallEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "step_3_0", "edit_file", "src/AcpMobilePage.cs", "edit", "completed", RawInputJson: "{\"Path\":\"/Users/dev/tunnelite/src/AcpMobilePage.cs\"}", RawOutput: "Made 1 replacement"));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3.5), "assistant", "", Thinking: "Now let's run the release build.", ToolName: null));
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "assistant", "", Thinking: null, ToolName: "run_command"));
+            historyEvents.Add(new AcpToolCallEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "step_5_0", "run_command", "Release build verification (dotnet build -c Release)", "execute", "completed", RawInputJson: "{\"CommandLine\":\"dotnet build -c Release\"}", RawOutput: "Build succeeded."));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-2.5), "assistant", "", Thinking: "Build succeeded, preparing final summary.", ToolName: null));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-2), "assistant", "Desktop response from transcript", Thinking: "Final response thought"));
 
@@ -324,7 +326,7 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             "{\"timestamp\":\"2026-10-26T18:00:01Z\",\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/Users/dev/petrina-ai\",\"model\":\"gpt-5.4\"}}\n" +
             "{\"timestamp\":\"2026-10-26T18:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /Users/dev/petrina-ai\\n<INSTRUCTIONS>rules</INSTRUCTIONS>\"},{\"type\":\"input_text\",\"text\":\"<environment_context>\\n<cwd>/Users/dev/petrina-ai</cwd>\\n</environment_context>\"}]}}\n" +
             "{\"timestamp\":\"2026-10-26T18:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"please continue with the stuck claude limit session on petrina-ai\"}]}}\n" +
-            "{\"timestamp\":\"2026-10-26T18:00:04Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"I'll inspect the git worktree and test suite first.\"}]}}\n" +
+            "{\"timestamp\":\"2026-10-26T18:00:04Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"I'll inspect the git worktree and test suite first.\"}]}}\n" +
             "{\"timestamp\":\"2026-10-26T18:00:05Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call\",\"call_id\":\"call_1\",\"name\":\"exec\",\"input\":\"const results = await Promise.allSettled([\\n  tools.exec_command({cmd:\\\"git status --short --branch\\\",max_output_tokens:1800})\\n])\"}}\n" +
             "{\"timestamp\":\"2026-10-26T18:00:06Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"wait\",\"arguments\":\"{\\\"cell_id\\\":\\\"4362\\\"}\"}}\n" +
             "{\"timestamp\":\"2026-10-26T18:00:07Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"All 187 neighboring cases passed and branches are merged.\"}]}}\n");
@@ -334,14 +336,14 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             var codexSession = new AcpDiscoveredSession(
                 Provider: AgentProviderKind.Codex,
                 SessionId: "01a14b83-codex",
-                Title: "Codex session 01a14b83",
-                WorkingDirectory: null,
+                Title: "please continue with the stuck claude limit session on petrina-ai",
+                WorkingDirectory: "/Users/dev/petrina-ai",
                 TranscriptPath: tempCodexTranscript,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 CreatedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
-                Model: null,
-                GitBranch: null,
-                MessageCount: 0);
+                Model: "gpt-5.4",
+                GitBranch: "feat/analytics",
+                MessageCount: 2);
 
             var fakeCodex = new ControllableTestAdapter(AgentProviderKind.Codex, "codex", "OpenAI Codex")
             {
@@ -367,11 +369,11 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             Assert.Equal("tool_call", timeline[1].Kind);
             Assert.Equal("I'll inspect the git worktree and test suite first.", timeline[1].Thinking);
             Assert.Equal("wait", timeline[1].ToolName);
-            Assert.Equal("cell 4362", timeline[1].Text);
+            Assert.Equal("4362", timeline[1].Text);
             Assert.Equal(2, timeline[1].StepCount);
             Assert.Equal(2, timeline[1].ActivityLog!.Count);
             Assert.Equal("exec · git status --short --branch", timeline[1].ActivityLog![0]);
-            Assert.Equal("wait · cell 4362", timeline[1].ActivityLog![1]);
+            Assert.Equal("wait · 4362", timeline[1].ActivityLog![1]);
 
             Assert.Equal("message", timeline[2].Kind);
             Assert.Equal("assistant", timeline[2].Role);
@@ -562,13 +564,33 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
 
         public async IAsyncEnumerable<AcpEvent> TailSessionTranscriptAsync(AcpDiscoveredSession session, bool includeHistory = true, bool followLive = true, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            if (includeHistory && session.SessionId == "disc-agy-101")
+            if (TranscriptHistoryEvents.Count > 0)
             {
-                foreach (var ev in TranscriptHistoryEvents)
+                if (includeHistory && session.SessionId == "disc-agy-101")
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    foreach (var ev in TranscriptHistoryEvents)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        yield return ev;
+                    }
+                }
+
+                if (followLive)
+                {
+                    await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                }
+                yield break;
+            }
+
+            if (Provider == AgentProviderKind.Codex)
+            {
+                await using var defaultRuntime = new AcpliteRuntime();
+                var realCodex = defaultRuntime.GetAdapter(AgentProviderKind.Codex);
+                await foreach (var ev in realCodex.TailSessionTranscriptAsync(session, includeHistory, followLive, cancellationToken).ConfigureAwait(false))
+                {
                     yield return ev;
                 }
+                yield break;
             }
 
             if (followLive)

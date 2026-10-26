@@ -1319,7 +1319,7 @@ internal static class AcpMobilePage
     .prompt-textarea {
       flex: 1;
       min-height: 44px;
-      max-height: 132px;
+      max-height: 180px;
       padding: 10px 14px;
       border-radius: 12px;
       border: 1px solid var(--border);
@@ -1328,9 +1328,15 @@ internal static class AcpMobilePage
       line-height: 1.45;
       resize: none;
       outline: none;
-      transition: border-color 0.15s ease;
+      transition: min-height 0.16s ease, height 0.16s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    .prompt-textarea:focus { border-color: var(--border-strong); }
+    .prompt-textarea:focus,
+    .prompt-textarea.expanded {
+      min-height: 92px;
+      max-height: 180px;
+      border-color: var(--border-strong);
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.14);
+    }
     .send-btn {
       min-height: 44px;
       padding: 0 18px;
@@ -1751,9 +1757,28 @@ internal static class AcpMobilePage
   }
 
   function resizePromptTextarea() {
+    const isFocused = document.activeElement === promptInput || promptInput.classList.contains('expanded');
     promptInput.style.height = 'auto';
-    promptInput.style.height = Math.min(promptInput.scrollHeight, 132) + 'px';
+    if (isFocused) {
+      promptInput.style.height = Math.min(Math.max(promptInput.scrollHeight, 92), 180) + 'px';
+    } else {
+      promptInput.style.height = '44px';
+    }
   }
+
+  promptInput.addEventListener('focus', () => {
+    const wasNearBottom = isNearBottom();
+    promptInput.classList.add('expanded');
+    resizePromptTextarea();
+    if (wasNearBottom) {
+      requestAnimationFrame(() => scrollToBottom());
+    }
+  });
+
+  promptInput.addEventListener('blur', () => {
+    promptInput.classList.remove('expanded');
+    resizePromptTextarea();
+  });
 
   promptInput.addEventListener('input', resizePromptTextarea);
 
@@ -1834,6 +1859,8 @@ internal static class AcpMobilePage
     const text = (promptInput.value || '').trim();
     if (!text) return;
     promptInput.value = '';
+    promptInput.classList.remove('expanded');
+    promptInput.blur();
     resizePromptTextarea();
 
     if (!state.activeSessionKey) {
@@ -1841,7 +1868,8 @@ internal static class AcpMobilePage
         action: 'create_session',
         workingDirectory: state.defaultWorkingDirectory,
         prompt: text
-      });
+      }, { scrollMode: 'bottom' });
+      scrollToBottom();
       return;
     }
 
@@ -1873,14 +1901,15 @@ internal static class AcpMobilePage
         updateComposerModeUI();
       }
       syncLiveTurnIndicator();
-      scrollToBottom();
     }
+    scrollToBottom();
 
     await sendAction({
       action: actionName,
       sessionKey: state.activeSessionKey,
       prompt: text
-    });
+    }, { scrollMode: 'bottom' });
+    scrollToBottom();
   });
 
   el('newSessionForm').addEventListener('submit', async e => {
