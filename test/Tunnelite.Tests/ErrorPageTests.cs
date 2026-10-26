@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using Tunnelite.Sdk;
 using Tunnelite.Tests.Infrastructure;
 
@@ -43,13 +42,9 @@ public class ErrorPageTests(BareTunnelHost host) : IClassFixture<BareTunnelHost>
     [Fact]
     public async Task Unreachable_local_app_returns_a_self_contained_502()
     {
-        // Reserve a port without listening: no other test can claim it and accidentally respond.
-        using var unavailable = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        unavailable.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-        var port = ((IPEndPoint)unavailable.LocalEndPoint!).Port;
         await using var tunnel = new HttpTunnelClient(new HttpTunnelRequest
         {
-            LocalUrl = $"http://127.0.0.1:{port}", PublicUrl = host.PublicUrl,
+            LocalUrl = "http://127.0.0.1:1", PublicUrl = host.PublicUrl,
         }, null);
         await tunnel.ConnectAsync().WaitAsync(TestData.Timeout);
         using var client = Browser();
