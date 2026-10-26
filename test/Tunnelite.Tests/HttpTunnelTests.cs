@@ -26,6 +26,8 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
     {
         Assert.Equal("User-agent: *\nDisallow: /local-secret", await _client.GetStringAsync("/robots.txt"));
         Assert.Equal("local-favicon", await _client.GetStringAsync("/favicon.ico"));
+        Assert.Equal("local-404-page", await _client.GetStringAsync("/404.html"));
+        Assert.Equal("local-500-page", await _client.GetStringAsync("/500.html"));
     }
 
     [Theory]
@@ -105,6 +107,8 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
     [Theory]
     [InlineData(204)]
     [InlineData(404)]
+    [InlineData(500)]
+    [InlineData(502)]
     [InlineData(418)]
     [InlineData(503)]
     public async Task Status_codes_are_forwarded(int statusCode)
@@ -112,6 +116,7 @@ public class HttpTunnelTests(TunnelHost host) : IClassFixture<TunnelHost>
         using var response = await _client.GetAsync($"/status/{statusCode}");
 
         Assert.Equal(statusCode, (int)response.StatusCode);
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
     }
 
     [Fact]

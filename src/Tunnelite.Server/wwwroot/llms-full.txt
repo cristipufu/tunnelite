@@ -84,7 +84,7 @@ Notes:
 
 - Local HTTPS URLs with self-signed or development certificates are accepted; the client does not validate the local certificate.
 - Subdomains are generated automatically (8 lowercase alphanumeric characters). The names `localhost`, `tunnelite` and `webhooks` are reserved.
-- A public HTTP request waits up to 30 seconds for the local application to respond. If the local application cannot be reached, the public URL shows a "The Tunnel Collapsed" error page; an unknown or disconnected subdomain shows a "Lost in the Tunnel" 404 page.
+- A public HTTP request waits up to 30 seconds for the local application to respond. If the local application cannot be reached, the public URL shows a 502 "Can’t reach the local app" page; an unknown or disconnected subdomain shows a 404 "Tunnel unavailable" page.
 
 ### Supported protocols
 
@@ -188,8 +188,8 @@ Tunnelite also provides a free webhook testing tool at https://webhooks.tunnelit
 
 ## Error pages
 
-- 404 "Oops! Lost in the Tunnel?": the subdomain has no active tunnel.
-- 500 "Oops! The Tunnel Collapsed!": the local application behind the tunnel could not be reached.
+- 404 "Tunnel unavailable": the address has no active tunnel or page.
+- 502 "Can’t reach the local app": the local application behind the tunnel could not be reached.
 
 ## License
 

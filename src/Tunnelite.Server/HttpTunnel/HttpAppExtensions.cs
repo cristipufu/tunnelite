@@ -20,10 +20,10 @@ public static class HttpAppExtensions
             GetRequestBodyAsync(context, requestId, requestsQueue, logger));
 
         app.MapPost("/tunnelite/request/{requestId}", (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
-            ForwardResponseBodyAsync(app, context, requestId, requestsQueue, logger));
+            ForwardResponseBodyAsync(context, requestId, requestsQueue, logger));
 
         app.MapDelete("/tunnelite/request/{requestId}", (HttpContext context, [FromRoute] Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger) =>
-            AbortRequestAsync(app, context, requestId, requestsQueue, logger));
+            AbortRequestAsync(context, requestId, requestsQueue, logger));
 
         app.MapMethods(
             pattern: "/",
@@ -189,7 +189,7 @@ public static class HttpAppExtensions
         }
     }
 
-    private static async Task ForwardResponseBodyAsync(WebApplication app, HttpContext context, Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger)
+    private static async Task ForwardResponseBodyAsync(HttpContext context, Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger)
     {
         HttpContext? deferredHttpContext = null;
         try
@@ -270,7 +270,7 @@ public static class HttpAppExtensions
                 try
                 {
                     if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
-                    else await ServerErrorAsync(app, deferredHttpContext);
+                    else await ServerErrorAsync(deferredHttpContext);
                 }
                 catch (Exception failure) when (failure is IOException or OperationCanceledException)
                 { deferredHttpContext.Abort(); }
@@ -289,7 +289,7 @@ public static class HttpAppExtensions
         }
     }
 
-    private static async Task AbortRequestAsync(WebApplication app, HttpContext context, Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger)
+    private static async Task AbortRequestAsync(HttpContext context, Guid requestId, HttpRequestsQueue requestsQueue, ILogger<Program> logger)
     {
         try
         {
@@ -301,7 +301,7 @@ public static class HttpAppExtensions
             }
 
             if (deferredHttpContext.Response.HasStarted) deferredHttpContext.Abort();
-            else await ServerErrorAsync(app, deferredHttpContext);
+            else await ServerErrorAsync(deferredHttpContext);
 
             await requestsQueue.CompleteAsync(requestId);
 
@@ -350,7 +350,7 @@ public static class HttpAppExtensions
 
             if (!tunnelStore.TryResolveActiveTunnel(context, out var tunnel, out var connectionId))
             {
-                await NotFoundAsync(app, context);
+                await NotFoundAsync(context);
                 return;
             }
 
@@ -406,13 +406,22 @@ public static class HttpAppExtensions
         ["og-image.png"] = "image/png",
         ["apple-touch-icon.png"] = "image/png",
         ["favicon.ico"] = "image/x-icon",
-        // previews of the error pages shown on tunnel subdomains
-        ["404.html"] = "text/html; charset=utf-8",
-        ["500.html"] = "text/html; charset=utf-8",
     };
 
     static async Task LandingSiteAsync(WebApplication app, HttpContext context, string path)
     {
+        // Keep the existing root-domain preview URLs, including the historical 500.html name.
+        // Tunnel requests never reach this branch, so these cannot shadow the local app's pages.
+        var errorPreview = path.Equals("404.html", StringComparison.OrdinalIgnoreCase) ? ErrorPages.NotFound
+            : path.Equals("500.html", StringComparison.OrdinalIgnoreCase) ? ErrorPages.BadGateway : null;
+        if (errorPreview is not null)
+        {
+            context.Response.ContentType = "text/html; charset=utf-8";
+            context.Response.Headers.CacheControl = "public, max-age=3600";
+            await context.Response.WriteAsync(errorPreview, context.RequestAborted);
+            return;
+        }
+
         if (string.IsNullOrEmpty(path))
         {
             var filePath = Path.Combine(app.Environment.WebRootPath, "index.html");
@@ -430,24 +439,22 @@ public static class HttpAppExtensions
             return;
         }
 
-        await NotFoundAsync(app, context);
+        await NotFoundAsync(context);
     }
 
-    static async Task NotFoundAsync(WebApplication app, HttpContext context)
+    static async Task NotFoundAsync(HttpContext context)
     {
-        var filePath = Path.Combine(app.Environment.WebRootPath, "404.html");
         context.Response.StatusCode = StatusCodes.Status404NotFound;
-        context.Response.ContentType = "text/html";
-        await context.Response.SendFileAsync(filePath);
+        context.Response.ContentType = "text/html; charset=utf-8";
+        await context.Response.WriteAsync(ErrorPages.NotFound, context.RequestAborted);
     }
 
-    static async Task ServerErrorAsync(WebApplication app, HttpContext context)
+    static async Task ServerErrorAsync(HttpContext context)
     {
-        var filePath = Path.Combine(app.Environment.WebRootPath, "500.html");
         context.Response.Clear();
         context.Response.StatusCode = StatusCodes.Status502BadGateway;
-        context.Response.ContentType = "text/html";
-        await context.Response.SendFileAsync(filePath);
+        context.Response.ContentType = "text/html; charset=utf-8";
+        await context.Response.WriteAsync(ErrorPages.BadGateway, context.RequestAborted);
     }
 
     static string RandomSubdomain(int length = 8)

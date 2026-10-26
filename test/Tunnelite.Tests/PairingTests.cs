@@ -40,6 +40,40 @@ public class PairingTests(PairingHost host) : IClassFixture<PairingHost>
 
     private string Code() => host.Tunnel.CreatePairingUrl().Split("#code=")[1];
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Revoked_and_expired_browsers_see_the_same_required_page_as_anonymous_browsers(bool expired)
+    {
+        using var anonymous = Browser();
+        anonymous.DefaultRequestHeaders.Accept.ParseAdd("text/html");
+        using var anonymousResponse = await anonymous.GetAsync("/hello");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+        var expected = await anonymousResponse.Content.ReadAsStringAsync();
+        Assert.Contains("<main id=\"card\" data-state=\"required\">", expected);
+        Assert.DoesNotContain("<script", expected, StringComparison.OrdinalIgnoreCase);
+
+        using var browser = Browser();
+        var name = expired ? "Expired page preview" : "Revoked page preview";
+        using var paired = await browser.PostAsJsonAsync("/_tunnelite/pair", new { code = Code(), name });
+        Assert.Equal(HttpStatusCode.NoContent, paired.StatusCode);
+        var now = host.Clock.Now;
+        if (expired) host.Clock.Now = now.AddDays(31);
+        else await host.Access.RevokeAsync(host.Access.State.Devices.Single(d => d.Name == name).Id);
+        try
+        {
+            browser.DefaultRequestHeaders.Accept.ParseAdd("text/html");
+            using var response = await browser.GetAsync("/hello");
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal("text/html", response.Content.Headers.ContentType!.MediaType);
+            Assert.Equal(expected, await response.Content.ReadAsStringAsync());
+            Assert.Contains("no-store", response.Headers.CacheControl!.ToString());
+            Assert.Contains("Accept", response.Headers.Vary);
+            Assert.False(response.Headers.Contains("Set-Cookie"));
+        }
+        finally { host.Clock.Now = now; }
+    }
+
     [Fact]
     public async Task Anonymous_requests_and_websocket_upgrades_are_refused()
     {

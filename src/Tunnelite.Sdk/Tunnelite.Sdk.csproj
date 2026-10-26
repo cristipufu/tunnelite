@@ -28,6 +28,8 @@
 	<ItemGroup>
 		<Compile Include="../Shared/EndpointIdentity.cs" Link="Protocol/EndpointIdentity.cs" />
 		<Compile Include="../Shared/ViewerTicket.cs" Link="Protocol/ViewerTicket.cs" />
+		<Compile Include="../Shared/PairingPage.cs" Link="Protocol/PairingPage.cs" />
+		<Compile Include="../Shared/BrowserPage.cs" Link="Protocol/BrowserPage.cs" />
 		<PackageReference Include="Nerdbank.MessagePack.SignalR" Version="1.3.85" />
 	</ItemGroup>
 

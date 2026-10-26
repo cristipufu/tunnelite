@@ -9,6 +9,8 @@
   <ItemGroup>
     <Compile Include="../Shared/EndpointIdentity.cs" Link="Protocol/EndpointIdentity.cs" />
     <Compile Include="../Shared/ViewerTicket.cs" Link="Protocol/ViewerTicket.cs" />
+    <Compile Include="../Shared/PairingPage.cs" Link="Protocol/PairingPage.cs" />
+    <Compile Include="../Shared/BrowserPage.cs" Link="Protocol/BrowserPage.cs" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.13" />
     <!-- Pin the patched MessagePack 2.x line while retaining legacy wire compatibility. -->
     <PackageReference Include="MessagePack" Version="2.5.303" />
