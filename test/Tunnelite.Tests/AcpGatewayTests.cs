@@ -177,7 +177,19 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
 
         try
         {
-            var discoveredSession = new AcpDiscoveredSession(
+            var oldSession = new AcpDiscoveredSession(
+                Provider: AgentProviderKind.Antigravity,
+                SessionId: "disc-agy-old",
+                Title: "Two Days Ago Session",
+                WorkingDirectory: Path.GetTempPath(),
+                TranscriptPath: tempTranscript,
+                UpdatedAt: DateTimeOffset.UtcNow.AddDays(-2),
+                CreatedAt: DateTimeOffset.UtcNow.AddDays(-2),
+                Model: "gemini-2.5-pro",
+                GitBranch: "main",
+                MessageCount: 45);
+
+            var activeSession = new AcpDiscoveredSession(
                 Provider: AgentProviderKind.Antigravity,
                 SessionId: "disc-agy-101",
                 Title: "Existing Antigravity Session",
@@ -187,16 +199,25 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
                 CreatedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
                 Model: "gemini-2.5-pro",
                 GitBranch: "feat/acp",
-                MessageCount: 2);
+                MessageCount: 45);
+
+            var historyEvents = new List<AcpEvent>();
+            for (var i = 1; i <= 43; i++)
+            {
+                historyEvents.Add(new AcpTranscriptHistoryEntryEvent(
+                    AgentProviderKind.Antigravity,
+                    "disc-agy-101",
+                    DateTimeOffset.UtcNow.AddMinutes(-50 + i),
+                    i % 2 == 1 ? "user" : "assistant",
+                    $"Historical message #{i}"));
+            }
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "user", "Initial desktop prompt"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "assistant", "Desktop response from transcript"));
 
             var fakeAgy = new ControllableTestAdapter(AgentProviderKind.Antigravity, "agy", "Google Antigravity")
             {
-                DiscoveredSessions = [discoveredSession],
-                TranscriptHistoryEvents =
-                [
-                    new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "user", "Initial desktop prompt"),
-                    new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "assistant", "Desktop response from transcript")
-                ]
+                DiscoveredSessions = [oldSession, activeSession],
+                TranscriptHistoryEvents = historyEvents
             };
 
             await using var runtime = new AcpliteRuntime([fakeAgy]);
@@ -206,7 +227,7 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             using var cts = new CancellationTokenSource(TestData.Timeout);
             using var client = new HttpClient { BaseAddress = new Uri(acpServer.LocalUrl), Timeout = TestData.Timeout };
 
-            // 1. Connect SSE stream (/api/events) and verify initial state_snapshot frame
+            // 1. Connect SSE stream (/api/events) and verify initial state_snapshot frame sorts active session to top
             using var sseReq = new HttpRequestMessage(HttpMethod.Get, "/api/events");
             using var sseRes = await client.SendAsync(sseReq, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             Assert.Equal(HttpStatusCode.OK, sseRes.StatusCode);
@@ -218,26 +239,37 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             Assert.StartsWith("data: ", firstSseLine);
             var firstEnv = JsonSerializer.Deserialize(firstSseLine!["data: ".Length..], AcpGatewayJsonContext.Default.AcpGatewayRealtimeEnvelope);
             Assert.NotNull(firstEnv?.State);
-            Assert.Single(firstEnv!.State!.Sessions);
+            Assert.Equal(2, firstEnv!.State!.Sessions.Count);
+            Assert.Equal("agy:disc-agy-101", firstEnv.State.Sessions[0].SessionKey);
+            Assert.True(firstEnv.State.Sessions[0].IsActiveNow);
+            Assert.False(firstEnv.State.Sessions[1].IsActiveNow);
             Assert.Equal("agy:disc-agy-101", firstEnv.State.ActiveSessionKey);
 
-            // 2. Wait briefly for background transcript tailing to populate timeline
-            AcpGatewayStateSnapshot? state = null;
-            for (var i = 0; i < 20; i++)
+            // 2. Verify default pagination shows only last 30 items with HasOlderMessages == true
+            var state = firstEnv.State;
+            Assert.NotNull(state.ActiveSession);
+            Assert.False(state.ActiveSession!.Summary.IsLiveAttached);
+            Assert.Equal(30, state.ActiveSession.Timeline.Count);
+            Assert.Equal(45, state.ActiveSession.TotalTimelineCount);
+            Assert.Equal(15, state.ActiveSession.HiddenOlderCount);
+            Assert.True(state.ActiveSession.HasOlderMessages);
+            Assert.Equal("Desktop response from transcript", state.ActiveSession.Timeline[^1].Text);
+
+            // 3. Load earlier messages on-demand via load_older action
+            using var loadOlderRes = await client.PostAsJsonAsync("/api/action", new AcpGatewayActionRequest
             {
-                state = await client.GetFromJsonAsync("/api/state", AcpGatewayJsonContext.Default.AcpGatewayStateSnapshot, cts.Token);
-                if (state?.ActiveSession?.Timeline.Count >= 2)
-                {
-                    break;
-                }
-                await Task.Delay(25, cts.Token);
-            }
+                Action = "load_older",
+                SessionKey = "agy:disc-agy-101",
+                TimelineLimit = 70
+            }, AcpGatewayJsonContext.Default.AcpGatewayActionRequest, cts.Token);
+            var loadOlderBody = await loadOlderRes.Content.ReadFromJsonAsync(AcpGatewayJsonContext.Default.AcpGatewayActionResponse, cts.Token);
+            Assert.NotNull(loadOlderBody?.Session);
+            Assert.Equal(45, loadOlderBody!.Session!.Timeline.Count);
+            Assert.Equal(0, loadOlderBody.Session.HiddenOlderCount);
+            Assert.False(loadOlderBody.Session.HasOlderMessages);
+            Assert.Equal("Historical message #1", loadOlderBody.Session.Timeline[0].Text);
 
-            Assert.NotNull(state?.ActiveSession);
-            Assert.False(state!.ActiveSession!.Summary.IsLiveAttached);
-            Assert.Contains(state.ActiveSession.Timeline, t => t.Text == "Desktop response from transcript");
-
-            // 3. Take over the discovered session from mobile -> upgrades from transcript tail to live handle!
+            // 4. Take over the discovered session from mobile -> upgrades from transcript tail to live handle!
             using var sendRes = await client.PostAsJsonAsync("/api/action", new AcpGatewayActionRequest
             {
                 Action = "send_prompt",
@@ -435,10 +467,13 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
 
         public async IAsyncEnumerable<AcpEvent> TailSessionTranscriptAsync(AcpDiscoveredSession session, bool includeHistory = true, bool followLive = true, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            foreach (var ev in TranscriptHistoryEvents)
+            if (includeHistory && session.SessionId == "disc-agy-101")
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return ev;
+                foreach (var ev in TranscriptHistoryEvents)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    yield return ev;
+                }
             }
 
             if (followLive)

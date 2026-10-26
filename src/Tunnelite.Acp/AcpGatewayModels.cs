@@ -17,6 +17,7 @@ public sealed record AcpGatewaySessionSummary
     public DateTimeOffset CreatedAt { get; init; }
     public bool IsLiveAttached { get; init; }
     public bool IsTurnActive { get; init; }
+    public bool IsActiveNow { get; init; }
     public bool HasPendingPermission { get; init; }
     public int QueuedPromptCount { get; init; }
     public int MessageCount { get; init; }
@@ -63,6 +64,9 @@ public sealed record AcpGatewaySessionDetail
 {
     public required AcpGatewaySessionSummary Summary { get; init; }
     public required IReadOnlyList<AcpGatewayTimelineItem> Timeline { get; init; }
+    public int TotalTimelineCount { get; init; }
+    public int HiddenOlderCount { get; init; }
+    public bool HasOlderMessages { get; init; }
     public required IReadOnlyList<AcpQueuedPromptItem> QueuedPrompts { get; init; }
     public required IReadOnlyList<AcpGatewayPendingPermission> PendingPermissions { get; init; }
 }
@@ -94,6 +98,7 @@ public sealed class AcpGatewayActionRequest
     public bool? Approved { get; set; }
     public string? SelectedOptionId { get; set; }
     public bool? AutoApproveTools { get; set; }
+    public int? TimelineLimit { get; set; }
 }
 
 public sealed record AcpGatewayActionResponse

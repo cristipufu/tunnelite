@@ -12,7 +12,10 @@ namespace Tunnelite.Acp;
 /// </summary>
 public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 {
-    private const int MaxTimelineItemsPerSession = 250;
+    private const int DefaultTimelinePageSize = 30;
+    private const int TimelinePageStep = 40;
+    private const int MaxTimelineItemsPerSession = 2000;
+    private const int MaxToolPayloadChars = 12000;
 
     private readonly AcpliteRuntime _runtime;
     private readonly bool _ownsRuntime;
@@ -24,6 +27,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
     private readonly ConcurrentDictionary<AgentProviderKind, AcpUsageSnapshot> _usageByProvider = new();
     private readonly ConcurrentDictionary<long, Func<AcpGatewayRealtimeEnvelope, Task>> _subscribers = new();
     private readonly CancellationTokenSource _lifetimeCts = new();
+    private Task? _monitorTask;
 
     private volatile IReadOnlyList<AcpProviderDescriptor> _providers = [];
     private volatile string? _activeSessionKey;
@@ -58,6 +62,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
+        _monitorTask ??= Task.Run(() => MonitorActiveSessionsLoopAsync(_lifetimeCts.Token), _lifetimeCts.Token);
     }
 
     public async Task RefreshDiscoveryAsync(CancellationToken cancellationToken = default)
@@ -196,8 +201,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
         summaries.Sort(static (a, b) =>
         {
-            var activeCompare = b.IsTurnActive.CompareTo(a.IsTurnActive);
-            if (activeCompare != 0) return activeCompare;
+            var permCompare = b.HasPendingPermission.CompareTo(a.HasPendingPermission);
+            if (permCompare != 0) return permCompare;
+            var activeTurnCompare = b.IsTurnActive.CompareTo(a.IsTurnActive);
+            if (activeTurnCompare != 0) return activeTurnCompare;
+            var activeNowCompare = b.IsActiveNow.CompareTo(a.IsActiveNow);
+            if (activeNowCompare != 0) return activeNowCompare;
             var attachedCompare = b.IsLiveAttached.CompareTo(a.IsLiveAttached);
             if (attachedCompare != 0) return attachedCompare;
             return b.UpdatedAt.CompareTo(a.UpdatedAt);
@@ -262,8 +271,50 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     return new AcpGatewayActionResponse { Ok = false, Message = "Session not found." };
                 }
 
+                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    session.VisibleTimelineLimit = request.TimelineLimit is > 0
+                        ? request.TimelineLimit.Value
+                        : DefaultTimelinePageSize;
+                }
+                finally
+                {
+                    session.Gate.Release();
+                }
+
                 _activeSessionKey = session.SessionKey;
                 await EnsureTailingStartedAsync(session, cancellationToken).ConfigureAwait(false);
+                var detail = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false);
+                return new AcpGatewayActionResponse
+                {
+                    Ok = true,
+                    SessionKey = session.SessionKey,
+                    Session = detail
+                };
+            }
+
+            case "load_older":
+            {
+                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+                if (session is null)
+                {
+                    return new AcpGatewayActionResponse { Ok = false, Message = "Session not found." };
+                }
+
+                await EnsureTailingStartedAsync(session, cancellationToken).ConfigureAwait(false);
+                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    session.VisibleTimelineLimit = request.TimelineLimit is > 0
+                        ? request.TimelineLimit.Value
+                        : session.VisibleTimelineLimit + TimelinePageStep;
+                }
+                finally
+                {
+                    session.Gate.Release();
+                }
+
                 var detail = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false);
                 return new AcpGatewayActionResponse
                 {
@@ -693,35 +744,131 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
     private async Task EnsureTailingStartedAsync(ManagedSession session, CancellationToken cancellationToken)
     {
-        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await session.AttachGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (session.LiveHandle is not null ||
-                session.TailTask is not null ||
-                string.IsNullOrWhiteSpace(session.TranscriptPath) ||
-                !File.Exists(session.TranscriptPath))
+            AcpDiscoveredSession? discoveredForHistory = null;
+            await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                return;
+                if (session.LiveHandle is not null ||
+                    string.IsNullOrWhiteSpace(session.TranscriptPath) ||
+                    !File.Exists(session.TranscriptPath))
+                {
+                    return;
+                }
+
+                if (!session.InitialHistoryLoaded)
+                {
+                    discoveredForHistory = new AcpDiscoveredSession(
+                        Provider: session.Provider,
+                        SessionId: session.SessionId,
+                        Title: session.Title,
+                        WorkingDirectory: session.WorkingDirectory,
+                        TranscriptPath: session.TranscriptPath!,
+                        UpdatedAt: session.UpdatedAt,
+                        CreatedAt: session.CreatedAt,
+                        Model: session.Model,
+                        GitBranch: session.GitBranch);
+                }
+            }
+            finally
+            {
+                session.Gate.Release();
             }
 
-            var tailCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-            session.TailCts = tailCts;
-            var discovered = new AcpDiscoveredSession(
-                Provider: session.Provider,
-                SessionId: session.SessionId,
-                Title: session.Title,
-                WorkingDirectory: session.WorkingDirectory,
-                TranscriptPath: session.TranscriptPath!,
-                UpdatedAt: session.UpdatedAt,
-                CreatedAt: session.CreatedAt,
-                Model: session.Model,
-                GitBranch: session.GitBranch);
+            if (discoveredForHistory is not null)
+            {
+                var historicalEvents = new List<AcpEvent>();
+                try
+                {
+                    var adapter = _runtime.GetAdapter(session.Provider);
+                    await foreach (var ev in adapter.TailSessionTranscriptAsync(
+                        discoveredForHistory,
+                        includeHistory: true,
+                        followLive: false,
+                        cancellationToken).ConfigureAwait(false))
+                    {
+                        historicalEvents.Add(ev);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // Ignore malformed transcript history lines
+                }
 
-            session.TailTask = Task.Run(() => PumpTranscriptTailAsync(session, discovered, tailCts.Token), tailCts.Token);
+                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (!session.InitialHistoryLoaded && session.LiveHandle is null)
+                    {
+                        foreach (var ev in historicalEvents)
+                        {
+                            ApplyEventUnderGate(session, ev, isHistoricalLoad: true, out _, out _, out _, out _);
+                        }
+                        session.InitialHistoryLoaded = true;
+                        try
+                        {
+                            var fi = new FileInfo(discoveredForHistory.TranscriptPath);
+                            if (fi.Exists)
+                            {
+                                session.LastObservedFileLength = fi.Length;
+                                var lastWrite = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
+                                if (lastWrite > session.UpdatedAt)
+                                {
+                                    session.UpdatedAt = lastWrite;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore file stat error
+                        }
+                    }
+                }
+                finally
+                {
+                    session.Gate.Release();
+                }
+            }
+
+            await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (session.LiveHandle is not null ||
+                    session.TailTask is not null ||
+                    string.IsNullOrWhiteSpace(session.TranscriptPath))
+                {
+                    return;
+                }
+
+                var tailCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+                session.TailCts = tailCts;
+                var discovered = new AcpDiscoveredSession(
+                    Provider: session.Provider,
+                    SessionId: session.SessionId,
+                    Title: session.Title,
+                    WorkingDirectory: session.WorkingDirectory,
+                    TranscriptPath: session.TranscriptPath!,
+                    UpdatedAt: session.UpdatedAt,
+                    CreatedAt: session.CreatedAt,
+                    Model: session.Model,
+                    GitBranch: session.GitBranch);
+
+                session.TailTask = Task.Run(() => PumpTranscriptTailAsync(session, discovered, tailCts.Token), tailCts.Token);
+            }
+            finally
+            {
+                session.Gate.Release();
+            }
         }
         finally
         {
-            session.Gate.Release();
+            session.AttachGate.Release();
         }
     }
 
@@ -735,7 +882,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             var adapter = _runtime.GetAdapter(session.Provider);
             await foreach (var ev in adapter.TailSessionTranscriptAsync(
                 discovered,
-                includeHistory: true,
+                includeHistory: false,
                 followLive: true,
                 cancellationToken).ConfigureAwait(false))
             {
@@ -749,6 +896,96 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         catch
         {
             // Ignore transcript tail errors
+        }
+    }
+
+    private async Task MonitorActiveSessionsLoopAsync(CancellationToken cancellationToken)
+    {
+        var tick = 0;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2.5), cancellationToken).ConfigureAwait(false);
+                tick++;
+
+                if (tick % 5 == 0)
+                {
+                    await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                foreach (var (_, session) in _sessions)
+                {
+                    var path = session.TranscriptPath;
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        continue;
+                    }
+
+                    FileInfo fi;
+                    try
+                    {
+                        fi = new FileInfo(path);
+                        if (!fi.Exists)
+                        {
+                            continue;
+                        }
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    var lastWriteUtc = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
+                    var currentLen = fi.Length;
+                    AcpGatewaySessionSummary? changedSummary = null;
+
+                    await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        var lengthGrew = session.LastObservedFileLength > 0 && currentLen > session.LastObservedFileLength;
+                        var writeAdvanced = lastWriteUtc > session.UpdatedAt.AddSeconds(1);
+
+                        if (session.LastObservedFileLength == 0)
+                        {
+                            session.LastObservedFileLength = currentLen;
+                        }
+
+                        if (lengthGrew || writeAdvanced)
+                        {
+                            session.LastObservedFileLength = currentLen;
+                            session.UpdatedAt = lastWriteUtc > DateTimeOffset.UtcNow ? DateTimeOffset.UtcNow : lastWriteUtc;
+                            if (lengthGrew)
+                            {
+                                session.LastDiskActivityAt = DateTimeOffset.UtcNow;
+                            }
+                            changedSummary = BuildSessionSummaryUnderGate(session);
+                        }
+                    }
+                    finally
+                    {
+                        session.Gate.Release();
+                    }
+
+                    if (changedSummary is not null)
+                    {
+                        await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
+                        {
+                            Type = "session_summary",
+                            SessionKey = session.SessionKey,
+                            Summary = changedSummary
+                        }).ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch
+            {
+                // Ignore background monitor iteration errors
+            }
         }
     }
 
@@ -796,234 +1033,19 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 return;
             }
 
-            session.UpdatedAt = acpEvent.Timestamp;
-
-            switch (acpEvent)
+            if (isFromTranscriptTail)
             {
-                case AcpSessionStartedEvent started:
-                {
-                    if (!string.IsNullOrWhiteSpace(started.Model))
-                    {
-                        session.Model = started.Model;
-                    }
-                    if (!string.IsNullOrWhiteSpace(started.WorkingDirectory))
-                    {
-                        session.WorkingDirectory = started.WorkingDirectory;
-                    }
-                    break;
-                }
-
-                case AcpTranscriptHistoryEntryEvent hist:
-                {
-                    var item = new AcpGatewayTimelineItem
-                    {
-                        Id = NextItemId(),
-                        Kind = "message",
-                        Role = hist.Role,
-                        Timestamp = hist.Timestamp,
-                        Text = hist.Text,
-                        Thinking = hist.Thinking,
-                        ToolName = hist.ToolName,
-                        ToolCallId = hist.ToolCallId
-                    };
-                    AddTimelineItemUnderGate(session, item);
-                    itemToBroadcast = item;
-                    break;
-                }
-
-                case AcpThinkingDeltaEvent thinkingDelta:
-                {
-                    var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-                    if (last is not null && last.Role == "assistant" && last.Kind == "message")
-                    {
-                        var updated = last with
-                        {
-                            Thinking = (last.Thinking ?? string.Empty) + thinkingDelta.Delta,
-                            Timestamp = thinkingDelta.Timestamp
-                        };
-                        session.Timeline[^1] = updated;
-                        itemToBroadcast = updated;
-                    }
-                    else
-                    {
-                        var created = new AcpGatewayTimelineItem
-                        {
-                            Id = NextItemId(),
-                            Kind = "message",
-                            Role = "assistant",
-                            Timestamp = thinkingDelta.Timestamp,
-                            Thinking = thinkingDelta.Delta,
-                            Text = string.Empty
-                        };
-                        AddTimelineItemUnderGate(session, created);
-                        itemToBroadcast = created;
-                    }
-                    break;
-                }
-
-                case AcpAssistantTextDeltaEvent textDelta:
-                {
-                    var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-                    if (last is not null && last.Role == "assistant" && last.Kind == "message")
-                    {
-                        var updated = last with
-                        {
-                            Text = (last.Text ?? string.Empty) + textDelta.Delta,
-                            Timestamp = textDelta.Timestamp
-                        };
-                        session.Timeline[^1] = updated;
-                        itemToBroadcast = updated;
-                    }
-                    else
-                    {
-                        var created = new AcpGatewayTimelineItem
-                        {
-                            Id = NextItemId(),
-                            Kind = "message",
-                            Role = "assistant",
-                            Timestamp = textDelta.Timestamp,
-                            Text = textDelta.Delta
-                        };
-                        AddTimelineItemUnderGate(session, created);
-                        itemToBroadcast = created;
-                    }
-                    break;
-                }
-
-                case AcpToolCallEvent toolCall:
-                {
-                    var existingIdx = -1;
-                    for (var i = session.Timeline.Count - 1; i >= 0; i--)
-                    {
-                        if (session.Timeline[i].Kind == "tool_call" &&
-                            string.Equals(session.Timeline[i].ToolCallId, toolCall.ToolCallId, StringComparison.Ordinal))
-                        {
-                            existingIdx = i;
-                            break;
-                        }
-                    }
-
-                    if (existingIdx >= 0)
-                    {
-                        var updated = session.Timeline[existingIdx] with
-                        {
-                            ToolStatus = toolCall.Status,
-                            RawOutput = toolCall.RawOutput ?? session.Timeline[existingIdx].RawOutput,
-                            Timestamp = toolCall.Timestamp
-                        };
-                        session.Timeline[existingIdx] = updated;
-                        itemToBroadcast = updated;
-                    }
-                    else
-                    {
-                        var created = new AcpGatewayTimelineItem
-                        {
-                            Id = NextItemId(),
-                            Kind = "tool_call",
-                            Role = "assistant",
-                            Timestamp = toolCall.Timestamp,
-                            Text = toolCall.Title,
-                            ToolCallId = toolCall.ToolCallId,
-                            ToolName = toolCall.ToolName,
-                            ToolKind = toolCall.Kind,
-                            ToolStatus = toolCall.Status,
-                            RawInputJson = toolCall.RawInputJson,
-                            RawOutput = toolCall.RawOutput
-                        };
-                        AddTimelineItemUnderGate(session, created);
-                        itemToBroadcast = created;
-                    }
-                    break;
-                }
-
-                case AcpPermissionRequestEvent perm:
-                {
-                    var pending = new AcpGatewayPendingPermission
-                    {
-                        RequestId = perm.RequestId,
-                        SessionKey = session.SessionKey,
-                        Provider = session.Provider.ToShortId(),
-                        ToolName = perm.ToolName,
-                        Title = perm.Title,
-                        Description = perm.Description,
-                        RawInputJson = perm.RawInputJson,
-                        Options = perm.Options,
-                        RequestedAt = perm.Timestamp
-                    };
-                    session.PendingPermissions.RemoveAll(p => string.Equals(p.RequestId, perm.RequestId, StringComparison.Ordinal));
-                    session.PendingPermissions.Add(pending);
-                    permissionsToBroadcast = session.PendingPermissions.ToArray();
-                    break;
-                }
-
-                case AcpPromptQueueUpdatedEvent queueUpdated:
-                {
-                    // Detect if the head item was just auto-drained on turn completion
-                    if (session.LastKnownQueue.Count > queueUpdated.QueuedPrompts.Count &&
-                        session.LastKnownQueue.Count > 0)
-                    {
-                        var previousHead = session.LastKnownQueue[0];
-                        var stillPresent = queueUpdated.QueuedPrompts.Any(q => string.Equals(q.QueueItemId, previousHead.QueueItemId, StringComparison.Ordinal));
-                        if (!stillPresent && session.LastTurnJustCompleted)
-                        {
-                            autoDrainedUserItem = new AcpGatewayTimelineItem
-                            {
-                                Id = NextItemId(),
-                                Kind = "message",
-                                Role = "user",
-                                Timestamp = queueUpdated.Timestamp,
-                                Text = previousHead.Prompt,
-                                Badge = "QUEUED"
-                            };
-                            AddTimelineItemUnderGate(session, autoDrainedUserItem);
-                        }
-                    }
-
-                    session.LastTurnJustCompleted = false;
-                    session.LastKnownQueue = queueUpdated.QueuedPrompts;
-                    queueToBroadcast = queueUpdated.QueuedPrompts;
-                    break;
-                }
-
-                case AcpInterruptionEvent interruption:
-                {
-                    var item = new AcpGatewayTimelineItem
-                    {
-                        Id = NextItemId(),
-                        Kind = "interruption",
-                        Role = "system",
-                        Timestamp = interruption.Timestamp,
-                        Text = interruption.Classification.Message,
-                        Badge = interruption.Classification.Kind.ToString(),
-                        IsError = true,
-                        IsRetryable = interruption.Classification.IsRetryable
-                    };
-                    AddTimelineItemUnderGate(session, item);
-                    itemToBroadcast = item;
-                    break;
-                }
-
-                case AcpTurnCompletedEvent turnCompleted:
-                {
-                    session.LastTurnJustCompleted = true;
-                    var item = new AcpGatewayTimelineItem
-                    {
-                        Id = NextItemId(),
-                        Kind = "turn_completed",
-                        Role = "system",
-                        Timestamp = turnCompleted.Timestamp,
-                        StopReason = turnCompleted.StopReason,
-                        InputTokens = turnCompleted.InputTokens,
-                        OutputTokens = turnCompleted.OutputTokens,
-                        CostUsd = turnCompleted.CostUsd,
-                        DurationMs = turnCompleted.DurationMs,
-                        IsError = string.Equals(turnCompleted.StopReason, "error", StringComparison.OrdinalIgnoreCase)
-                    };
-                    AddTimelineItemUnderGate(session, item);
-                    itemToBroadcast = item;
-                    break;
-                }
+                session.LastDiskActivityAt = DateTimeOffset.UtcNow;
             }
+
+            ApplyEventUnderGate(
+                session,
+                acpEvent,
+                isHistoricalLoad: false,
+                out itemToBroadcast,
+                out queueToBroadcast,
+                out permissionsToBroadcast,
+                out autoDrainedUserItem);
 
             summaryToBroadcast = BuildSessionSummaryUnderGate(session);
         }
@@ -1156,6 +1178,319 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         }).ConfigureAwait(false);
     }
 
+    private void ApplyEventUnderGate(
+        ManagedSession session,
+        AcpEvent acpEvent,
+        bool isHistoricalLoad,
+        out AcpGatewayTimelineItem? itemToBroadcast,
+        out IReadOnlyList<AcpQueuedPromptItem>? queueToBroadcast,
+        out IReadOnlyList<AcpGatewayPendingPermission>? permissionsToBroadcast,
+        out AcpGatewayTimelineItem? autoDrainedUserItem)
+    {
+        itemToBroadcast = null;
+        queueToBroadcast = null;
+        permissionsToBroadcast = null;
+        autoDrainedUserItem = null;
+
+        if (!isHistoricalLoad || acpEvent.Timestamp > session.UpdatedAt)
+        {
+            session.UpdatedAt = acpEvent.Timestamp;
+        }
+
+        switch (acpEvent)
+        {
+            case AcpSessionStartedEvent started:
+            {
+                if (!string.IsNullOrWhiteSpace(started.Model))
+                {
+                    session.Model = started.Model;
+                }
+                if (!string.IsNullOrWhiteSpace(started.WorkingDirectory))
+                {
+                    session.WorkingDirectory = started.WorkingDirectory;
+                }
+                break;
+            }
+
+            case AcpTranscriptHistoryEntryEvent hist:
+            {
+                if (string.IsNullOrWhiteSpace(hist.Text) &&
+                    string.IsNullOrWhiteSpace(hist.Thinking) &&
+                    string.IsNullOrWhiteSpace(hist.ToolName))
+                {
+                    break;
+                }
+
+                var isToolOnly = !string.IsNullOrWhiteSpace(hist.ToolName) &&
+                                 string.IsNullOrWhiteSpace(hist.Thinking) &&
+                                 (hist.Role is "tool" or "system" ||
+                                  string.IsNullOrWhiteSpace(hist.Text) ||
+                                  string.Equals(hist.Text, hist.ToolName, StringComparison.Ordinal));
+
+                if (isToolOnly)
+                {
+                    var toolItem = new AcpGatewayTimelineItem
+                    {
+                        Id = NextItemId(),
+                        Kind = "tool_call",
+                        Role = "assistant",
+                        Timestamp = hist.Timestamp,
+                        Text = string.IsNullOrWhiteSpace(hist.Text) ? hist.ToolName : TruncateLargePayload(hist.Text, 240),
+                        ToolName = hist.ToolName,
+                        ToolCallId = hist.ToolCallId,
+                        ToolStatus = "completed",
+                        RawOutput = !string.IsNullOrWhiteSpace(hist.Text) && !string.Equals(hist.Text, hist.ToolName, StringComparison.Ordinal)
+                            ? TruncateLargePayload(hist.Text, MaxToolPayloadChars)
+                            : null
+                    };
+                    AddTimelineItemUnderGate(session, toolItem);
+                    itemToBroadcast = toolItem;
+                    break;
+                }
+
+                // Coalesce consecutive assistant thinking + text steps
+                var prev = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
+                if (hist.Role == "assistant" &&
+                    prev is not null &&
+                    prev.Role == "assistant" &&
+                    prev.Kind == "message" &&
+                    string.IsNullOrWhiteSpace(prev.Text) &&
+                    !string.IsNullOrWhiteSpace(prev.Thinking) &&
+                    string.IsNullOrWhiteSpace(hist.Thinking) &&
+                    !string.IsNullOrWhiteSpace(hist.Text))
+                {
+                    var merged = prev with
+                    {
+                        Text = hist.Text,
+                        Timestamp = hist.Timestamp,
+                        ToolName = hist.ToolName ?? prev.ToolName,
+                        ToolCallId = hist.ToolCallId ?? prev.ToolCallId
+                    };
+                    session.Timeline[^1] = merged;
+                    itemToBroadcast = merged;
+                    break;
+                }
+
+                var item = new AcpGatewayTimelineItem
+                {
+                    Id = NextItemId(),
+                    Kind = "message",
+                    Role = hist.Role,
+                    Timestamp = hist.Timestamp,
+                    Text = hist.Text,
+                    Thinking = TruncateLargePayload(hist.Thinking, MaxToolPayloadChars),
+                    ToolName = hist.ToolName,
+                    ToolCallId = hist.ToolCallId,
+                    Badge = !string.IsNullOrWhiteSpace(hist.ToolName) ? $"TOOL: {hist.ToolName}" : null
+                };
+                AddTimelineItemUnderGate(session, item);
+                itemToBroadcast = item;
+                break;
+            }
+
+            case AcpThinkingDeltaEvent thinkingDelta:
+            {
+                var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
+                if (last is not null && last.Role == "assistant" && last.Kind == "message")
+                {
+                    var updated = last with
+                    {
+                        Thinking = TruncateLargePayload((last.Thinking ?? string.Empty) + thinkingDelta.Delta, MaxToolPayloadChars),
+                        Timestamp = thinkingDelta.Timestamp
+                    };
+                    session.Timeline[^1] = updated;
+                    itemToBroadcast = updated;
+                }
+                else
+                {
+                    var created = new AcpGatewayTimelineItem
+                    {
+                        Id = NextItemId(),
+                        Kind = "message",
+                        Role = "assistant",
+                        Timestamp = thinkingDelta.Timestamp,
+                        Thinking = TruncateLargePayload(thinkingDelta.Delta, MaxToolPayloadChars),
+                        Text = string.Empty
+                    };
+                    AddTimelineItemUnderGate(session, created);
+                    itemToBroadcast = created;
+                }
+                break;
+            }
+
+            case AcpAssistantTextDeltaEvent textDelta:
+            {
+                var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
+                if (last is not null && last.Role == "assistant" && last.Kind == "message")
+                {
+                    var updated = last with
+                    {
+                        Text = (last.Text ?? string.Empty) + textDelta.Delta,
+                        Timestamp = textDelta.Timestamp
+                    };
+                    session.Timeline[^1] = updated;
+                    itemToBroadcast = updated;
+                }
+                else
+                {
+                    var created = new AcpGatewayTimelineItem
+                    {
+                        Id = NextItemId(),
+                        Kind = "message",
+                        Role = "assistant",
+                        Timestamp = textDelta.Timestamp,
+                        Text = textDelta.Delta
+                    };
+                    AddTimelineItemUnderGate(session, created);
+                    itemToBroadcast = created;
+                }
+                break;
+            }
+
+            case AcpToolCallEvent toolCall:
+            {
+                var existingIdx = -1;
+                for (var i = session.Timeline.Count - 1; i >= 0; i--)
+                {
+                    if (session.Timeline[i].Kind == "tool_call" &&
+                        string.Equals(session.Timeline[i].ToolCallId, toolCall.ToolCallId, StringComparison.Ordinal))
+                    {
+                        existingIdx = i;
+                        break;
+                    }
+                }
+
+                if (existingIdx >= 0)
+                {
+                    var updated = session.Timeline[existingIdx] with
+                    {
+                        ToolStatus = toolCall.Status,
+                        RawOutput = TruncateLargePayload(toolCall.RawOutput, MaxToolPayloadChars) ?? session.Timeline[existingIdx].RawOutput,
+                        Timestamp = toolCall.Timestamp
+                    };
+                    session.Timeline[existingIdx] = updated;
+                    itemToBroadcast = updated;
+                }
+                else
+                {
+                    var created = new AcpGatewayTimelineItem
+                    {
+                        Id = NextItemId(),
+                        Kind = "tool_call",
+                        Role = "assistant",
+                        Timestamp = toolCall.Timestamp,
+                        Text = toolCall.Title,
+                        ToolCallId = toolCall.ToolCallId,
+                        ToolName = toolCall.ToolName,
+                        ToolKind = toolCall.Kind,
+                        ToolStatus = toolCall.Status,
+                        RawInputJson = TruncateLargePayload(toolCall.RawInputJson, MaxToolPayloadChars),
+                        RawOutput = TruncateLargePayload(toolCall.RawOutput, MaxToolPayloadChars)
+                    };
+                    AddTimelineItemUnderGate(session, created);
+                    itemToBroadcast = created;
+                }
+                break;
+            }
+
+            case AcpPermissionRequestEvent perm:
+            {
+                var pending = new AcpGatewayPendingPermission
+                {
+                    RequestId = perm.RequestId,
+                    SessionKey = session.SessionKey,
+                    Provider = session.Provider.ToShortId(),
+                    ToolName = perm.ToolName,
+                    Title = perm.Title,
+                    Description = perm.Description,
+                    RawInputJson = TruncateLargePayload(perm.RawInputJson, MaxToolPayloadChars),
+                    Options = perm.Options,
+                    RequestedAt = perm.Timestamp
+                };
+                session.PendingPermissions.RemoveAll(p => string.Equals(p.RequestId, perm.RequestId, StringComparison.Ordinal));
+                session.PendingPermissions.Add(pending);
+                permissionsToBroadcast = session.PendingPermissions.ToArray();
+                break;
+            }
+
+            case AcpPromptQueueUpdatedEvent queueUpdated:
+            {
+                if (session.LastKnownQueue.Count > queueUpdated.QueuedPrompts.Count &&
+                    session.LastKnownQueue.Count > 0)
+                {
+                    var previousHead = session.LastKnownQueue[0];
+                    var stillPresent = queueUpdated.QueuedPrompts.Any(q => string.Equals(q.QueueItemId, previousHead.QueueItemId, StringComparison.Ordinal));
+                    if (!stillPresent && session.LastTurnJustCompleted)
+                    {
+                        autoDrainedUserItem = new AcpGatewayTimelineItem
+                        {
+                            Id = NextItemId(),
+                            Kind = "message",
+                            Role = "user",
+                            Timestamp = queueUpdated.Timestamp,
+                            Text = previousHead.Prompt,
+                            Badge = "QUEUED"
+                        };
+                        AddTimelineItemUnderGate(session, autoDrainedUserItem);
+                    }
+                }
+
+                session.LastTurnJustCompleted = false;
+                session.LastKnownQueue = queueUpdated.QueuedPrompts;
+                queueToBroadcast = queueUpdated.QueuedPrompts;
+                break;
+            }
+
+            case AcpInterruptionEvent interruption:
+            {
+                var item = new AcpGatewayTimelineItem
+                {
+                    Id = NextItemId(),
+                    Kind = "interruption",
+                    Role = "system",
+                    Timestamp = interruption.Timestamp,
+                    Text = interruption.Classification.Message,
+                    Badge = interruption.Classification.Kind.ToString(),
+                    IsError = true,
+                    IsRetryable = interruption.Classification.IsRetryable
+                };
+                AddTimelineItemUnderGate(session, item);
+                itemToBroadcast = item;
+                break;
+            }
+
+            case AcpTurnCompletedEvent turnCompleted:
+            {
+                session.LastTurnJustCompleted = true;
+                var item = new AcpGatewayTimelineItem
+                {
+                    Id = NextItemId(),
+                    Kind = "turn_completed",
+                    Role = "system",
+                    Timestamp = turnCompleted.Timestamp,
+                    StopReason = turnCompleted.StopReason,
+                    InputTokens = turnCompleted.InputTokens,
+                    OutputTokens = turnCompleted.OutputTokens,
+                    CostUsd = turnCompleted.CostUsd,
+                    DurationMs = turnCompleted.DurationMs,
+                    IsError = string.Equals(turnCompleted.StopReason, "error", StringComparison.OrdinalIgnoreCase)
+                };
+                AddTimelineItemUnderGate(session, item);
+                itemToBroadcast = item;
+                break;
+            }
+        }
+    }
+
+    private static string? TruncateLargePayload(string? value, int maxChars)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= maxChars)
+        {
+            return value;
+        }
+        return value[..maxChars] + "\n... [truncated]";
+    }
+
     private static void AddTimelineItemUnderGate(ManagedSession session, AcpGatewayTimelineItem item)
     {
         session.Timeline.Add(item);
@@ -1184,6 +1519,11 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
     {
         var handle = session.LiveHandle;
         var queuedCount = handle?.GetQueuedPrompts().Count ?? 0;
+        var now = DateTimeOffset.UtcNow;
+        var recentDiskTurn = (now - session.LastDiskActivityAt) <= TimeSpan.FromSeconds(35);
+        var isTurnActive = (handle?.IsTurnActive ?? false) || recentDiskTurn;
+        var isActiveNow = isTurnActive || handle is not null || (now - session.UpdatedAt) <= TimeSpan.FromMinutes(10);
+
         return new AcpGatewaySessionSummary
         {
             SessionKey = session.SessionKey,
@@ -1197,7 +1537,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             UpdatedAt = session.UpdatedAt,
             CreatedAt = session.CreatedAt,
             IsLiveAttached = handle is not null,
-            IsTurnActive = handle?.IsTurnActive ?? false,
+            IsTurnActive = isTurnActive,
+            IsActiveNow = isActiveNow,
             HasPendingPermission = session.PendingPermissions.Count > 0,
             QueuedPromptCount = queuedCount,
             MessageCount = Math.Max(session.DiscoveredMessageCount, session.Timeline.Count)
@@ -1213,10 +1554,20 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         {
             var summary = BuildSessionSummaryUnderGate(session);
             var queued = session.LiveHandle?.GetQueuedPrompts() ?? [];
+            var totalCount = session.Timeline.Count;
+            var limit = Math.Max(DefaultTimelinePageSize, session.VisibleTimelineLimit);
+            var skip = Math.Max(0, totalCount - limit);
+            var slice = skip == 0
+                ? session.Timeline.ToArray()
+                : session.Timeline.GetRange(skip, totalCount - skip).ToArray();
+
             return new AcpGatewaySessionDetail
             {
                 Summary = summary,
-                Timeline = session.Timeline.ToArray(),
+                Timeline = slice,
+                TotalTimelineCount = totalCount,
+                HiddenOlderCount = skip,
+                HasOlderMessages = skip > 0,
                 QueuedPrompts = queued,
                 PendingPermissions = session.PendingPermissions.ToArray()
             };
@@ -1294,6 +1645,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
             await _lifetimeCts.CancelAsync().ConfigureAwait(false);
             _subscribers.Clear();
+            await WaitBackgroundTaskQuietlyAsync(_monitorTask).ConfigureAwait(false);
 
             var uniqueSessions = new HashSet<ManagedSession>(ReferenceEqualityComparer.Instance);
             foreach (var (_, session) in _sessions)
@@ -1360,8 +1712,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         public bool AutoApproveTools { get; set; }
         public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
         public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+        public DateTimeOffset LastDiskActivityAt { get; set; } = DateTimeOffset.MinValue;
+        public long LastObservedFileLength { get; set; }
         public int DiscoveredMessageCount { get; set; }
         public bool IsDiscoveredOnDisk { get; set; }
+        public bool InitialHistoryLoaded { get; set; }
+        public int VisibleTimelineLimit { get; set; } = DefaultTimelinePageSize;
 
         public IAcpSessionHandle? LiveHandle { get; set; }
         public CancellationTokenSource? TailCts { get; set; }

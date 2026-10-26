@@ -237,6 +237,48 @@ internal static class AcpMobilePage
       border-color: var(--border-strong);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
+    .session-card.is-live {
+      border-left: 3px solid var(--success);
+      background: linear-gradient(90deg, rgba(34, 197, 94, 0.09) 0%, rgba(15, 23, 42, 0.65) 55%);
+    }
+    .session-card.is-live.active {
+      background: linear-gradient(90deg, rgba(34, 197, 94, 0.14) 0%, rgba(56, 189, 248, 0.12) 60%);
+      border-color: var(--border-strong);
+      border-left: 3px solid var(--success);
+    }
+    .session-section-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      padding: 8px 8px 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .session-section-label.live {
+      color: #4ade80;
+    }
+    .live-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(34, 197, 94, 0.14);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    .live-pill.perm {
+      background: rgba(245, 158, 11, 0.16);
+      color: #fbbf24;
+      border-color: rgba(245, 158, 11, 0.35);
+    }
     .session-card-top {
       display: flex;
       align-items: center;
@@ -308,6 +350,7 @@ internal static class AcpMobilePage
       flex-direction: column;
       min-width: 0;
       height: 100dvh;
+      position: relative;
     }
     .topbar {
       padding: calc(10px + var(--safe-top)) 14px 10px;
@@ -387,7 +430,7 @@ internal static class AcpMobilePage
       padding: 16px 14px 20px;
       display: flex;
       flex-direction: column;
-      scroll-behavior: smooth;
+      overscroll-behavior-y: contain;
     }
     .timeline-inner {
       width: 100%;
@@ -396,6 +439,60 @@ internal static class AcpMobilePage
       display: flex;
       flex-direction: column;
       gap: 12px;
+    }
+    .load-older-bar {
+      display: flex;
+      justify-content: center;
+      padding: 2px 0 6px;
+    }
+    .load-older-btn {
+      min-height: 36px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      background: rgba(56, 189, 248, 0.08);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .load-older-btn:hover {
+      background: rgba(56, 189, 248, 0.16);
+    }
+    .load-older-btn:active {
+      transform: scale(0.97);
+    }
+    .load-older-btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    .jump-bottom-btn {
+      align-self: center;
+      margin: -44px auto 8px;
+      z-index: 25;
+      min-height: 34px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(12px);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .jump-bottom-btn.unread {
+      background: rgba(34, 197, 94, 0.18);
+      border-color: rgba(34, 197, 94, 0.45);
+      color: #4ade80;
     }
     .hero-card {
       width: 100%;
@@ -1119,6 +1216,8 @@ internal static class AcpMobilePage
         <div id="timelineInner" class="timeline-inner"></div>
       </div>
 
+      <button id="jumpBottomBtn" type="button" class="jump-bottom-btn" style="display:none;">↓ Jump to latest</button>
+
       <div id="permTray" class="perm-tray" style="display:none;"></div>
       <div id="queueTray" class="queue-tray" style="display:none;"></div>
 
@@ -1214,6 +1313,8 @@ internal static class AcpMobilePage
     providerFilter: 'all',
     searchQuery: '',
     busyActionMode: 'queue',
+    loadingOlder: false,
+    hasUnreadBelow: false,
     ws: null,
     sse: null
   };
@@ -1230,6 +1331,7 @@ internal static class AcpMobilePage
   const connStatusPill = el('connStatusPill');
   const timelineWrap = el('timelineWrap');
   const timelineInner = el('timelineInner');
+  const jumpBottomBtn = el('jumpBottomBtn');
   const permTray = el('permTray');
   const queueTray = el('queueTray');
   const busyModeBar = el('busyModeBar');
@@ -1239,6 +1341,51 @@ internal static class AcpMobilePage
   const quotasSheet = el('quotasSheet');
   const toastBanner = el('toastBanner');
   let toastTimer = null;
+
+  function isNearBottom() {
+    return (timelineWrap.scrollHeight - timelineWrap.scrollTop - timelineWrap.clientHeight) < 150;
+  }
+
+  function updateJumpBottomButton() {
+    if (!jumpBottomBtn) return;
+    const items = (state.activeSession && state.activeSession.timeline) || [];
+    if (items.length === 0 || isNearBottom()) {
+      state.hasUnreadBelow = false;
+      jumpBottomBtn.style.display = 'none';
+      jumpBottomBtn.classList.remove('unread');
+      return;
+    }
+    jumpBottomBtn.style.display = 'inline-flex';
+    if (state.hasUnreadBelow) {
+      jumpBottomBtn.classList.add('unread');
+      jumpBottomBtn.textContent = '↓ New activity · Jump to bottom';
+    } else {
+      jumpBottomBtn.classList.remove('unread');
+      jumpBottomBtn.textContent = '↓ Jump to latest';
+    }
+  }
+
+  function scrollToBottom() {
+    timelineWrap.scrollTop = timelineWrap.scrollHeight;
+    requestAnimationFrame(() => {
+      timelineWrap.scrollTop = timelineWrap.scrollHeight;
+      state.hasUnreadBelow = false;
+      updateJumpBottomButton();
+    });
+  }
+
+  timelineWrap.addEventListener('scroll', () => {
+    if (isNearBottom()) {
+      state.hasUnreadBelow = false;
+    }
+    updateJumpBottomButton();
+  }, { passive: true });
+
+  if (jumpBottomBtn) {
+    jumpBottomBtn.addEventListener('click', () => {
+      scrollToBottom();
+    });
+  }
 
   function showToast(message) {
     if (!message || !toastBanner) return;
@@ -1378,7 +1525,7 @@ internal static class AcpMobilePage
     });
   });
 
-  async function sendAction(payload) {
+  async function sendAction(payload, options) {
     try {
       const res = await fetch('/api/action', {
         method: 'POST',
@@ -1388,13 +1535,30 @@ internal static class AcpMobilePage
       if (!res.ok) return null;
       const data = await res.json();
       if (data.state) applyStateSnapshot(data.state);
-      else if (data.session) applySessionDetail(data.session);
+      else if (data.session) applySessionDetail(data.session, options);
       if (!data.ok && data.message) showToast(data.message);
       return data;
     } catch {
       showToast('Network error sending action.');
       return null;
     }
+  }
+
+  function isSessionLive(s) {
+    if (!s) return false;
+    return !!(s.hasPendingPermission || s.isTurnActive || s.isActiveNow || s.isLiveAttached);
+  }
+
+  function sortSessionsInPlace() {
+    state.sessions.sort((a, b) => {
+      if (!!a.hasPendingPermission !== !!b.hasPendingPermission) return a.hasPendingPermission ? -1 : 1;
+      if (!!a.isTurnActive !== !!b.isTurnActive) return a.isTurnActive ? -1 : 1;
+      if (!!a.isActiveNow !== !!b.isActiveNow) return a.isActiveNow ? -1 : 1;
+      if (!!a.isLiveAttached !== !!b.isLiveAttached) return a.isLiveAttached ? -1 : 1;
+      const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return tb - ta;
+    });
   }
 
   function applyStateSnapshot(snap) {
@@ -1405,6 +1569,7 @@ internal static class AcpMobilePage
     state.providers = snap.providers || [];
     state.usageSnapshots = snap.usageSnapshots || [];
     state.sessions = snap.sessions || [];
+    sortSessionsInPlace();
     state.recentDirectories = snap.recentDirectories || [];
     state.activeSessionKey = snap.activeSessionKey || (state.sessions[0] && state.sessions[0].sessionKey) || null;
     if (snap.activeSession) {
@@ -1418,21 +1583,28 @@ internal static class AcpMobilePage
     renderProviderFilters();
     renderSessionList();
     renderActiveSessionHeader();
-    renderTimeline(true);
+    renderTimeline({ scrollMode: 'bottom' });
     renderPermissionTray();
     renderQueueTray();
     updateComposerModeUI();
     if (quotasSheet.classList.contains('open')) renderQuotasModal();
   }
 
-  function applySessionDetail(detail) {
+  function applySessionDetail(detail, options) {
     if (!detail || !detail.summary) return;
+    const prevKey = state.activeSessionKey;
     state.activeSession = detail;
     state.activeSessionKey = detail.summary.sessionKey;
     upsertSessionSummary(detail.summary);
     renderSessionList();
     renderActiveSessionHeader();
-    renderTimeline(true);
+    const scrollMode = (options && options.scrollMode) ||
+      (prevKey !== state.activeSessionKey ? 'bottom' : 'bottom');
+    renderTimeline({
+      scrollMode,
+      prevScrollHeight: options && options.prevScrollHeight,
+      prevScrollTop: options && options.prevScrollTop
+    });
     renderPermissionTray();
     renderQueueTray();
     updateComposerModeUI();
@@ -1443,6 +1615,33 @@ internal static class AcpMobilePage
     const idx = state.sessions.findIndex(s => s.sessionKey === summary.sessionKey);
     if (idx >= 0) state.sessions[idx] = summary;
     else state.sessions.unshift(summary);
+    sortSessionsInPlace();
+  }
+
+  async function loadOlderMessages() {
+    if (state.loadingOlder || !state.activeSession || !state.activeSessionKey) return;
+    const currentLen = (state.activeSession.timeline || []).length;
+    const prevScrollHeight = timelineWrap.scrollHeight;
+    const prevScrollTop = timelineWrap.scrollTop;
+    state.loadingOlder = true;
+    const btn = timelineInner.querySelector('.load-older-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Loading earlier messages…';
+    }
+    try {
+      await sendAction({
+        action: 'load_older',
+        sessionKey: state.activeSessionKey,
+        timelineLimit: currentLen + 40
+      }, {
+        scrollMode: 'preserve',
+        prevScrollHeight,
+        prevScrollTop
+      });
+    } finally {
+      state.loadingOlder = false;
+    }
   }
 
   function handleRealtimeEnvelope(env) {
@@ -1457,7 +1656,7 @@ internal static class AcpMobilePage
     }
     if (env.type === 'action_result') {
       if (env.state) applyStateSnapshot(env.state);
-      else if (env.session) applySessionDetail(env.session);
+      else if (env.session && !state.loadingOlder) applySessionDetail(env.session);
       return;
     }
     if (env.type === 'session_summary' && env.summary) {
@@ -1472,11 +1671,17 @@ internal static class AcpMobilePage
     }
     if (env.sessionKey && env.sessionKey === state.activeSessionKey && state.activeSession) {
       if (env.type === 'timeline_item' && env.timelineItem) {
-        const list = state.activeSession.timeline || [];
+        const wasNearBottom = isNearBottom();
+        if (!state.activeSession.timeline) state.activeSession.timeline = [];
+        const list = state.activeSession.timeline;
         const existingIdx = list.findIndex(i => i.id === env.timelineItem.id);
-        if (existingIdx >= 0) list[existingIdx] = env.timelineItem;
-        else list.push(env.timelineItem);
-        renderTimeline(false);
+        if (existingIdx >= 0) {
+          list[existingIdx] = env.timelineItem;
+        } else {
+          list.push(env.timelineItem);
+          state.activeSession.totalTimelineCount = (state.activeSession.totalTimelineCount || list.length - 1) + 1;
+        }
+        upsertTimelineItemDom(env.timelineItem, wasNearBottom);
       } else if (env.type === 'queue_updated' && env.queuedPrompts) {
         state.activeSession.queuedPrompts = env.queuedPrompts;
         renderQueueTray();
@@ -1519,6 +1724,91 @@ internal static class AcpMobilePage
     });
   }
 
+  function createSessionCardNode(s) {
+    const live = isSessionLive(s);
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'session-card' +
+      (s.sessionKey === state.activeSessionKey ? ' active' : '') +
+      (live ? ' is-live' : '');
+
+    const top = document.createElement('div');
+    top.className = 'session-card-top';
+
+    const leftTags = document.createElement('div');
+    leftTags.style.display = 'flex';
+    leftTags.style.alignItems = 'center';
+    leftTags.style.gap = '6px';
+
+    const pTag = document.createElement('span');
+    pTag.className = `provider-tag provider-${s.provider}`;
+    pTag.textContent = s.provider;
+    leftTags.appendChild(pTag);
+
+    if (s.hasPendingPermission) {
+      const pill = document.createElement('span');
+      pill.className = 'live-pill perm';
+      const dot = document.createElement('span');
+      dot.className = 'status-dot perm';
+      pill.append(dot, document.createTextNode('Approval'));
+      leftTags.appendChild(pill);
+    } else if (s.isTurnActive) {
+      const pill = document.createElement('span');
+      pill.className = 'live-pill';
+      const dot = document.createElement('span');
+      dot.className = 'status-dot busy';
+      pill.append(dot, document.createTextNode('Working'));
+      leftTags.appendChild(pill);
+    } else if (live) {
+      const pill = document.createElement('span');
+      pill.className = 'live-pill';
+      const dot = document.createElement('span');
+      dot.className = 'status-dot busy';
+      pill.append(dot, document.createTextNode('Live'));
+      leftTags.appendChild(pill);
+    }
+
+    top.appendChild(leftTags);
+
+    const statusWrap = document.createElement('div');
+    statusWrap.style.display = 'flex';
+    statusWrap.style.alignItems = 'center';
+    statusWrap.style.gap = '6px';
+    statusWrap.style.fontSize = '11px';
+    statusWrap.style.color = 'var(--muted)';
+
+    if (s.queuedPromptCount > 0) {
+      const qBadge = document.createElement('span');
+      qBadge.style.color = 'var(--accent)';
+      qBadge.style.fontWeight = '700';
+      qBadge.textContent = `${s.queuedPromptCount} queued`;
+      statusWrap.appendChild(qBadge);
+    }
+
+    const rel = document.createElement('span');
+    rel.textContent = formatRelativeTime(s.updatedAt);
+    statusWrap.appendChild(rel);
+    top.appendChild(statusWrap);
+
+    const title = document.createElement('div');
+    title.className = 'session-title';
+    title.textContent = s.title;
+
+    const meta = document.createElement('div');
+    meta.className = 'session-meta';
+    const repo = document.createElement('span');
+    repo.className = 'session-repo';
+    repo.textContent = formatRepoAndBranch(s.workingDirectory, s.gitBranch);
+    meta.appendChild(repo);
+
+    card.append(top, title, meta);
+    card.addEventListener('click', () => {
+      closeOverlays();
+      sendAction({ action: 'select_session', sessionKey: s.sessionKey }, { scrollMode: 'bottom' });
+    });
+    return card;
+  }
+
   function renderSessionList() {
     sessionList.replaceChildren();
     const filtered = state.sessions.filter(s => {
@@ -1539,67 +1829,34 @@ internal static class AcpMobilePage
       return;
     }
 
-    filtered.forEach(s => {
-      const card = document.createElement('button');
-      card.type = 'button';
-      card.className = 'session-card' + (s.sessionKey === state.activeSessionKey ? ' active' : '');
+    const liveSessions = filtered.filter(isSessionLive);
+    const recentSessions = filtered.filter(s => !isSessionLive(s));
 
-      const top = document.createElement('div');
-      top.className = 'session-card-top';
+    if (liveSessions.length > 0) {
+      const liveHeader = document.createElement('div');
+      liveHeader.className = 'session-section-label live';
+      const dot = document.createElement('span');
+      dot.className = 'status-dot busy';
+      liveHeader.append(dot, document.createTextNode(`Active / Live (${liveSessions.length})`));
+      sessionList.appendChild(liveHeader);
 
-      const pTag = document.createElement('span');
-      pTag.className = `provider-tag provider-${s.provider}`;
-      pTag.textContent = s.provider;
-      top.appendChild(pTag);
-
-      const statusWrap = document.createElement('div');
-      statusWrap.style.display = 'flex';
-      statusWrap.style.alignItems = 'center';
-      statusWrap.style.gap = '6px';
-      statusWrap.style.fontSize = '11px';
-      statusWrap.style.color = 'var(--muted)';
-
-      if (s.hasPendingPermission) {
-        const dot = document.createElement('span');
-        dot.className = 'status-dot perm';
-        statusWrap.appendChild(dot);
-      } else if (s.isTurnActive) {
-        const dot = document.createElement('span');
-        dot.className = 'status-dot busy';
-        statusWrap.appendChild(dot);
-      }
-
-      if (s.queuedPromptCount > 0) {
-        const qBadge = document.createElement('span');
-        qBadge.style.color = 'var(--accent)';
-        qBadge.style.fontWeight = '700';
-        qBadge.textContent = `${s.queuedPromptCount} queued`;
-        statusWrap.appendChild(qBadge);
-      }
-
-      const rel = document.createElement('span');
-      rel.textContent = formatRelativeTime(s.updatedAt);
-      statusWrap.appendChild(rel);
-      top.appendChild(statusWrap);
-
-      const title = document.createElement('div');
-      title.className = 'session-title';
-      title.textContent = s.title;
-
-      const meta = document.createElement('div');
-      meta.className = 'session-meta';
-      const repo = document.createElement('span');
-      repo.className = 'session-repo';
-      repo.textContent = formatRepoAndBranch(s.workingDirectory, s.gitBranch);
-      meta.appendChild(repo);
-
-      card.append(top, title, meta);
-      card.addEventListener('click', () => {
-        closeOverlays();
-        sendAction({ action: 'select_session', sessionKey: s.sessionKey });
+      liveSessions.forEach(s => {
+        sessionList.appendChild(createSessionCardNode(s));
       });
-      sessionList.appendChild(card);
-    });
+    }
+
+    if (recentSessions.length > 0) {
+      if (liveSessions.length > 0) {
+        const recentHeader = document.createElement('div');
+        recentHeader.className = 'session-section-label';
+        recentHeader.textContent = `Recent History (${recentSessions.length})`;
+        sessionList.appendChild(recentHeader);
+      }
+
+      recentSessions.forEach(s => {
+        sessionList.appendChild(createSessionCardNode(s));
+      });
+    }
   }
 
   function renderActiveSessionHeader() {
@@ -1612,10 +1869,10 @@ internal static class AcpMobilePage
 
     activeSessionTitle.textContent = `[${s.provider.toUpperCase()}] ${s.title}`;
     const stateLabel = s.isTurnActive
-      ? 'WORKING'
-      : s.isLiveAttached
-        ? 'LIVE ATTACHED'
-        : 'TRANSCRIPT TAIL';
+      ? '● WORKING'
+      : (s.isActiveNow || s.isLiveAttached)
+        ? '● LIVE'
+        : 'READY';
     activeSessionMeta.textContent = `${formatRepoAndBranch(s.workingDirectory, s.gitBranch)}${s.model ? ' · ' + s.model : ''} · ${stateLabel}`;
   }
 
@@ -1688,9 +1945,151 @@ internal static class AcpMobilePage
     container.appendChild(p);
   }
 
-  function renderTimeline(forceScrollBottom) {
-    const nearBottom = forceScrollBottom ||
-      (timelineWrap.scrollHeight - timelineWrap.scrollTop - timelineWrap.clientHeight < 120);
+  function createTimelineItemNode(item) {
+    if (item.kind === 'tool_call') {
+      const card = document.createElement('div');
+      card.className = 'tool-card';
+      card.dataset.itemId = item.id;
+      const header = document.createElement('div');
+      header.className = 'tool-header';
+
+      const title = document.createElement('div');
+      title.className = 'tool-title';
+      title.textContent = `${item.toolName || 'tool'} · ${item.text || ''}`;
+
+      const badge = document.createElement('span');
+      const isRunning = item.toolStatus === 'in_progress';
+      badge.className = 'tool-status ' + (isRunning ? 'running' : 'done');
+      badge.textContent = isRunning ? 'Running' : 'Done';
+
+      header.append(title, badge);
+      card.appendChild(header);
+
+      if (item.rawInputJson || item.rawOutput) {
+        const details = document.createElement('div');
+        details.className = 'tool-details';
+        details.textContent = [item.rawInputJson, item.rawOutput].filter(Boolean).join('\n\n');
+        card.appendChild(details);
+        header.addEventListener('click', () => card.classList.toggle('open'));
+      }
+      return card;
+    }
+
+    if (item.kind === 'turn_completed') {
+      const row = document.createElement('div');
+      row.className = 'msg-row system';
+      row.dataset.itemId = item.id;
+      const pill = document.createElement('div');
+      pill.className = 'turn-pill';
+      const parts = [`Turn ${item.stopReason || 'completed'}`];
+      if (item.durationMs) parts.push(`${(item.durationMs / 1000).toFixed(1)}s`);
+      if (item.inputTokens || item.outputTokens) parts.push(`${item.inputTokens || 0} in / ${item.outputTokens || 0} out tok`);
+      if (item.costUsd) parts.push(`$${Number(item.costUsd).toFixed(3)}`);
+      pill.textContent = parts.join(' · ');
+      row.appendChild(pill);
+      return row;
+    }
+
+    if (item.kind === 'interruption') {
+      const alert = document.createElement('div');
+      alert.className = 'alert-card';
+      alert.dataset.itemId = item.id;
+      alert.textContent = `[${item.badge || 'Alert'}] ${item.text || ''}`;
+      return alert;
+    }
+
+    if (item.kind === 'system_note') {
+      const row = document.createElement('div');
+      row.className = 'msg-row system';
+      row.dataset.itemId = item.id;
+      const pill = document.createElement('div');
+      pill.className = 'turn-pill';
+      pill.textContent = item.text || '';
+      row.appendChild(pill);
+      return row;
+    }
+
+    const row = document.createElement('div');
+    row.className = `msg-row ${item.role === 'user' ? 'user' : 'assistant'}`;
+    row.dataset.itemId = item.id;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+
+    if (item.badge) {
+      const b = document.createElement('div');
+      b.className = 'msg-badge';
+      b.textContent = item.badge;
+      bubble.appendChild(b);
+    }
+
+    if (item.thinking) {
+      const details = document.createElement('details');
+      details.className = 'thinking-box';
+      const summary = document.createElement('summary');
+      summary.className = 'thinking-summary';
+      summary.textContent = 'Agent Reasoning / Thinking';
+      const body = document.createElement('div');
+      body.className = 'thinking-body';
+      body.textContent = item.thinking;
+      details.append(summary, body);
+      bubble.appendChild(details);
+    }
+
+    if (item.text) {
+      const content = document.createElement('div');
+      content.className = 'msg-content';
+      appendFormattedMessageContent(content, item.text);
+      bubble.appendChild(content);
+    }
+
+    row.appendChild(bubble);
+    return row;
+  }
+
+  function upsertTimelineItemDom(item, wasNearBottom) {
+    if (timelineInner.querySelector('.hero-card')) {
+      renderTimeline({ scrollMode: 'bottom' });
+      return;
+    }
+
+    let existingNode = null;
+    const children = timelineInner.children;
+    for (let i = children.length - 1; i >= 0; i--) {
+      if (children[i].dataset && children[i].dataset.itemId === item.id) {
+        existingNode = children[i];
+        break;
+      }
+    }
+
+    const newNode = createTimelineItemNode(item);
+    if (existingNode) {
+      if (existingNode.classList.contains('open')) {
+        newNode.classList.add('open');
+      }
+      const prevDetails = existingNode.querySelector('details.thinking-box');
+      const nextDetails = newNode.querySelector('details.thinking-box');
+      if (prevDetails && nextDetails && prevDetails.open) {
+        nextDetails.open = true;
+      }
+      existingNode.replaceWith(newNode);
+    } else {
+      timelineInner.appendChild(newNode);
+    }
+
+    if (wasNearBottom) {
+      scrollToBottom();
+    } else {
+      state.hasUnreadBelow = true;
+      updateJumpBottomButton();
+    }
+  }
+
+  function renderTimeline(options) {
+    const scrollMode = typeof options === 'boolean'
+      ? (options ? 'bottom' : 'auto')
+      : ((options && options.scrollMode) || 'auto');
+    const wasNearBottom = scrollMode === 'bottom' || isNearBottom();
 
     timelineInner.replaceChildren();
     const items = (state.activeSession && state.activeSession.timeline) || [];
@@ -1736,112 +2135,36 @@ internal static class AcpMobilePage
       steps.append(stepsTitle, s1, s2, s3);
       box.append(iconWrap, h2, p, steps);
       timelineInner.appendChild(box);
+      updateJumpBottomButton();
       return;
     }
 
+    if (state.activeSession && state.activeSession.hasOlderMessages) {
+      const bar = document.createElement('div');
+      bar.className = 'load-older-bar';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'load-older-btn';
+      const hiddenCount = state.activeSession.hiddenOlderCount || 0;
+      const totalCount = state.activeSession.totalTimelineCount || (items.length + hiddenCount);
+      btn.textContent = `↑ Load earlier messages (${hiddenCount} older · showing last ${items.length} of ${totalCount})`;
+      btn.addEventListener('click', loadOlderMessages);
+      bar.appendChild(btn);
+      timelineInner.appendChild(bar);
+    }
+
     items.forEach(item => {
-      if (item.kind === 'tool_call') {
-        const card = document.createElement('div');
-        card.className = 'tool-card';
-        const header = document.createElement('div');
-        header.className = 'tool-header';
-
-        const title = document.createElement('div');
-        title.className = 'tool-title';
-        title.textContent = `${item.toolName || 'tool'} · ${item.text || ''}`;
-
-        const badge = document.createElement('span');
-        const isRunning = item.toolStatus === 'in_progress';
-        badge.className = 'tool-status ' + (isRunning ? 'running' : 'done');
-        badge.textContent = isRunning ? 'Running' : 'Done';
-
-        header.append(title, badge);
-        card.appendChild(header);
-
-        if (item.rawInputJson || item.rawOutput) {
-          const details = document.createElement('div');
-          details.className = 'tool-details';
-          details.textContent = [item.rawInputJson, item.rawOutput].filter(Boolean).join('\n\n');
-          card.appendChild(details);
-          header.addEventListener('click', () => card.classList.toggle('open'));
-        }
-        timelineInner.appendChild(card);
-        return;
-      }
-
-      if (item.kind === 'turn_completed') {
-        const row = document.createElement('div');
-        row.className = 'msg-row system';
-        const pill = document.createElement('div');
-        pill.className = 'turn-pill';
-        const parts = [`Turn ${item.stopReason || 'completed'}`];
-        if (item.durationMs) parts.push(`${(item.durationMs / 1000).toFixed(1)}s`);
-        if (item.inputTokens || item.outputTokens) parts.push(`${item.inputTokens || 0} in / ${item.outputTokens || 0} out tok`);
-        if (item.costUsd) parts.push(`$${Number(item.costUsd).toFixed(3)}`);
-        pill.textContent = parts.join(' · ');
-        row.appendChild(pill);
-        timelineInner.appendChild(row);
-        return;
-      }
-
-      if (item.kind === 'interruption') {
-        const alert = document.createElement('div');
-        alert.className = 'alert-card';
-        alert.textContent = `[${item.badge || 'Alert'}] ${item.text || ''}`;
-        timelineInner.appendChild(alert);
-        return;
-      }
-
-      if (item.kind === 'system_note') {
-        const row = document.createElement('div');
-        row.className = 'msg-row system';
-        const pill = document.createElement('div');
-        pill.className = 'turn-pill';
-        pill.textContent = item.text || '';
-        row.appendChild(pill);
-        timelineInner.appendChild(row);
-        return;
-      }
-
-      const row = document.createElement('div');
-      row.className = `msg-row ${item.role === 'user' ? 'user' : 'assistant'}`;
-
-      const bubble = document.createElement('div');
-      bubble.className = 'msg-bubble';
-
-      if (item.badge) {
-        const b = document.createElement('div');
-        b.className = 'msg-badge';
-        b.textContent = item.badge;
-        bubble.appendChild(b);
-      }
-
-      if (item.thinking) {
-        const details = document.createElement('details');
-        details.className = 'thinking-box';
-        const summary = document.createElement('summary');
-        summary.className = 'thinking-summary';
-        summary.textContent = 'Agent Reasoning / Thinking';
-        const body = document.createElement('div');
-        body.className = 'thinking-body';
-        body.textContent = item.thinking;
-        details.append(summary, body);
-        bubble.appendChild(details);
-      }
-
-      if (item.text) {
-        const content = document.createElement('div');
-        content.className = 'msg-content';
-        appendFormattedMessageContent(content, item.text);
-        bubble.appendChild(content);
-      }
-
-      row.appendChild(bubble);
-      timelineInner.appendChild(row);
+      timelineInner.appendChild(createTimelineItemNode(item));
     });
 
-    if (nearBottom) {
-      timelineWrap.scrollTop = timelineWrap.scrollHeight;
+    if (scrollMode === 'preserve' && options && typeof options.prevScrollHeight === 'number') {
+      const heightDelta = timelineWrap.scrollHeight - options.prevScrollHeight;
+      timelineWrap.scrollTop = (options.prevScrollTop || 0) + Math.max(0, heightDelta);
+      updateJumpBottomButton();
+    } else if (wasNearBottom) {
+      scrollToBottom();
+    } else {
+      updateJumpBottomButton();
     }
   }
 
