@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Text;
+using System.Text.Json;
 using Acplite.Sdk;
 using Acplite.Sdk.Protocol;
 using Acplite.Sdk.Runtime;
@@ -780,8 +782,17 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             if (discoveredForHistory is not null)
             {
                 var historicalEvents = new List<AcpEvent>();
+                Queue<AntigravityToolSnapshot>? agToolSnapshots = null;
                 try
                 {
+                    if (session.Provider == AgentProviderKind.Antigravity &&
+                        File.Exists(discoveredForHistory.TranscriptPath))
+                    {
+                        agToolSnapshots = await ExtractAntigravityToolSnapshotsAsync(
+                            discoveredForHistory.TranscriptPath,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
                     var adapter = _runtime.GetAdapter(session.Provider);
                     await foreach (var ev in adapter.TailSessionTranscriptAsync(
                         discoveredForHistory,
@@ -806,10 +817,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 {
                     if (!session.InitialHistoryLoaded && session.LiveHandle is null)
                     {
+                        session.PendingAgToolSnapshots = agToolSnapshots;
                         foreach (var ev in historicalEvents)
                         {
                             ApplyEventUnderGate(session, ev, isHistoricalLoad: true, out _, out _, out _, out _);
                         }
+                        session.PendingAgToolSnapshots = null;
                         session.InitialHistoryLoaded = true;
                         try
                         {
@@ -1214,34 +1227,50 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
             case AcpTranscriptHistoryEntryEvent hist:
             {
-                if (string.IsNullOrWhiteSpace(hist.Text) &&
+                var cleanedText = hist.Role == "user" ? CleanUserTranscriptText(hist.Text) : hist.Text;
+                if (string.IsNullOrWhiteSpace(cleanedText) &&
                     string.IsNullOrWhiteSpace(hist.Thinking) &&
                     string.IsNullOrWhiteSpace(hist.ToolName))
                 {
                     break;
                 }
 
+                AntigravityToolSnapshot? agToolSnap = null;
+                if (!string.IsNullOrWhiteSpace(hist.ToolName) &&
+                    hist.Role != "user" &&
+                    session.PendingAgToolSnapshots is { Count: > 0 } queue)
+                {
+                    agToolSnap = queue.Dequeue();
+                }
+
                 var isToolOnly = !string.IsNullOrWhiteSpace(hist.ToolName) &&
                                  string.IsNullOrWhiteSpace(hist.Thinking) &&
                                  (hist.Role is "tool" or "system" ||
-                                  string.IsNullOrWhiteSpace(hist.Text) ||
-                                  string.Equals(hist.Text, hist.ToolName, StringComparison.Ordinal));
+                                  string.IsNullOrWhiteSpace(cleanedText) ||
+                                  string.Equals(cleanedText, hist.ToolName, StringComparison.OrdinalIgnoreCase));
 
                 if (isToolOnly)
                 {
+                    var effectiveToolName = agToolSnap?.ToolName ?? hist.ToolName;
+                    var rawOut = agToolSnap?.RawOutput ??
+                        (!string.IsNullOrWhiteSpace(cleanedText) && !string.Equals(cleanedText, hist.ToolName, StringComparison.OrdinalIgnoreCase)
+                            ? TruncateLargePayload(cleanedText, MaxToolPayloadChars)
+                            : null);
+                    var summaryText = agToolSnap?.Summary ??
+                        NormalizeToolText(effectiveToolName, cleanedText, agToolSnap?.RawInputJson);
+
                     var toolItem = new AcpGatewayTimelineItem
                     {
                         Id = NextItemId(),
                         Kind = "tool_call",
                         Role = "assistant",
                         Timestamp = hist.Timestamp,
-                        Text = string.IsNullOrWhiteSpace(hist.Text) ? hist.ToolName : TruncateLargePayload(hist.Text, 240),
-                        ToolName = hist.ToolName,
+                        Text = summaryText,
+                        ToolName = effectiveToolName,
                         ToolCallId = hist.ToolCallId,
                         ToolStatus = "completed",
-                        RawOutput = !string.IsNullOrWhiteSpace(hist.Text) && !string.Equals(hist.Text, hist.ToolName, StringComparison.Ordinal)
-                            ? TruncateLargePayload(hist.Text, MaxToolPayloadChars)
-                            : null
+                        RawInputJson = agToolSnap?.RawInputJson,
+                        RawOutput = rawOut
                     };
                     AddTimelineItemUnderGate(session, toolItem);
                     itemToBroadcast = toolItem;
@@ -1257,34 +1286,54 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     string.IsNullOrWhiteSpace(prev.Text) &&
                     !string.IsNullOrWhiteSpace(prev.Thinking) &&
                     string.IsNullOrWhiteSpace(hist.Thinking) &&
-                    !string.IsNullOrWhiteSpace(hist.Text))
+                    !string.IsNullOrWhiteSpace(cleanedText))
                 {
                     var merged = prev with
                     {
-                        Text = hist.Text,
+                        Text = cleanedText,
                         Timestamp = hist.Timestamp,
                         ToolName = hist.ToolName ?? prev.ToolName,
                         ToolCallId = hist.ToolCallId ?? prev.ToolCallId
                     };
                     session.Timeline[^1] = merged;
                     itemToBroadcast = merged;
-                    break;
+                }
+                else
+                {
+                    var item = new AcpGatewayTimelineItem
+                    {
+                        Id = NextItemId(),
+                        Kind = "message",
+                        Role = hist.Role,
+                        Timestamp = hist.Timestamp,
+                        Text = cleanedText,
+                        Thinking = TruncateLargePayload(hist.Thinking, MaxToolPayloadChars),
+                        ToolName = hist.ToolName,
+                        ToolCallId = hist.ToolCallId
+                    };
+                    AddTimelineItemUnderGate(session, item);
+                    itemToBroadcast = item;
                 }
 
-                var item = new AcpGatewayTimelineItem
+                if (!string.IsNullOrWhiteSpace(hist.ToolName) && hist.Role != "user")
                 {
-                    Id = NextItemId(),
-                    Kind = "message",
-                    Role = hist.Role,
-                    Timestamp = hist.Timestamp,
-                    Text = hist.Text,
-                    Thinking = TruncateLargePayload(hist.Thinking, MaxToolPayloadChars),
-                    ToolName = hist.ToolName,
-                    ToolCallId = hist.ToolCallId,
-                    Badge = !string.IsNullOrWhiteSpace(hist.ToolName) ? $"TOOL: {hist.ToolName}" : null
-                };
-                AddTimelineItemUnderGate(session, item);
-                itemToBroadcast = item;
+                    var effectiveToolName = agToolSnap?.ToolName ?? hist.ToolName;
+                    var toolItem = new AcpGatewayTimelineItem
+                    {
+                        Id = NextItemId(),
+                        Kind = "tool_call",
+                        Role = "assistant",
+                        Timestamp = hist.Timestamp,
+                        Text = agToolSnap?.Summary ?? NormalizeToolText(effectiveToolName, null, agToolSnap?.RawInputJson),
+                        ToolName = effectiveToolName,
+                        ToolCallId = hist.ToolCallId,
+                        ToolStatus = "completed",
+                        RawInputJson = agToolSnap?.RawInputJson,
+                        RawOutput = agToolSnap?.RawOutput
+                    };
+                    AddTimelineItemUnderGate(session, toolItem);
+                    itemToBroadcast = toolItem;
+                }
                 break;
             }
 
@@ -1362,10 +1411,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
                 if (existingIdx >= 0)
                 {
-                    var updated = session.Timeline[existingIdx] with
+                    var existing = session.Timeline[existingIdx];
+                    var updated = existing with
                     {
+                        Text = existing.Text ?? NormalizeToolText(toolCall.ToolName, toolCall.Title, toolCall.RawInputJson),
                         ToolStatus = toolCall.Status,
-                        RawOutput = TruncateLargePayload(toolCall.RawOutput, MaxToolPayloadChars) ?? session.Timeline[existingIdx].RawOutput,
+                        RawOutput = TruncateLargePayload(toolCall.RawOutput, MaxToolPayloadChars) ?? existing.RawOutput,
                         Timestamp = toolCall.Timestamp
                     };
                     session.Timeline[existingIdx] = updated;
@@ -1379,7 +1430,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                         Kind = "tool_call",
                         Role = "assistant",
                         Timestamp = toolCall.Timestamp,
-                        Text = toolCall.Title,
+                        Text = NormalizeToolText(toolCall.ToolName, toolCall.Title, toolCall.RawInputJson),
                         ToolCallId = toolCall.ToolCallId,
                         ToolName = toolCall.ToolName,
                         ToolKind = toolCall.Kind,
@@ -1481,6 +1532,295 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             }
         }
     }
+
+    private static string? CleanUserTranscriptText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return text;
+        }
+
+        const string startTag = "<USER_REQUEST>";
+        const string endTag = "</USER_REQUEST>";
+        var startIdx = text.IndexOf(startTag, StringComparison.Ordinal);
+        var endIdx = text.IndexOf(endTag, StringComparison.Ordinal);
+        if (startIdx >= 0 && endIdx > startIdx)
+        {
+            return text[(startIdx + startTag.Length)..endIdx].Trim();
+        }
+
+        return text.Trim();
+    }
+
+    private static string? NormalizeToolText(string? toolName, string? text, string? rawInputJson)
+    {
+        var trimmed = text?.Trim();
+        if (!string.IsNullOrWhiteSpace(trimmed) &&
+            !string.Equals(trimmed, toolName, StringComparison.OrdinalIgnoreCase))
+        {
+            return TruncateLargePayload(trimmed, 200);
+        }
+
+        if (!string.IsNullOrWhiteSpace(rawInputJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(rawInputJson);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    var extracted = ExtractToolArgSummary(doc.RootElement);
+                    if (!string.IsNullOrWhiteSpace(extracted) &&
+                        !string.Equals(extracted, toolName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return extracted;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore non-JSON input
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractToolArgSummary(JsonElement argsObj)
+    {
+        var summary = GetCleanJsonString(argsObj, "toolSummary");
+        var cmd = GetCleanJsonString(argsObj, "CommandLine", "command", "cmd");
+        if (!string.IsNullOrWhiteSpace(summary) && !string.IsNullOrWhiteSpace(cmd))
+        {
+            return TruncateSingleLine($"{summary} ({cmd})", 140);
+        }
+        if (!string.IsNullOrWhiteSpace(summary))
+        {
+            return TruncateSingleLine(summary, 140);
+        }
+        if (!string.IsNullOrWhiteSpace(cmd))
+        {
+            return TruncateSingleLine(cmd, 140);
+        }
+
+        var path = GetCleanJsonString(argsObj, "Path", "path", "file_path", "TargetFile");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            var shortPath = ShortenPathForDisplay(path);
+            var startLine = GetCleanJsonScalar(argsObj, "StartLine", "start_line");
+            var endLine = GetCleanJsonScalar(argsObj, "EndLine", "end_line");
+            if (!string.IsNullOrWhiteSpace(startLine) && !string.IsNullOrWhiteSpace(endLine))
+            {
+                return $"{shortPath}:{startLine}-{endLine}";
+            }
+            if (!string.IsNullOrWhiteSpace(startLine))
+            {
+                return $"{shortPath}:{startLine}";
+            }
+            return shortPath;
+        }
+
+        var query = GetCleanJsonString(argsObj, "query", "Query", "pattern", "Pattern", "Url", "url");
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            return TruncateSingleLine(query, 140);
+        }
+
+        return null;
+    }
+
+    private static string? GetCleanJsonString(JsonElement obj, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (obj.TryGetProperty(key, out var prop) && prop.ValueKind == JsonValueKind.String)
+            {
+                var val = prop.GetString()?.Trim().Trim('"').Trim();
+                if (!string.IsNullOrWhiteSpace(val))
+                {
+                    return val;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static string? GetCleanJsonScalar(JsonElement obj, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (obj.TryGetProperty(key, out var prop))
+            {
+                if (prop.ValueKind == JsonValueKind.Number)
+                {
+                    return prop.GetRawText();
+                }
+                if (prop.ValueKind == JsonValueKind.String)
+                {
+                    var val = prop.GetString()?.Trim().Trim('"').Trim();
+                    if (!string.IsNullOrWhiteSpace(val))
+                    {
+                        return val;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private static string ShortenPathForDisplay(string rawPath)
+    {
+        var normalized = rawPath.Replace('\\', '/').TrimEnd('/');
+        var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            return rawPath;
+        }
+        if (parts.Length >= 2)
+        {
+            return $"{parts[^2]}/{parts[^1]}";
+        }
+        return parts[^1];
+    }
+
+    private static string TruncateSingleLine(string value, int maxLen)
+    {
+        var oneLine = value.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Trim();
+        return oneLine.Length <= maxLen ? oneLine : oneLine[..maxLen] + "…";
+    }
+
+    private static async Task<Queue<AntigravityToolSnapshot>> ExtractAntigravityToolSnapshotsAsync(
+        string transcriptPath,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<AntigravityToolSnapshot>();
+        try
+        {
+            await using var fs = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(fs, Encoding.UTF8);
+            string? line;
+            var attachNextGenericOutput = false;
+
+            while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    var stepType = GetCleanJsonString(root, "type");
+                    if (string.Equals(stepType, "PLANNER_RESPONSE", StringComparison.Ordinal) &&
+                        root.TryGetProperty("tool_calls", out var toolCallsEl) &&
+                        toolCallsEl.ValueKind == JsonValueKind.Array &&
+                        toolCallsEl.GetArrayLength() > 0)
+                    {
+                        var names = new List<string>();
+                        var targets = new List<string>();
+                        var inputLines = new StringBuilder();
+
+                        foreach (var call in toolCallsEl.EnumerateArray())
+                        {
+                            if (call.ValueKind != JsonValueKind.Object)
+                            {
+                                continue;
+                            }
+
+                            var name = GetCleanJsonString(call, "name") ?? "tool";
+                            if (!names.Contains(name, StringComparer.Ordinal))
+                            {
+                                names.Add(name);
+                            }
+
+                            if (call.TryGetProperty("args", out var argsEl) && argsEl.ValueKind == JsonValueKind.Object)
+                            {
+                                var target = ExtractToolArgSummary(argsEl);
+                                if (!string.IsNullOrWhiteSpace(target))
+                                {
+                                    targets.Add(target);
+                                }
+                                if (inputLines.Length > 0)
+                                {
+                                    inputLines.AppendLine();
+                                }
+                                inputLines.Append(name).Append(' ').Append(argsEl.GetRawText());
+                            }
+                        }
+
+                        var toolLabel = names.Count > 0 ? string.Join(", ", names) : "tool";
+                        string? summary = null;
+                        if (targets.Count == 1)
+                        {
+                            summary = targets[0];
+                        }
+                        else if (targets.Count == 2)
+                        {
+                            summary = $"{targets[0]}, {targets[1]}";
+                        }
+                        else if (targets.Count > 2)
+                        {
+                            summary = $"{targets[0]}, {targets[1]} (+{targets.Count - 2} more)";
+                        }
+
+                        result.Add(new AntigravityToolSnapshot(
+                            ToolName: toolLabel,
+                            Summary: summary,
+                            RawInputJson: inputLines.Length > 0 ? TruncateLargePayload(inputLines.ToString(), MaxToolPayloadChars) : null,
+                            RawOutput: null));
+                        attachNextGenericOutput = true;
+                    }
+                    else if (attachNextGenericOutput &&
+                             string.Equals(stepType, "GENERIC", StringComparison.Ordinal) &&
+                             result.Count > 0)
+                    {
+                        var content = GetCleanJsonString(root, "content");
+                        if (!string.IsNullOrWhiteSpace(content))
+                        {
+                            var last = result[^1];
+                            var combinedOut = string.IsNullOrWhiteSpace(last.RawOutput)
+                                ? content
+                                : $"{last.RawOutput}\n\n{content}";
+                            result[^1] = last with
+                            {
+                                RawOutput = TruncateLargePayload(combinedOut, MaxToolPayloadChars)
+                            };
+                        }
+                    }
+                    else
+                    {
+                        attachNextGenericOutput = false;
+                    }
+                }
+                catch
+                {
+                    // Skip malformed JSON line
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Ignore file read errors
+        }
+
+        return new Queue<AntigravityToolSnapshot>(result);
+    }
+
+    private sealed record AntigravityToolSnapshot(
+        string ToolName,
+        string? Summary,
+        string? RawInputJson,
+        string? RawOutput);
 
     private static string? TruncateLargePayload(string? value, int maxChars)
     {
@@ -1718,6 +2058,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         public bool IsDiscoveredOnDisk { get; set; }
         public bool InitialHistoryLoaded { get; set; }
         public int VisibleTimelineLimit { get; set; } = DefaultTimelinePageSize;
+        public Queue<AntigravityToolSnapshot>? PendingAgToolSnapshots { get; set; }
 
         public IAcpSessionHandle? LiveHandle { get; set; }
         public CancellationTokenSource? TailCts { get; set; }

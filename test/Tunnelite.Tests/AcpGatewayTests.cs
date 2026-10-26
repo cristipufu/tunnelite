@@ -173,7 +173,10 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
     public async Task AcpGatewayServer_tails_discovered_transcript_upgrades_to_live_session_and_streams_sse_events()
     {
         var tempTranscript = Path.Combine(Path.GetTempPath(), $"acp-disc-{Guid.NewGuid():N}.jsonl");
-        await File.WriteAllTextAsync(tempTranscript, "{}\n");
+        await File.WriteAllTextAsync(
+            tempTranscript,
+            "{\"step_index\":1,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"tool_calls\":[{\"name\":\"read_file\",\"args\":{\"Path\":\"\\\"/Users/dev/tunnelite/src/Program.cs\\\"\",\"StartLine\":\"1\",\"EndLine\":\"50\"}}]}\n" +
+            "{\"step_index\":2,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"content\":\"1: using System;\"}\n");
 
         try
         {
@@ -202,7 +205,7 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
                 MessageCount: 45);
 
             var historyEvents = new List<AcpEvent>();
-            for (var i = 1; i <= 43; i++)
+            for (var i = 1; i <= 42; i++)
             {
                 historyEvents.Add(new AcpTranscriptHistoryEntryEvent(
                     AgentProviderKind.Antigravity,
@@ -211,7 +214,8 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
                     i % 2 == 1 ? "user" : "assistant",
                     $"Historical message #{i}"));
             }
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "user", "Initial desktop prompt"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5), "user", "<USER_REQUEST>\nInitial desktop prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "assistant", "", Thinking: null, ToolName: "read_file"));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "assistant", "Desktop response from transcript"));
 
             var fakeAgy = new ControllableTestAdapter(AgentProviderKind.Antigravity, "agy", "Google Antigravity")
@@ -254,6 +258,11 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             Assert.Equal(15, state.ActiveSession.HiddenOlderCount);
             Assert.True(state.ActiveSession.HasOlderMessages);
             Assert.Equal("Desktop response from transcript", state.ActiveSession.Timeline[^1].Text);
+            Assert.Equal("tool_call", state.ActiveSession.Timeline[^2].Kind);
+            Assert.Equal("read_file", state.ActiveSession.Timeline[^2].ToolName);
+            Assert.Equal("src/Program.cs:1-50", state.ActiveSession.Timeline[^2].Text);
+            Assert.Equal("1: using System;", state.ActiveSession.Timeline[^2].RawOutput);
+            Assert.Equal("Initial desktop prompt", state.ActiveSession.Timeline[^3].Text);
 
             // 3. Load earlier messages on-demand via load_older action
             using var loadOlderRes = await client.PostAsJsonAsync("/api/action", new AcpGatewayActionRequest

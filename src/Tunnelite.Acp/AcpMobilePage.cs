@@ -640,21 +640,147 @@ internal static class AcpMobilePage
     .thinking-body {
       padding: 10px 12px;
       border-top: 1px solid var(--border);
-      font-size: 12px;
+      font-size: 12.5px;
       color: var(--muted);
-      white-space: pre-wrap;
-      font-family: var(--mono);
-      max-height: 220px;
+      max-height: 240px;
       overflow-y: auto;
-      line-height: 1.5;
+      line-height: 1.55;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
     }
     .msg-content {
       display: flex;
       flex-direction: column;
       gap: 8px;
     }
-    .msg-text-seg {
+    .msg-text-seg, .md-p {
+      margin: 0;
       white-space: pre-wrap;
+      line-height: 1.62;
+    }
+    .md-h1, .md-h2, .md-h3, .md-h4, .md-h5, .md-h6 {
+      font-weight: 700;
+      letter-spacing: -0.015em;
+      color: #f8fafc;
+      line-height: 1.35;
+      margin: 4px 0 0;
+    }
+    .md-h1 {
+      font-size: 17px;
+      padding-bottom: 5px;
+      border-bottom: 1px solid var(--border);
+    }
+    .md-h2 {
+      font-size: 15.5px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    }
+    .md-h3 { font-size: 14.5px; }
+    .md-h4, .md-h5, .md-h6 { font-size: 13.5px; color: var(--text-soft); }
+    .md-list {
+      margin: 0;
+      padding-left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      line-height: 1.58;
+    }
+    .md-list .md-list {
+      margin-top: 4px;
+    }
+    .md-list li {
+      padding-left: 2px;
+    }
+    .md-task-check {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 15px;
+      height: 15px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      margin-right: 6px;
+      vertical-align: text-bottom;
+      border: 1px solid var(--border-strong);
+      background: rgba(15, 23, 42, 0.6);
+      color: var(--muted);
+    }
+    .md-task-check.checked {
+      background: rgba(34, 197, 94, 0.18);
+      border-color: rgba(34, 197, 94, 0.45);
+      color: #4ade80;
+    }
+    .md-quote {
+      margin: 0;
+      padding: 8px 12px;
+      border-left: 3px solid var(--accent);
+      background: rgba(15, 23, 42, 0.55);
+      border-radius: 0 10px 10px 0;
+      color: var(--text-soft);
+      font-size: 13.5px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .md-quote.alert-note { border-left-color: #38bdf8; background: rgba(56, 189, 248, 0.08); }
+    .md-quote.alert-tip { border-left-color: #22c55e; background: rgba(34, 197, 94, 0.08); }
+    .md-quote.alert-important { border-left-color: #a855f7; background: rgba(168, 85, 247, 0.08); }
+    .md-quote.alert-warning { border-left-color: #f59e0b; background: rgba(245, 158, 11, 0.08); }
+    .md-quote.alert-caution { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.08); }
+    .md-alert-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .md-hr {
+      border: 0;
+      height: 1px;
+      background: var(--border);
+      margin: 4px 0;
+    }
+    .md-link {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .md-file-chip {
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 1px 6px;
+      border-radius: 6px;
+      background: rgba(56, 189, 248, 0.11);
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      color: #7dd3fc;
+    }
+    .md-table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(2, 6, 23, 0.55);
+    }
+    .md-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      line-height: 1.45;
+    }
+    .md-table th, .md-table td {
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+    .md-table th {
+      background: rgba(15, 23, 42, 0.85);
+      font-weight: 700;
+      color: #f8fafc;
+      white-space: nowrap;
+    }
+    .md-table tr:last-child td {
+      border-bottom: 0;
     }
     .inline-code {
       font-family: var(--mono);
@@ -710,7 +836,7 @@ internal static class AcpMobilePage
       overflow: hidden;
     }
     .tool-header {
-      padding: 10px 14px;
+      padding: 9px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -719,12 +845,31 @@ internal static class AcpMobilePage
       font-size: 12px;
     }
     .tool-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
       font-family: var(--mono);
       font-weight: 600;
       color: var(--text-soft);
+    }
+    .tool-name-chip {
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.24);
+      color: #7dd3fc;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .tool-target-text {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      color: var(--text-soft);
+      font-weight: 500;
     }
     .tool-status {
       font-size: 10px;
@@ -1876,73 +2021,332 @@ internal static class AcpMobilePage
     activeSessionMeta.textContent = `${formatRepoAndBranch(s.workingDirectory, s.gitBranch)}${s.model ? ' · ' + s.model : ''} · ${stateLabel}`;
   }
 
-  function appendFormattedMessageContent(container, rawText) {
-    const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g;
-    let lastIdx = 0;
-    let match;
+  function createCodeBlockNode(lang, codeText) {
+    const block = document.createElement('div');
+    block.className = 'code-block';
 
-    while ((match = codeBlockRegex.exec(rawText)) !== null) {
-      if (match.index > lastIdx) {
-        appendInlineSegment(container, rawText.slice(lastIdx, match.index));
+    const head = document.createElement('div');
+    head.className = 'code-block-head';
+    const langSpan = document.createElement('span');
+    langSpan.textContent = lang || 'code';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'code-copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(codeText).then(() => {
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1400);
+        }).catch(() => {});
       }
+    });
+    head.append(langSpan, copyBtn);
 
-      const lang = (match[1] || 'code').trim();
-      const codeText = (match[2] || '').replace(/\n$/, '');
+    const pre = document.createElement('pre');
+    pre.textContent = codeText;
+    block.append(head, pre);
+    return block;
+  }
 
-      const block = document.createElement('div');
-      block.className = 'code-block';
+  function appendFormattedMessageContent(container, rawText) {
+    if (!rawText) return;
+    const lines = String(rawText).replace(/\r\n/g, '\n').split('\n');
+    let inFence = false;
+    let fenceMarker = '';
+    let fenceLang = '';
+    let fenceLines = [];
+    let proseLines = [];
 
-      const head = document.createElement('div');
-      head.className = 'code-block-head';
-      const langSpan = document.createElement('span');
-      langSpan.textContent = lang;
-      const copyBtn = document.createElement('button');
-      copyBtn.type = 'button';
-      copyBtn.className = 'code-copy-btn';
-      copyBtn.textContent = 'Copy';
-      copyBtn.addEventListener('click', () => {
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(codeText).then(() => {
-            copyBtn.textContent = 'Copied';
-            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1400);
-          }).catch(() => {});
+    const flushProse = () => {
+      if (proseLines.length === 0) return;
+      appendMarkdownBlocks(container, proseLines);
+      proseLines = [];
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!inFence) {
+        const openMatch = line.match(/^\s*(`{3,}|~{3,})([a-zA-Z0-9_+.-]*)\s*$/);
+        if (openMatch) {
+          flushProse();
+          inFence = true;
+          fenceMarker = openMatch[1];
+          fenceLang = (openMatch[2] || 'code').trim();
+          fenceLines = [];
+          continue;
         }
-      });
-      head.append(langSpan, copyBtn);
-
-      const pre = document.createElement('pre');
-      pre.textContent = codeText;
-      block.append(head, pre);
-      container.appendChild(block);
-
-      lastIdx = codeBlockRegex.lastIndex;
+        proseLines.push(line);
+      } else {
+        const trimmed = line.trim();
+        if (trimmed.startsWith(fenceMarker) && trimmed.replace(/[`~]/g, '') === '') {
+          container.appendChild(createCodeBlockNode(fenceLang, fenceLines.join('\n')));
+          inFence = false;
+          fenceMarker = '';
+          fenceLang = '';
+          fenceLines = [];
+        } else {
+          fenceLines.push(line);
+        }
+      }
     }
 
-    if (lastIdx < rawText.length) {
-      appendInlineSegment(container, rawText.slice(lastIdx));
+    flushProse();
+    if (inFence) {
+      container.appendChild(createCodeBlockNode(fenceLang, fenceLines.join('\n')));
     }
   }
 
-  function appendInlineSegment(container, segmentText) {
-    const trimmed = segmentText.replace(/^\n+|\n+$/g, '');
-    if (!trimmed) return;
+  function isTableSeparatorLine(line) {
+    const t = line.trim();
+    if (!t.includes('|')) return false;
+    const cells = t.replace(/^\||\|$/g, '').split('|');
+    if (cells.length === 0) return false;
+    return cells.every(c => /^\s*:?-{3,}:?\s*$/.test(c));
+  }
 
-    const p = document.createElement('div');
-    p.className = 'msg-text-seg';
+  function splitTableRow(line) {
+    return line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  }
 
-    const parts = trimmed.split(/(`[^`\n]+`)/g);
-    parts.forEach(part => {
-      if (part.length > 2 && part.startsWith('`') && part.endsWith('`')) {
+  function appendMarkdownBlocks(container, lines) {
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        i++;
+        continue;
+      }
+
+      // 1. Horizontal rule
+      if (/^([-*_])(\s*\1){2,}$/.test(trimmed)) {
+        const hr = document.createElement('hr');
+        hr.className = 'md-hr';
+        container.appendChild(hr);
+        i++;
+        continue;
+      }
+
+      // 2. Heading (# .. ######)
+      const headingMatch = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (headingMatch) {
+        const level = Math.min(6, headingMatch[1].length);
+        const h = document.createElement('div');
+        h.className = `md-h${level}`;
+        appendInlineMarkdown(h, headingMatch[2]);
+        container.appendChild(h);
+        i++;
+        continue;
+      }
+
+      // 3. Pipe Table
+      if (trimmed.includes('|') && i + 1 < lines.length && isTableSeparatorLine(lines[i + 1])) {
+        const headers = splitTableRow(lines[i]);
+        const aligns = splitTableRow(lines[i + 1]).map(c => {
+          if (c.startsWith(':') && c.endsWith(':')) return 'center';
+          if (c.endsWith(':')) return 'right';
+          return 'left';
+        });
+        i += 2;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'md-table-wrap';
+        const table = document.createElement('table');
+        table.className = 'md-table';
+
+        const thead = document.createElement('thead');
+        const trHead = document.createElement('tr');
+        headers.forEach((hText, colIdx) => {
+          const th = document.createElement('th');
+          if (aligns[colIdx]) th.style.textAlign = aligns[colIdx];
+          appendInlineMarkdown(th, hText);
+          trHead.appendChild(th);
+        });
+        thead.appendChild(trHead);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        while (i < lines.length && lines[i].trim().includes('|') && lines[i].trim() !== '') {
+          const rowCells = splitTableRow(lines[i]);
+          const tr = document.createElement('tr');
+          for (let colIdx = 0; colIdx < headers.length; colIdx++) {
+            const td = document.createElement('td');
+            if (aligns[colIdx]) td.style.textAlign = aligns[colIdx];
+            appendInlineMarkdown(td, rowCells[colIdx] || '');
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+          i++;
+        }
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        container.appendChild(wrap);
+        continue;
+      }
+
+      // 4. Blockquote & GitHub Alerts (> [!NOTE], etc.)
+      if (/^\s*>\s?/.test(line)) {
+        const quoteLines = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+          quoteLines.push(lines[i].replace(/^\s*>\s?/, ''));
+          i++;
+        }
+
+        const bq = document.createElement('blockquote');
+        bq.className = 'md-quote';
+
+        if (quoteLines.length > 0) {
+          const alertMatch = quoteLines[0].trim().match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i);
+          if (alertMatch) {
+            const kind = alertMatch[1].toLowerCase();
+            bq.classList.add(`alert-${kind}`);
+            const label = document.createElement('div');
+            label.className = 'md-alert-label';
+            label.textContent = alertMatch[1].toUpperCase();
+            bq.appendChild(label);
+            if (alertMatch[2]) {
+              quoteLines[0] = alertMatch[2];
+            } else {
+              quoteLines.shift();
+            }
+          }
+        }
+
+        const bodyText = quoteLines.join('\n').trim();
+        if (bodyText) {
+          const p = document.createElement('div');
+          p.className = 'md-p';
+          appendInlineMarkdown(p, bodyText);
+          bq.appendChild(p);
+        }
+        container.appendChild(bq);
+        continue;
+      }
+
+      // 5. Unordered or Ordered Lists
+      const listMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+      if (listMatch) {
+        const isOrdered = /^\d+[.)]$/.test(listMatch[2]);
+        const listEl = document.createElement(isOrdered ? 'ol' : 'ul');
+        listEl.className = 'md-list';
+
+        while (i < lines.length) {
+          const itemMatch = lines[i].match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+          if (!itemMatch) break;
+          const itemOrdered = /^\d+[.)]$/.test(itemMatch[2]);
+          if (itemOrdered !== isOrdered && itemMatch[1].length === 0) break;
+
+          const li = document.createElement('li');
+          if (itemMatch[1].length >= 2) {
+            li.style.marginLeft = Math.min(36, itemMatch[1].length * 6) + 'px';
+          }
+
+          let itemText = itemMatch[3];
+          const taskMatch = itemText.match(/^\[([ xX])\]\s+(.*)$/);
+          if (taskMatch) {
+            const chk = document.createElement('span');
+            const isChecked = taskMatch[1].toLowerCase() === 'x';
+            chk.className = 'md-task-check' + (isChecked ? ' checked' : '');
+            chk.textContent = isChecked ? '✓' : '';
+            li.appendChild(chk);
+            itemText = taskMatch[2];
+          }
+
+          appendInlineMarkdown(li, itemText);
+          listEl.appendChild(li);
+          i++;
+        }
+
+        container.appendChild(listEl);
+        continue;
+      }
+
+      // 6. Standard Paragraph (collect consecutive non-block lines)
+      const paraLines = [];
+      while (i < lines.length) {
+        const l = lines[i];
+        const t = l.trim();
+        if (!t) break;
+        if (/^([-*_])(\s*\1){2,}$/.test(t)) break;
+        if (/^\s*#{1,6}\s+/.test(l)) break;
+        if (/^\s*>\s?/.test(l)) break;
+        if (/^(\s*)([-*+]|\d+[.)])\s+/.test(l)) break;
+        if (t.includes('|') && i + 1 < lines.length && isTableSeparatorLine(lines[i + 1])) break;
+        paraLines.push(l);
+        i++;
+      }
+
+      if (paraLines.length > 0) {
+        const p = document.createElement('p');
+        p.className = 'md-p';
+        appendInlineMarkdown(p, paraLines.join('\n'));
+        container.appendChild(p);
+      }
+    }
+  }
+
+  function appendInlineMarkdown(parent, text) {
+    if (!text) return;
+    const tokenRegex = /(`[^`\n]+`)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*\*([^*]+)\*\*\*)|(\*\*([^*]+)\*\*)|(__([^_]+)__)|(~~([^~]+)~~)|(\*([^*\n]+)\*)/g;
+    let lastIdx = 0;
+    let match;
+
+    while ((match = tokenRegex.exec(text)) !== null) {
+      if (match.index > lastIdx) {
+        parent.appendChild(document.createTextNode(text.slice(lastIdx, match.index)));
+      }
+
+      if (match[1]) {
         const code = document.createElement('code');
         code.className = 'inline-code';
-        code.textContent = part.slice(1, -1);
-        p.appendChild(code);
-      } else if (part) {
-        p.appendChild(document.createTextNode(part));
+        code.textContent = match[1].slice(1, -1);
+        parent.appendChild(code);
+      } else if (match[2]) {
+        const label = match[3];
+        const url = match[4];
+        if (/^https?:\/\//i.test(url)) {
+          const a = document.createElement('a');
+          a.className = 'md-link';
+          a.href = url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          appendInlineMarkdown(a, label);
+          parent.appendChild(a);
+        } else {
+          const chip = document.createElement('span');
+          chip.className = 'md-file-chip';
+          chip.title = url;
+          chip.textContent = label.replace(/^`|`$/g, '');
+          parent.appendChild(chip);
+        }
+      } else if (match[5]) {
+        const strong = document.createElement('strong');
+        const em = document.createElement('em');
+        appendInlineMarkdown(em, match[6]);
+        strong.appendChild(em);
+        parent.appendChild(strong);
+      } else if (match[7] || match[9]) {
+        const strong = document.createElement('strong');
+        appendInlineMarkdown(strong, match[8] || match[10]);
+        parent.appendChild(strong);
+      } else if (match[11]) {
+        const del = document.createElement('del');
+        appendInlineMarkdown(del, match[12]);
+        parent.appendChild(del);
+      } else if (match[13]) {
+        const em = document.createElement('em');
+        appendInlineMarkdown(em, match[14]);
+        parent.appendChild(em);
       }
-    });
 
-    container.appendChild(p);
+      lastIdx = tokenRegex.lastIndex;
+    }
+
+    if (lastIdx < text.length) {
+      parent.appendChild(document.createTextNode(text.slice(lastIdx)));
+    }
   }
 
   function createTimelineItemNode(item) {
@@ -1955,7 +2359,20 @@ internal static class AcpMobilePage
 
       const title = document.createElement('div');
       title.className = 'tool-title';
-      title.textContent = `${item.toolName || 'tool'} · ${item.text || ''}`;
+
+      const toolName = (item.toolName || 'tool').trim();
+      const nameChip = document.createElement('span');
+      nameChip.className = 'tool-name-chip';
+      nameChip.textContent = toolName;
+      title.appendChild(nameChip);
+
+      const rawTarget = (item.text || '').trim();
+      if (rawTarget && rawTarget.toLowerCase() !== toolName.toLowerCase()) {
+        const targetSpan = document.createElement('span');
+        targetSpan.className = 'tool-target-text';
+        targetSpan.textContent = rawTarget;
+        title.appendChild(targetSpan);
+      }
 
       const badge = document.createElement('span');
       const isRunning = item.toolStatus === 'in_progress';
@@ -2031,7 +2448,7 @@ internal static class AcpMobilePage
       summary.textContent = 'Agent Reasoning / Thinking';
       const body = document.createElement('div');
       body.className = 'thinking-body';
-      body.textContent = item.thinking;
+      appendFormattedMessageContent(body, item.thinking);
       details.append(summary, body);
       bubble.appendChild(details);
     }
