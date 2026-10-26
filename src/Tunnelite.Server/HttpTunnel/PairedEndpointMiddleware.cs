@@ -1,3 +1,4 @@
+using Microsoft.Net.Http.Headers;
 using Tunnelite.Protocol;
 
 namespace Tunnelite.Server.HttpTunnel;
@@ -26,9 +27,36 @@ public sealed class PairedEndpointMiddleware(RequestDelegate next)
         {
             context.Response.StatusCode = 401;
             context.Response.Headers.CacheControl = "no-store";
-            await context.Response.WriteAsync("Scan the pairing QR code on your desktop to connect.");
+            context.Response.Headers.Vary = "Accept";
+            context.Response.Headers.ContentSecurityPolicy = PairingPage.ContentSecurityPolicy;
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+            if (WantsHtml(context.Request))
+            {
+                context.Response.ContentType = "text/html; charset=utf-8";
+                await context.Response.WriteAsync(PairingPage.Required, context.RequestAborted);
+            }
+            else
+            {
+                context.Response.ContentType = "text/plain; charset=utf-8";
+                await context.Response.WriteAsync("Scan the pairing QR code on your desktop to connect.", context.RequestAborted);
+            }
             return;
         }
         await next(context);
+    }
+
+    private static bool WantsHtml(HttpRequest request)
+    {
+        if (!HttpMethods.IsGet(request.Method) || request.Headers.ContainsKey("Upgrade")
+            || !MediaTypeHeaderValue.TryParseList(request.Headers.Accept, out var accepted)) return false;
+        var html = false;
+        foreach (var media in accepted)
+        {
+            if (media.Quality == 0) continue;
+            if (media.MediaType.Equals("text/event-stream", StringComparison.OrdinalIgnoreCase)) return false;
+            if (media.MediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase)) html = true;
+        }
+        return html;
     }
 }
