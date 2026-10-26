@@ -1,0 +1,10 @@
+<Project>
+  <Target Name="PrepareNuGetReadme" BeforeTargets="_GetPackageFiles;GenerateNuspec" Condition="'$(IsPackable)' == 'true'">
+    <Exec Command="bash &quot;$(MSBuildThisFileDirectory)scripts/prepare-nuget-readme.sh&quot; &quot;$(MSBuildThisFileDirectory)README.md&quot; &quot;$(BaseIntermediateOutputPath)nuget/README.md&quot;" />
+    <ItemGroup>
+      <None Remove="..\..\README.md" />
+      <None Remove="$(MSBuildThisFileDirectory)README.md" />
+      <None Include="$(BaseIntermediateOutputPath)nuget/README.md" Pack="True" PackagePath="\" />
+    </ItemGroup>
+  </Target>
+</Project>
