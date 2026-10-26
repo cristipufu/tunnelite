@@ -734,6 +734,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 session.LiveHandle = handle;
                 session.HasMobileAttachedOnce = true;
                 session.HasExternalTranscriptActivitySinceAttach = false;
+                session.MobileTurnStartingUntil = DateTimeOffset.UtcNow.AddSeconds(5);
+                session.SuppressTranscriptTailUntilNextUserMessage = true;
                 session.LastMobileTurnActivityAt = DateTimeOffset.UtcNow;
                 session.UpdatedAt = DateTimeOffset.UtcNow;
                 StartLiveHandlePump(session, handle);
@@ -1048,22 +1050,39 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             if (!isFromTranscriptTail)
             {
                 session.LastMobileTurnActivityAt = now;
+                session.SuppressTranscriptTailUntilNextUserMessage = true;
             }
             else
             {
-                // Suppress duplicate .jsonl events while a mobile-initiated turn is actively streaming
-                // over the live handle, or if the .jsonl line is flushing the mobile prompt/response itself.
-                if (session.LiveHandle?.IsTurnActive ?? false)
+                // Suppress duplicate .jsonl events while a mobile-initiated turn is starting or actively streaming
+                // over the live handle.
+                if ((session.LiveHandle?.IsTurnActive ?? false) || now < session.MobileTurnStartingUntil)
                 {
                     return;
                 }
 
-                if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: "user" } userEntry &&
-                    !string.IsNullOrWhiteSpace(session.LastMobilePromptText) &&
-                    string.Equals(CleanUserTranscriptText(userEntry.Text), session.LastMobilePromptText, StringComparison.Ordinal))
+                if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: "user" } userEntry)
                 {
-                    session.LastMobilePromptText = null;
-                    return;
+                    var cleanedUser = CleanUserTranscriptText(userEntry.Text);
+                    if (!string.IsNullOrWhiteSpace(session.LastMobilePromptText) &&
+                        string.Equals(cleanedUser, session.LastMobilePromptText, StringComparison.Ordinal))
+                    {
+                        session.LastMobilePromptText = null;
+                        return;
+                    }
+
+                    // A new user prompt arrived from the desktop terminal (e.g. Ghostty):
+                    // immediately lift mobile-turn tail suppression so this turn streams live to mobile.
+                    session.SuppressTranscriptTailUntilNextUserMessage = false;
+                }
+                else if (session.SuppressTranscriptTailUntilNextUserMessage)
+                {
+                    if ((now - session.LastMobileTurnCompletedAt) <= TimeSpan.FromSeconds(2.5))
+                    {
+                        return;
+                    }
+
+                    session.SuppressTranscriptTailUntilNextUserMessage = false;
                 }
 
                 if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: "assistant" } asstEntry &&
@@ -1100,18 +1119,22 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 out permissionsToBroadcast,
                 out autoDrainedUserItem);
 
-            if (!isFromTranscriptTail &&
-                acpEvent is AcpTurnCompletedEvent &&
-                session.IsDiscoveredOnDisk &&
-                session.LiveHandle is not null &&
-                session.LiveHandle.GetQueuedPrompts().Count == 0 &&
-                session.PendingPermissions.Count == 0)
+            if (!isFromTranscriptTail && acpEvent is AcpTurnCompletedEvent)
             {
-                staleHandleToDispose = session.LiveHandle;
-                stalePumpCts = session.LivePumpCts;
-                session.LiveHandle = null;
-                session.LivePumpCts = null;
-                session.LivePumpTask = null;
+                session.LastMobileTurnCompletedAt = now;
+                session.MobileTurnStartingUntil = DateTimeOffset.MinValue;
+
+                if (session.IsDiscoveredOnDisk &&
+                    session.LiveHandle is not null &&
+                    session.LiveHandle.GetQueuedPrompts().Count == 0 &&
+                    session.PendingPermissions.Count == 0)
+                {
+                    staleHandleToDispose = session.LiveHandle;
+                    stalePumpCts = session.LivePumpCts;
+                    session.LiveHandle = null;
+                    session.LivePumpCts = null;
+                    session.LivePumpTask = null;
+                }
             }
 
             summaryToBroadcast = BuildSessionSummaryUnderGate(session);
@@ -1209,6 +1232,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         {
             session.UpdatedAt = DateTimeOffset.UtcNow;
             session.LastMobileTurnActivityAt = session.UpdatedAt;
+            session.MobileTurnStartingUntil = session.UpdatedAt.AddSeconds(5);
+            session.SuppressTranscriptTailUntilNextUserMessage = true;
             session.LastMobilePromptText = prompt.Trim();
             if (session.Title.StartsWith("New ", StringComparison.Ordinal) ||
                 session.Title.StartsWith("Session ", StringComparison.Ordinal))
@@ -2107,7 +2132,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         public bool InitialHistoryLoaded { get; set; }
         public bool HasMobileAttachedOnce { get; set; }
         public bool HasExternalTranscriptActivitySinceAttach { get; set; }
+        public bool SuppressTranscriptTailUntilNextUserMessage { get; set; }
+        public DateTimeOffset MobileTurnStartingUntil { get; set; } = DateTimeOffset.MinValue;
         public DateTimeOffset LastMobileTurnActivityAt { get; set; } = DateTimeOffset.MinValue;
+        public DateTimeOffset LastMobileTurnCompletedAt { get; set; } = DateTimeOffset.MinValue;
         public string? LastMobilePromptText { get; set; }
         public string? LastMobileAssistantText { get; set; }
         public int VisibleTimelineLimit { get; set; } = DefaultTimelinePageSize;
@@ -2121,24 +2149,47 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
         public async ValueTask DisposeAsync()
         {
-            if (TailCts is not null)
+            CancellationTokenSource? tailCts;
+            CancellationTokenSource? livePumpCts;
+            Task? tailTask;
+            Task? livePumpTask;
+            IAcpSessionHandle? liveHandle;
+
+            await Gate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                await TailCts.CancelAsync().ConfigureAwait(false);
+                tailCts = TailCts;
+                livePumpCts = LivePumpCts;
+                tailTask = TailTask;
+                livePumpTask = LivePumpTask;
+                liveHandle = LiveHandle;
+                TailCts = null;
+                LivePumpCts = null;
+                TailTask = null;
+                LivePumpTask = null;
+                LiveHandle = null;
             }
-            if (LivePumpCts is not null)
+            finally
             {
-                await LivePumpCts.CancelAsync().ConfigureAwait(false);
+                Gate.Release();
             }
-            if (LiveHandle is not null)
+
+            if (tailCts is not null)
             {
-                await LiveHandle.DisposeAsync().ConfigureAwait(false);
+                try { await tailCts.CancelAsync().ConfigureAwait(false); } catch { }
             }
-            await WaitBackgroundTaskQuietlyAsync(TailTask).ConfigureAwait(false);
-            await WaitBackgroundTaskQuietlyAsync(LivePumpTask).ConfigureAwait(false);
-            TailCts?.Dispose();
-            LivePumpCts?.Dispose();
-            Gate.Dispose();
-            AttachGate.Dispose();
+            if (livePumpCts is not null)
+            {
+                try { await livePumpCts.CancelAsync().ConfigureAwait(false); } catch { }
+            }
+            await WaitBackgroundTaskQuietlyAsync(tailTask).ConfigureAwait(false);
+            await WaitBackgroundTaskQuietlyAsync(livePumpTask).ConfigureAwait(false);
+            if (liveHandle is not null)
+            {
+                try { await liveHandle.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+            tailCts?.Dispose();
+            livePumpCts?.Dispose();
         }
     }
 }
