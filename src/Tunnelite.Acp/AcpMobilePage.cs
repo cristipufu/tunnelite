@@ -865,7 +865,7 @@ internal static class AcpMobilePage
       width: 100%;
       border-radius: 11px;
       border: 1px solid rgba(56, 189, 248, 0.2);
-      background: rgba(2, 6, 23, 0.86);
+      background: rgba(2, 6, 23, 0.88);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       overflow: hidden;
       transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -874,15 +874,20 @@ internal static class AcpMobilePage
       border-color: rgba(56, 189, 248, 0.45);
       box-shadow: 0 0 16px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
+    .tool-card.thought-mode {
+      border-color: rgba(192, 132, 252, 0.32);
+    }
     .tool-header {
       padding: 8px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      cursor: pointer;
       font-size: 12px;
       user-select: none;
+    }
+    .tool-header.expandable {
+      cursor: pointer;
     }
     .tool-title {
       display: flex;
@@ -904,6 +909,10 @@ internal static class AcpMobilePage
       color: var(--accent);
       animation: pulse 1s infinite ease-in-out;
     }
+    .tool-prompt-glyph.thought {
+      color: #c084fc;
+      animation: pulse 1.1s infinite ease-in-out;
+    }
     .tool-name-chip {
       padding: 2px 7px;
       border-radius: 6px;
@@ -914,6 +923,11 @@ internal static class AcpMobilePage
       font-weight: 700;
       flex-shrink: 0;
     }
+    .tool-name-chip.thought {
+      background: rgba(192, 132, 252, 0.14);
+      border-color: rgba(192, 132, 252, 0.3);
+      color: #d8b4fe;
+    }
     .tool-target-text {
       white-space: nowrap;
       overflow: hidden;
@@ -921,6 +935,11 @@ internal static class AcpMobilePage
       color: #cbd5e1;
       font-weight: 500;
       font-size: 11.5px;
+    }
+    .tool-target-text.thought {
+      font-family: var(--font);
+      font-style: italic;
+      color: #cbd5e1;
     }
     .tool-right {
       display: flex;
@@ -962,33 +981,67 @@ internal static class AcpMobilePage
     .tool-status.done { background: rgba(34, 197, 94, 0.14); color: var(--success); border: 1px solid rgba(34, 197, 94, 0.25); }
     .tool-details {
       display: none;
-      padding: 10px 12px;
+      padding: 8px 12px;
       border-top: 1px solid var(--border);
-      background: rgba(2, 6, 23, 0.92);
+      background: rgba(2, 6, 23, 0.94);
       font-family: var(--mono);
       font-size: 11.5px;
       color: var(--muted);
-      max-height: 260px;
+      max-height: 240px;
       overflow-y: auto;
-      line-height: 1.5;
+      line-height: 1.45;
     }
     .tool-card.open .tool-details {
       display: flex;
       flex-direction: column;
-      gap: 8px;
     }
     .tool-log-list {
       display: flex;
       flex-direction: column;
-      gap: 3px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+      gap: 5px;
     }
     .tool-log-line {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      cursor: pointer;
+    }
+    .tool-log-num {
+      color: #64748b;
+      font-size: 10.5px;
+      flex-shrink: 0;
+    }
+    .tool-log-glyph {
+      color: #4ade80;
+      font-weight: 700;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .tool-log-chip {
+      padding: 1px 6px;
+      border-radius: 5px;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      color: #7dd3fc;
+      font-size: 10.5px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .tool-log-target {
       color: #cbd5e1;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      min-width: 0;
+      flex: 1;
+    }
+    .tool-log-line.wrap {
+      align-items: flex-start;
+    }
+    .tool-log-line.wrap .tool-log-target {
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .live-turn-bar {
       display: flex;
@@ -2522,30 +2575,37 @@ internal static class AcpMobilePage
   function createTimelineItemNode(item, isLatestItem) {
     if (item.kind === 'tool_call') {
       const isRunning = item.toolStatus === 'in_progress' && !!isLatestItem;
+      const isThought = item.toolKind === 'thought' || item.toolName === 'thinking';
+      const cmdLogs = (item.activityLog && item.activityLog.length > 0) ? item.activityLog : [];
+      const cmdCount = cmdLogs.length;
+
       const card = document.createElement('div');
-      card.className = 'tool-card' + (isRunning ? ' running' : '');
+      card.className = 'tool-card' +
+        (isRunning ? ' running' : '') +
+        (isThought ? ' thought-mode' : '');
       card.dataset.itemId = item.id;
       const header = document.createElement('div');
-      header.className = 'tool-header';
+      header.className = 'tool-header' + (cmdCount > 0 ? ' expandable' : '');
 
       const title = document.createElement('div');
       title.className = 'tool-title';
 
       const glyph = document.createElement('span');
-      glyph.className = 'tool-prompt-glyph' + (isRunning ? ' running' : '');
-      glyph.textContent = '❯';
+      glyph.className = 'tool-prompt-glyph' +
+        (isThought ? ' thought' : (isRunning ? ' running' : ''));
+      glyph.textContent = isThought ? '✻' : '❯';
       title.appendChild(glyph);
 
-      const toolName = (item.toolName || 'tool').trim();
+      const toolName = (item.toolName || (isThought ? 'thinking' : 'tool')).trim();
       const nameChip = document.createElement('span');
-      nameChip.className = 'tool-name-chip';
+      nameChip.className = 'tool-name-chip' + (isThought ? ' thought' : '');
       nameChip.textContent = toolName;
       title.appendChild(nameChip);
 
       const rawTarget = (item.text || '').trim();
       if (rawTarget && rawTarget.toLowerCase() !== toolName.toLowerCase()) {
         const targetSpan = document.createElement('span');
-        targetSpan.className = 'tool-target-text';
+        targetSpan.className = 'tool-target-text' + (isThought ? ' thought' : '');
         targetSpan.textContent = rawTarget;
         title.appendChild(targetSpan);
       }
@@ -2553,11 +2613,10 @@ internal static class AcpMobilePage
       const rightWrap = document.createElement('div');
       rightWrap.className = 'tool-right';
 
-      const stepCount = item.stepCount || (item.activityLog && item.activityLog.length) || 1;
-      if (stepCount > 1) {
+      if (cmdCount > 0) {
         const stepPill = document.createElement('span');
         stepPill.className = 'tool-step-count';
-        stepPill.textContent = `${stepCount} ops`;
+        stepPill.textContent = `${cmdCount} ${cmdCount === 1 ? 'cmd' : 'cmds'}`;
         rightWrap.appendChild(stepPill);
       }
 
@@ -2566,9 +2625,7 @@ internal static class AcpMobilePage
       badge.textContent = isRunning ? 'Running' : 'Done';
       rightWrap.appendChild(badge);
 
-      const hasLog = item.activityLog && item.activityLog.length > 0;
-      const hasDetails = hasLog || item.thinking || item.rawInputJson || item.rawOutput;
-      if (hasDetails) {
+      if (cmdCount > 0) {
         const chev = document.createElement('span');
         chev.className = 'tool-chevron';
         chev.textContent = '▸';
@@ -2578,37 +2635,49 @@ internal static class AcpMobilePage
       header.append(title, rightWrap);
       card.appendChild(header);
 
-      if (hasDetails) {
+      if (cmdCount > 0) {
         const details = document.createElement('div');
         details.className = 'tool-details';
 
-        if (hasLog && item.activityLog.length >= 1) {
-          const logBox = document.createElement('div');
-          logBox.className = 'tool-log-list';
-          item.activityLog.forEach((entry, idx) => {
-            const line = document.createElement('div');
-            line.className = 'tool-log-line';
-            const num = String(idx + 1).padStart(2, '0');
-            line.textContent = `${num}  ❯ ${entry}`;
-            logBox.appendChild(line);
+        const logBox = document.createElement('div');
+        logBox.className = 'tool-log-list';
+        cmdLogs.forEach((entry, idx) => {
+          const line = document.createElement('div');
+          line.className = 'tool-log-line';
+
+          const num = document.createElement('span');
+          num.className = 'tool-log-num';
+          num.textContent = String(idx + 1).padStart(2, '0');
+
+          const rowGlyph = document.createElement('span');
+          rowGlyph.className = 'tool-log-glyph';
+          rowGlyph.textContent = '❯';
+
+          const sepIdx = entry.indexOf(' · ');
+          const cName = sepIdx >= 0 ? entry.slice(0, sepIdx) : entry;
+          const cTarget = sepIdx >= 0 ? entry.slice(sepIdx + 3) : '';
+
+          const chip = document.createElement('span');
+          chip.className = 'tool-log-chip';
+          chip.textContent = cName;
+
+          line.append(num, rowGlyph, chip);
+
+          if (cTarget) {
+            const targetEl = document.createElement('span');
+            targetEl.className = 'tool-log-target';
+            targetEl.textContent = cTarget;
+            line.appendChild(targetEl);
+          }
+
+          line.addEventListener('click', e => {
+            e.stopPropagation();
+            line.classList.toggle('wrap');
           });
-          details.appendChild(logBox);
-        }
+          logBox.appendChild(line);
+        });
 
-        if (item.thinking) {
-          const thinkDiv = document.createElement('div');
-          thinkDiv.style.color = 'var(--text-soft)';
-          appendFormattedMessageContent(thinkDiv, item.thinking);
-          details.appendChild(thinkDiv);
-        }
-
-        if (item.rawInputJson || item.rawOutput) {
-          const rawDiv = document.createElement('div');
-          rawDiv.style.whiteSpace = 'pre-wrap';
-          rawDiv.textContent = [item.rawInputJson, item.rawOutput].filter(Boolean).join('\n\n');
-          details.appendChild(rawDiv);
-        }
-
+        details.appendChild(logBox);
         card.appendChild(details);
         header.addEventListener('click', () => card.classList.toggle('open'));
       }
@@ -2679,19 +2748,6 @@ internal static class AcpMobilePage
     timeSpan.textContent = formatMessageClock(item.timestamp);
     metaRow.append(metaLeft, timeSpan);
     bubble.appendChild(metaRow);
-
-    if (item.thinking) {
-      const details = document.createElement('details');
-      details.className = 'thinking-box';
-      const summary = document.createElement('summary');
-      summary.className = 'thinking-summary';
-      summary.textContent = 'Agent Reasoning / Thinking';
-      const body = document.createElement('div');
-      body.className = 'thinking-body';
-      appendFormattedMessageContent(body, item.thinking);
-      details.append(summary, body);
-      bubble.appendChild(details);
-    }
 
     if (item.text) {
       const content = document.createElement('div');

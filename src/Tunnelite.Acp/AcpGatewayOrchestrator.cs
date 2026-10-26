@@ -1267,7 +1267,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                                    !string.Equals(cleanedText, hist.ToolName, StringComparison.OrdinalIgnoreCase);
 
                 // If this step has no user/assistant prose text (only tool execution and/or intermediate thinking),
-                // compact it in-place into the current in-line terminal activity item.
+                // update the single in-line terminal bar in place with either the running command or current thought.
                 if (!hasProseText && hist.Role != "user")
                 {
                     if (!string.IsNullOrWhiteSpace(hist.ToolName))
@@ -1286,71 +1286,43 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                             effectiveToolName,
                             summaryText,
                             hist.ToolCallId,
-                            toolKind: null,
-                            toolStatus: "completed",
-                            thinking: hist.Thinking,
+                            toolKind: "command",
+                            toolStatus: isHistoricalLoad ? "completed" : "in_progress",
                             rawInputJson: agToolSnap?.RawInputJson,
-                            rawOutput: rawOut);
+                            rawOutput: rawOut,
+                            additionalCalls: agToolSnap?.Calls);
                         break;
                     }
 
-                    // Thinking-only step while an in-line tool activity bar is already active
-                    if (!string.IsNullOrWhiteSpace(hist.Thinking) &&
-                        session.Timeline.Count > 0 &&
-                        session.Timeline[^1].Kind == "tool_call")
+                    if (!string.IsNullOrWhiteSpace(hist.Thinking))
                     {
-                        var lastTool = session.Timeline[^1];
-                        var combinedThinking = string.IsNullOrWhiteSpace(lastTool.Thinking)
-                            ? hist.Thinking
-                            : $"{lastTool.Thinking}\n\n{hist.Thinking}";
-                        var updatedTool = lastTool with
-                        {
-                            Thinking = TruncateLargePayload(combinedThinking, MaxToolPayloadChars),
-                            Timestamp = hist.Timestamp
-                        };
-                        session.Timeline[^1] = updatedTool;
-                        itemToBroadcast = updatedTool;
+                        itemToBroadcast = UpsertInlineThoughtUnderGate(
+                            session,
+                            hist.Timestamp,
+                            hist.Thinking,
+                            isStreamingDelta: false,
+                            toolStatus: isHistoricalLoad ? "completed" : "in_progress");
                         break;
                     }
                 }
 
-                // Coalesce consecutive assistant thinking + text steps
-                var prev = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-                if (hist.Role == "assistant" &&
-                    prev is not null &&
-                    prev.Role == "assistant" &&
-                    prev.Kind == "message" &&
-                    string.IsNullOrWhiteSpace(prev.Text) &&
-                    !string.IsNullOrWhiteSpace(prev.Thinking) &&
-                    string.IsNullOrWhiteSpace(hist.Thinking) &&
-                    !string.IsNullOrWhiteSpace(cleanedText))
+                if (hist.Role == "assistant")
                 {
-                    var merged = prev with
-                    {
-                        Text = cleanedText,
-                        Timestamp = hist.Timestamp,
-                        ToolName = hist.ToolName ?? prev.ToolName,
-                        ToolCallId = hist.ToolCallId ?? prev.ToolCallId
-                    };
-                    session.Timeline[^1] = merged;
-                    itemToBroadcast = merged;
+                    autoDrainedUserItem = CompleteInlineActivityUnderGate(session);
                 }
-                else
+
+                var item = new AcpGatewayTimelineItem
                 {
-                    var item = new AcpGatewayTimelineItem
-                    {
-                        Id = NextItemId(),
-                        Kind = "message",
-                        Role = hist.Role,
-                        Timestamp = hist.Timestamp,
-                        Text = cleanedText,
-                        Thinking = TruncateLargePayload(hist.Thinking, MaxToolPayloadChars),
-                        ToolName = hist.ToolName,
-                        ToolCallId = hist.ToolCallId
-                    };
-                    AddTimelineItemUnderGate(session, item);
-                    itemToBroadcast = item;
-                }
+                    Id = NextItemId(),
+                    Kind = "message",
+                    Role = hist.Role,
+                    Timestamp = hist.Timestamp,
+                    Text = cleanedText,
+                    ToolName = hist.ToolName,
+                    ToolCallId = hist.ToolCallId
+                };
+                AddTimelineItemUnderGate(session, item);
+                itemToBroadcast = item;
 
                 if (!string.IsNullOrWhiteSpace(hist.ToolName) && hist.Role != "user")
                 {
@@ -1361,63 +1333,31 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                         effectiveToolName,
                         agToolSnap?.Summary ?? NormalizeToolText(effectiveToolName, null, agToolSnap?.RawInputJson),
                         hist.ToolCallId,
-                        toolKind: null,
+                        toolKind: "command",
                         toolStatus: "completed",
-                        thinking: null,
                         rawInputJson: agToolSnap?.RawInputJson,
-                        rawOutput: agToolSnap?.RawOutput);
+                        rawOutput: agToolSnap?.RawOutput,
+                        additionalCalls: agToolSnap?.Calls);
                 }
                 break;
             }
 
             case AcpThinkingDeltaEvent thinkingDelta:
             {
-                var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-                if (last is not null && last.Kind == "tool_call")
-                {
-                    var updated = last with
-                    {
-                        Thinking = TruncateLargePayload((last.Thinking ?? string.Empty) + thinkingDelta.Delta, MaxToolPayloadChars),
-                        Timestamp = thinkingDelta.Timestamp
-                    };
-                    session.Timeline[^1] = updated;
-                    itemToBroadcast = updated;
-                }
-                else if (last is not null && last.Role == "assistant" && last.Kind == "message")
-                {
-                    var updated = last with
-                    {
-                        Thinking = TruncateLargePayload((last.Thinking ?? string.Empty) + thinkingDelta.Delta, MaxToolPayloadChars),
-                        Timestamp = thinkingDelta.Timestamp
-                    };
-                    session.Timeline[^1] = updated;
-                    itemToBroadcast = updated;
-                }
-                else
-                {
-                    var created = new AcpGatewayTimelineItem
-                    {
-                        Id = NextItemId(),
-                        Kind = "message",
-                        Role = "assistant",
-                        Timestamp = thinkingDelta.Timestamp,
-                        Thinking = TruncateLargePayload(thinkingDelta.Delta, MaxToolPayloadChars),
-                        Text = string.Empty
-                    };
-                    AddTimelineItemUnderGate(session, created);
-                    itemToBroadcast = created;
-                }
+                itemToBroadcast = UpsertInlineThoughtUnderGate(
+                    session,
+                    thinkingDelta.Timestamp,
+                    thinkingDelta.Delta,
+                    isStreamingDelta: true,
+                    toolStatus: "in_progress");
                 break;
             }
 
             case AcpAssistantTextDeltaEvent textDelta:
             {
-                var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-                if (last is not null && last.Kind == "tool_call" && string.Equals(last.ToolStatus, "in_progress", StringComparison.OrdinalIgnoreCase))
-                {
-                    session.Timeline[^1] = last with { ToolStatus = "completed" };
-                }
+                autoDrainedUserItem = CompleteInlineActivityUnderGate(session);
 
+                var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
                 if (last is not null && last.Role == "assistant" && last.Kind == "message")
                 {
                     var updated = last with
@@ -1458,9 +1398,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     toolCall.ToolName,
                     NormalizeToolText(toolCall.ToolName, toolCall.Title, toolCall.RawInputJson),
                     toolCall.ToolCallId,
-                    toolCall.Kind,
+                    toolCall.Kind ?? "command",
                     toolCall.Status,
-                    thinking: null,
                     rawInputJson: toolCall.RawInputJson,
                     rawOutput: toolCall.RawOutput,
                     isUpdateToSameToolCallId: isSameCallId);
@@ -1535,11 +1474,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
             case AcpTurnCompletedEvent turnCompleted:
             {
-                if (session.Timeline.Count > 0 &&
-                    session.Timeline[^1] is { Kind: "tool_call", ToolStatus: "in_progress" } lastRunningTool)
-                {
-                    session.Timeline[^1] = lastRunningTool with { ToolStatus = "completed" };
-                }
+                autoDrainedUserItem = CompleteInlineActivityUnderGate(session);
 
                 session.LastTurnJustCompleted = true;
                 var item = new AcpGatewayTimelineItem
@@ -1717,6 +1652,52 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         return oneLine.Length <= maxLen ? oneLine : oneLine[..maxLen] + "…";
     }
 
+    private static string? FormatThoughtPreview(string? rawThinking, int maxLen = 110)
+    {
+        if (string.IsNullOrWhiteSpace(rawThinking))
+        {
+            return null;
+        }
+
+        var sb = new StringBuilder(Math.Min(rawThinking.Length, maxLen + 32));
+        var prevSpace = true;
+        foreach (var ch in rawThinking)
+        {
+            if (ch is '*' or '`' or '_' or '#')
+            {
+                continue;
+            }
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!prevSpace)
+                {
+                    sb.Append(' ');
+                    prevSpace = true;
+                }
+                continue;
+            }
+            sb.Append(ch);
+            prevSpace = false;
+            if (sb.Length >= maxLen + 16)
+            {
+                break;
+            }
+        }
+
+        var cleaned = sb.ToString().Trim();
+        if (cleaned.Length <= maxLen)
+        {
+            return cleaned;
+        }
+
+        var cut = cleaned.LastIndexOf(' ', maxLen);
+        if (cut < maxLen / 2)
+        {
+            cut = maxLen;
+        }
+        return cleaned[..cut].TrimEnd() + "…";
+    }
+
     private static async Task<(Queue<AntigravityToolSnapshot> Snapshots, long NewOffset)> ExtractAntigravityToolSnapshotsAsync(
         string transcriptPath,
         long startOffset,
@@ -1757,8 +1738,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                         toolCallsEl.ValueKind == JsonValueKind.Array &&
                         toolCallsEl.GetArrayLength() > 0)
                     {
-                        var names = new List<string>();
-                        var targets = new List<string>();
+                        var calls = new List<AntigravityToolCallEntry>();
                         var inputLines = new StringBuilder();
 
                         foreach (var call in toolCallsEl.EnumerateArray())
@@ -1769,46 +1749,29 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                             }
 
                             var name = GetCleanJsonString(call, "name") ?? "tool";
-                            if (!names.Contains(name, StringComparer.Ordinal))
-                            {
-                                names.Add(name);
-                            }
+                            string? target = null;
 
                             if (call.TryGetProperty("args", out var argsEl) && argsEl.ValueKind == JsonValueKind.Object)
                             {
-                                var target = ExtractToolArgSummary(argsEl);
-                                if (!string.IsNullOrWhiteSpace(target))
-                                {
-                                    targets.Add(target);
-                                }
+                                target = ExtractToolArgSummary(argsEl);
                                 if (inputLines.Length > 0)
                                 {
                                     inputLines.AppendLine();
                                 }
                                 inputLines.Append(name).Append(' ').Append(argsEl.GetRawText());
                             }
+
+                            calls.Add(new AntigravityToolCallEntry(name, target));
                         }
 
-                        var toolLabel = names.Count > 0 ? string.Join(", ", names) : "tool";
-                        string? summary = null;
-                        if (targets.Count == 1)
-                        {
-                            summary = targets[0];
-                        }
-                        else if (targets.Count == 2)
-                        {
-                            summary = $"{targets[0]}, {targets[1]}";
-                        }
-                        else if (targets.Count > 2)
-                        {
-                            summary = $"{targets[0]}, {targets[1]} (+{targets.Count - 2} more)";
-                        }
+                        var lastCall = calls.Count > 0 ? calls[^1] : new AntigravityToolCallEntry("tool", null);
 
                         result.Add(new AntigravityToolSnapshot(
-                            ToolName: toolLabel,
-                            Summary: summary,
+                            ToolName: lastCall.ToolName,
+                            Summary: lastCall.Summary,
                             RawInputJson: inputLines.Length > 0 ? TruncateLargePayload(inputLines.ToString(), MaxToolPayloadChars) : null,
-                            RawOutput: null));
+                            RawOutput: null,
+                            Calls: calls));
                         attachNextGenericOutput = true;
                     }
                     else if (attachNextGenericOutput &&
@@ -1853,11 +1816,14 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         return (new Queue<AntigravityToolSnapshot>(result), nextOffset);
     }
 
+    private sealed record AntigravityToolCallEntry(string ToolName, string? Summary);
+
     private sealed record AntigravityToolSnapshot(
         string ToolName,
         string? Summary,
         string? RawInputJson,
-        string? RawOutput);
+        string? RawOutput,
+        IReadOnlyList<AntigravityToolCallEntry>? Calls = null);
 
     private static string? TruncateLargePayload(string? value, int maxChars)
     {
@@ -1868,95 +1834,47 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         return value[..maxChars] + "\n... [truncated]";
     }
 
-    private AcpGatewayTimelineItem UpsertInlineActivityUnderGate(
+    private AcpGatewayTimelineItem? UpsertInlineThoughtUnderGate(
         ManagedSession session,
         DateTimeOffset timestamp,
-        string? toolName,
-        string? summaryText,
-        string? toolCallId,
-        string? toolKind,
-        string toolStatus,
-        string? thinking,
-        string? rawInputJson,
-        string? rawOutput,
-        bool isUpdateToSameToolCallId = false)
+        string? rawThinking,
+        bool isStreamingDelta,
+        string toolStatus)
     {
-        var cleanToolName = string.IsNullOrWhiteSpace(toolName) ? "tool" : toolName.Trim();
-        var logEntry = !string.IsNullOrWhiteSpace(summaryText)
-            ? $"{cleanToolName} · {summaryText}"
-            : cleanToolName;
+        if (string.IsNullOrWhiteSpace(rawThinking))
+        {
+            return null;
+        }
 
         var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
         if (last is not null && last.Kind == "tool_call")
         {
-            var nextStepCount = isUpdateToSameToolCallId ? Math.Max(1, last.StepCount) : last.StepCount + 1;
-            var logs = new List<string>(last.ActivityLog ?? []);
-            if (isUpdateToSameToolCallId && logs.Count > 0)
+            var combined = isStreamingDelta && string.Equals(last.ToolKind, "thought", StringComparison.Ordinal)
+                ? (last.Thinking ?? string.Empty) + rawThinking
+                : rawThinking;
+            var preview = FormatThoughtPreview(combined, 110);
+            if (string.IsNullOrWhiteSpace(preview))
             {
-                logs[^1] = logEntry;
+                return last;
             }
-            else
-            {
-                logs.Add(logEntry);
-                while (logs.Count > 60)
-                {
-                    logs.RemoveAt(0);
-                }
-            }
-
-            var combinedThinking = string.IsNullOrWhiteSpace(thinking)
-                ? last.Thinking
-                : (string.IsNullOrWhiteSpace(last.Thinking) ? thinking : $"{last.Thinking}\n\n{thinking}");
 
             var updated = last with
             {
                 Timestamp = timestamp,
-                ToolName = cleanToolName,
-                Text = !string.IsNullOrWhiteSpace(summaryText) ? summaryText : (isUpdateToSameToolCallId ? last.Text : null),
-                ToolCallId = toolCallId ?? last.ToolCallId,
-                ToolKind = toolKind ?? last.ToolKind,
+                ToolName = "thinking",
+                ToolKind = "thought",
                 ToolStatus = toolStatus,
-                StepCount = nextStepCount,
-                ActivityLog = logs,
-                Thinking = TruncateLargePayload(combinedThinking, MaxToolPayloadChars),
-                RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars) ?? last.RawInputJson,
-                RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars) ?? last.RawOutput
+                Text = preview,
+                Thinking = TruncateLargePayload(combined, 300)
             };
             session.Timeline[^1] = updated;
             return updated;
         }
 
-        // If the previous item was an assistant thinking-only step with no prose text yet,
-        // convert it in-place (preserving its Id) into the in-line terminal activity bar.
-        if (last is not null &&
-            last.Kind == "message" &&
-            last.Role == "assistant" &&
-            string.IsNullOrWhiteSpace(last.Text) &&
-            !string.IsNullOrWhiteSpace(last.Thinking))
+        var initialPreview = FormatThoughtPreview(rawThinking, 110);
+        if (string.IsNullOrWhiteSpace(initialPreview))
         {
-            var combinedThinking = string.IsNullOrWhiteSpace(thinking)
-                ? last.Thinking
-                : $"{last.Thinking}\n\n{thinking}";
-
-            var converted = new AcpGatewayTimelineItem
-            {
-                Id = last.Id,
-                Kind = "tool_call",
-                Role = "assistant",
-                Timestamp = timestamp,
-                Text = summaryText,
-                ToolName = cleanToolName,
-                ToolCallId = toolCallId,
-                ToolKind = toolKind,
-                ToolStatus = toolStatus,
-                StepCount = 1,
-                ActivityLog = [logEntry],
-                Thinking = TruncateLargePayload(combinedThinking, MaxToolPayloadChars),
-                RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars),
-                RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars)
-            };
-            session.Timeline[^1] = converted;
-            return converted;
+            return null;
         }
 
         var created = new AcpGatewayTimelineItem
@@ -1965,14 +1883,157 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             Kind = "tool_call",
             Role = "assistant",
             Timestamp = timestamp,
-            Text = summaryText,
+            ToolName = "thinking",
+            ToolKind = "thought",
+            ToolStatus = toolStatus,
+            Text = initialPreview,
+            StepCount = 0,
+            ActivityLog = [],
+            Thinking = TruncateLargePayload(rawThinking, 300)
+        };
+        AddTimelineItemUnderGate(session, created);
+        return created;
+    }
+
+    private static AcpGatewayTimelineItem? CompleteInlineActivityUnderGate(ManagedSession session)
+    {
+        if (session.Timeline.Count == 0 || session.Timeline[^1].Kind != "tool_call")
+        {
+            return null;
+        }
+
+        var lastTool = session.Timeline[^1];
+        if (string.Equals(lastTool.ToolKind, "thought", StringComparison.Ordinal) &&
+            lastTool.ActivityLog is { Count: > 0 } logs)
+        {
+            var lastLog = logs[^1];
+            var sepIdx = lastLog.IndexOf(" · ", StringComparison.Ordinal);
+            var cmdName = sepIdx >= 0 ? lastLog[..sepIdx] : lastLog;
+            var cmdTarget = sepIdx >= 0 ? lastLog[(sepIdx + 3)..] : null;
+
+            var settled = lastTool with
+            {
+                ToolName = cmdName,
+                Text = cmdTarget,
+                ToolKind = "command",
+                ToolStatus = "completed",
+                Thinking = null
+            };
+            session.Timeline[^1] = settled;
+            return settled;
+        }
+
+        if (!string.Equals(lastTool.ToolStatus, "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            var settled = lastTool with
+            {
+                ToolStatus = "completed",
+                Thinking = null
+            };
+            session.Timeline[^1] = settled;
+            return settled;
+        }
+
+        return null;
+    }
+
+    private AcpGatewayTimelineItem UpsertInlineActivityUnderGate(
+        ManagedSession session,
+        DateTimeOffset timestamp,
+        string? toolName,
+        string? summaryText,
+        string? toolCallId,
+        string? toolKind,
+        string toolStatus,
+        string? rawInputJson,
+        string? rawOutput,
+        bool isUpdateToSameToolCallId = false,
+        IReadOnlyList<AntigravityToolCallEntry>? additionalCalls = null)
+    {
+        var entries = new List<AntigravityToolCallEntry>();
+        if (additionalCalls is { Count: > 0 })
+        {
+            entries.AddRange(additionalCalls);
+        }
+        else
+        {
+            var cleanName = string.IsNullOrWhiteSpace(toolName) ? "tool" : toolName.Trim();
+            entries.Add(new AntigravityToolCallEntry(cleanName, summaryText));
+        }
+
+        var headlineCall = entries[^1];
+        var cleanToolName = string.IsNullOrWhiteSpace(headlineCall.ToolName) ? "tool" : headlineCall.ToolName.Trim();
+        var headlineSummary = headlineCall.Summary ?? summaryText;
+
+        var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
+        if (last is not null && last.Kind == "tool_call")
+        {
+            var logs = new List<string>(last.ActivityLog ?? []);
+            var nextStepCount = last.StepCount;
+
+            foreach (var entry in entries)
+            {
+                var cName = string.IsNullOrWhiteSpace(entry.ToolName) ? "tool" : entry.ToolName.Trim();
+                var logLine = !string.IsNullOrWhiteSpace(entry.Summary)
+                    ? $"{cName} · {entry.Summary}"
+                    : cName;
+
+                if (isUpdateToSameToolCallId && logs.Count > 0 && entries.Count == 1)
+                {
+                    logs[^1] = logLine;
+                    nextStepCount = Math.Max(1, nextStepCount);
+                }
+                else
+                {
+                    logs.Add(logLine);
+                    nextStepCount++;
+                }
+            }
+
+            while (logs.Count > 60)
+            {
+                logs.RemoveAt(0);
+            }
+
+            var updated = last with
+            {
+                Timestamp = timestamp,
+                ToolName = cleanToolName,
+                Text = !string.IsNullOrWhiteSpace(headlineSummary) ? headlineSummary : (isUpdateToSameToolCallId ? last.Text : null),
+                ToolCallId = toolCallId ?? last.ToolCallId,
+                ToolKind = toolKind ?? "command",
+                ToolStatus = toolStatus,
+                StepCount = nextStepCount,
+                ActivityLog = logs,
+                Thinking = null,
+                RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars) ?? last.RawInputJson,
+                RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars) ?? last.RawOutput
+            };
+            session.Timeline[^1] = updated;
+            return updated;
+        }
+
+        var initialLogs = new List<string>(entries.Count);
+        foreach (var entry in entries)
+        {
+            var cName = string.IsNullOrWhiteSpace(entry.ToolName) ? "tool" : entry.ToolName.Trim();
+            initialLogs.Add(!string.IsNullOrWhiteSpace(entry.Summary) ? $"{cName} · {entry.Summary}" : cName);
+        }
+
+        var created = new AcpGatewayTimelineItem
+        {
+            Id = NextItemId(),
+            Kind = "tool_call",
+            Role = "assistant",
+            Timestamp = timestamp,
+            Text = headlineSummary,
             ToolName = cleanToolName,
             ToolCallId = toolCallId,
-            ToolKind = toolKind,
+            ToolKind = toolKind ?? "command",
             ToolStatus = toolStatus,
-            StepCount = 1,
-            ActivityLog = [logEntry],
-            Thinking = TruncateLargePayload(thinking, MaxToolPayloadChars),
+            StepCount = initialLogs.Count,
+            ActivityLog = initialLogs,
+            Thinking = null,
             RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars),
             RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars)
         };

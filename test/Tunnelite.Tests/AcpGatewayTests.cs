@@ -219,10 +219,13 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
                     $"Historical message #{i}"));
             }
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-6), "user", "<USER_REQUEST>\nInitial desktop prompt\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5.5), "assistant", "", Thinking: "**Initial thought**: Let's inspect Program.cs first.", ToolName: null));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-5), "assistant", "", Thinking: "Checking Program.cs", ToolName: "read_file"));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-4), "assistant", "", Thinking: null, ToolName: "edit_file"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3.5), "assistant", "", Thinking: "Now let's run the release build.", ToolName: null));
             historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-3), "assistant", "", Thinking: null, ToolName: "run_command"));
-            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-2), "assistant", "Desktop response from transcript"));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-2.5), "assistant", "", Thinking: "Build succeeded, preparing final summary.", ToolName: null));
+            historyEvents.Add(new AcpTranscriptHistoryEntryEvent(AgentProviderKind.Antigravity, "disc-agy-101", DateTimeOffset.UtcNow.AddMinutes(-2), "assistant", "Desktop response from transcript", Thinking: "Final response thought"));
 
             var fakeAgy = new ControllableTestAdapter(AgentProviderKind.Antigravity, "agy", "Google Antigravity")
             {
