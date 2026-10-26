@@ -1,8 +1,10 @@
 using System.CommandLine.Invocation;
+using Acplite.Sdk.Protocol;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using System.CommandLine;
+using Tunnelite.Acp;
 using Tunnelite.Sdk;
 
 namespace Tunnelite.Client;
@@ -16,7 +18,64 @@ public class Program
         var serve = new Command("serve", "Serve a local web app to paired browsers with a QR code.");
         Configure(serve, pairedMode: true);
         root.AddCommand(serve);
+        var acp = new Command("acp", "Bridge local coding agents (claude, codex, grok, agy) to paired mobile browsers.");
+        ConfigureAcp(acp);
+        root.AddCommand(acp);
         return await root.InvokeAsync(args);
+    }
+
+    private static void ConfigureAcp(Command command)
+    {
+        var provider = new Argument<string?>("provider", () => null, "Optional coding agent filter: claude, codex, grok, or agy (default: all).");
+        var relay = new Option<string>("--publicUrl", () => "https://tunnelite.com", "The relay server URL.");
+        var log = new Option<LogLevel?>("--log", () => null, "Client log verbosity.");
+        var name = new Option<string>("--name", () => "default", "Desktop profile name; the same profile keeps the same address.");
+        var identity = new Option<string?>("--identity-file", "Desktop profile file (identity and paired devices).");
+        var cwd = new Option<string?>("--cwd", () => null, "Default working directory for new agent sessions.");
+        command.AddArgument(provider);
+        foreach (var option in new Option[] { relay, log, name, identity, cwd }) command.AddOption(option);
+        command.SetHandler(async (InvocationContext invocation) =>
+        {
+            try
+            {
+                await RunAcpAsync(
+                    invocation.ParseResult.GetValueForArgument(provider),
+                    invocation.ParseResult.GetValueForOption(relay)!,
+                    invocation.ParseResult.GetValueForOption(log),
+                    invocation.ParseResult.GetValueForOption(name)!,
+                    invocation.ParseResult.GetValueForOption(identity),
+                    invocation.ParseResult.GetValueForOption(cwd),
+                    invocation.GetCancellationToken());
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception exception)
+            {
+                AnsiConsole.Write(new Text(TerminalText.Clean(exception.Message) + Environment.NewLine, new Style(Color.Red)));
+                invocation.ExitCode = 1;
+            }
+        });
+    }
+
+    private static async Task RunAcpAsync(
+        string? rawProvider,
+        string publicUrl,
+        LogLevel? logLevel,
+        string profileName,
+        string? identityFile,
+        string? workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        AgentProviderKind? scopedProvider = null;
+        if (!string.IsNullOrWhiteSpace(rawProvider))
+        {
+            if (!AgentProviderParser.TryParse(rawProvider, out var parsed) || parsed == AgentProviderKind.GenericAcp)
+                throw new ArgumentException("Use claude, codex, grok, or agy as the coding agent provider.");
+            scopedProvider = parsed;
+        }
+
+        await using var orchestrator = new AcpGatewayOrchestrator(scopedProvider, workingDirectory);
+        await using var acpServer = await AcpGatewayServer.StartNewAsync(orchestrator, ownsOrchestrator: false, cancellationToken);
+        await RunAsync(acpServer.LocalUrl, publicUrl, logLevel, pair: true, profileName, identityFile, insecureLocal: false, cancellationToken);
     }
 
     private static void Configure(Command command, bool pairedMode)

@@ -157,6 +157,23 @@ tunnelite serve http://localhost:3000 --name my-website
 
 See [paired access](docs/paired-access.md) for profile options and device management.
 
+### Orchestrate your local coding agents from your phone (`tunnelite acp`)
+
+Bridge your local **Claude Code**, **OpenAI Codex**, **Grok**, and **Google Antigravity** sessions to a paired mobile browser using [Acplite](https://github.com/cristipufu/acplite):
+
+```bash
+# Connect all installed local coding agents (claude, codex, grok, agy)
+tunnelite acp
+
+# Or scope to a specific coding agent
+tunnelite acp claude
+tunnelite acp codex
+tunnelite acp grok
+tunnelite acp agy
+```
+
+Scan the pairing QR code on your phone to live-tail active desktop sessions, take over a session, steer active turns in real time, queue follow-up prompts for the next turn, interrupt turns, and approve or deny tool calls.
+
 ## Self-hosting
 
 Tunnelite allows you to self-host the server, giving you full control over your tunneling infrastructure. To set up your own Tunnelite server, you'll need:

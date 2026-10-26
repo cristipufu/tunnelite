@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -34,6 +34,7 @@
 	
   <ItemGroup>
     <ProjectReference Include="..\Tunnelite.Sdk\Tunnelite.Sdk.csproj" />
+    <ProjectReference Include="..\Tunnelite.Acp\Tunnelite.Acp.csproj" />
     <InternalsVisibleTo Include="Tunnelite.Tests" />
   </ItemGroup>
 
