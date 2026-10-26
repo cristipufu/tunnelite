@@ -783,13 +783,15 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             {
                 var historicalEvents = new List<AcpEvent>();
                 Queue<AntigravityToolSnapshot>? agToolSnapshots = null;
+                long newAgOffset = 0;
                 try
                 {
                     if (session.Provider == AgentProviderKind.Antigravity &&
                         File.Exists(discoveredForHistory.TranscriptPath))
                     {
-                        agToolSnapshots = await ExtractAntigravityToolSnapshotsAsync(
+                        (agToolSnapshots, newAgOffset) = await ExtractAntigravityToolSnapshotsAsync(
                             discoveredForHistory.TranscriptPath,
+                            startOffset: 0,
                             cancellationToken).ConfigureAwait(false);
                     }
 
@@ -817,12 +819,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 {
                     if (!session.InitialHistoryLoaded && session.LiveHandle is null)
                     {
-                        session.PendingAgToolSnapshots = agToolSnapshots;
+                        session.PendingAgToolSnapshots = agToolSnapshots ?? new Queue<AntigravityToolSnapshot>();
+                        session.LastParsedAgToolOffset = newAgOffset;
                         foreach (var ev in historicalEvents)
                         {
                             ApplyEventUnderGate(session, ev, isHistoricalLoad: true, out _, out _, out _, out _);
                         }
-                        session.PendingAgToolSnapshots = null;
                         session.InitialHistoryLoaded = true;
                         try
                         {
@@ -1049,6 +1051,23 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             if (isFromTranscriptTail)
             {
                 session.LastDiskActivityAt = DateTimeOffset.UtcNow;
+
+                if (session.Provider == AgentProviderKind.Antigravity &&
+                    acpEvent is AcpTranscriptHistoryEntryEvent { ToolName.Length: > 0 } &&
+                    !string.IsNullOrWhiteSpace(session.TranscriptPath) &&
+                    File.Exists(session.TranscriptPath))
+                {
+                    var (moreSnaps, nextOffset) = await ExtractAntigravityToolSnapshotsAsync(
+                        session.TranscriptPath!,
+                        session.LastParsedAgToolOffset,
+                        cancellationToken).ConfigureAwait(false);
+                    session.LastParsedAgToolOffset = nextOffset;
+                    session.PendingAgToolSnapshots ??= new Queue<AntigravityToolSnapshot>();
+                    while (moreSnaps.Count > 0)
+                    {
+                        session.PendingAgToolSnapshots.Enqueue(moreSnaps.Dequeue());
+                    }
+                }
             }
 
             ApplyEventUnderGate(
@@ -1394,6 +1413,11 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             case AcpAssistantTextDeltaEvent textDelta:
             {
                 var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
+                if (last is not null && last.Kind == "tool_call" && string.Equals(last.ToolStatus, "in_progress", StringComparison.OrdinalIgnoreCase))
+                {
+                    session.Timeline[^1] = last with { ToolStatus = "completed" };
+                }
+
                 if (last is not null && last.Role == "assistant" && last.Kind == "message")
                 {
                     var updated = last with
@@ -1511,6 +1535,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
             case AcpTurnCompletedEvent turnCompleted:
             {
+                if (session.Timeline.Count > 0 &&
+                    session.Timeline[^1] is { Kind: "tool_call", ToolStatus: "in_progress" } lastRunningTool)
+                {
+                    session.Timeline[^1] = lastRunningTool with { ToolStatus = "completed" };
+                }
+
                 session.LastTurnJustCompleted = true;
                 var item = new AcpGatewayTimelineItem
                 {
@@ -1687,14 +1717,20 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         return oneLine.Length <= maxLen ? oneLine : oneLine[..maxLen] + "…";
     }
 
-    private static async Task<Queue<AntigravityToolSnapshot>> ExtractAntigravityToolSnapshotsAsync(
+    private static async Task<(Queue<AntigravityToolSnapshot> Snapshots, long NewOffset)> ExtractAntigravityToolSnapshotsAsync(
         string transcriptPath,
+        long startOffset,
         CancellationToken cancellationToken)
     {
         var result = new List<AntigravityToolSnapshot>();
+        var nextOffset = startOffset;
         try
         {
             await using var fs = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (startOffset > 0 && startOffset <= fs.Length)
+            {
+                fs.Seek(startOffset, SeekOrigin.Begin);
+            }
             using var reader = new StreamReader(fs, Encoding.UTF8);
             string? line;
             var attachNextGenericOutput = false;
@@ -1802,6 +1838,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     // Skip malformed JSON line
                 }
             }
+
+            nextOffset = fs.Position;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1812,7 +1850,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             // Ignore file read errors
         }
 
-        return new Queue<AntigravityToolSnapshot>(result);
+        return (new Queue<AntigravityToolSnapshot>(result), nextOffset);
     }
 
     private sealed record AntigravityToolSnapshot(
@@ -2213,6 +2251,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         public bool InitialHistoryLoaded { get; set; }
         public int VisibleTimelineLimit { get; set; } = DefaultTimelinePageSize;
         public Queue<AntigravityToolSnapshot>? PendingAgToolSnapshots { get; set; }
+        public long LastParsedAgToolOffset { get; set; }
 
         public IAcpSessionHandle? LiveHandle { get; set; }
         public CancellationTokenSource? TailCts { get; set; }

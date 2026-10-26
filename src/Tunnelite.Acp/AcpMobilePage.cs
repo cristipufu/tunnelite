@@ -585,11 +585,11 @@ internal static class AcpMobilePage
       gap: 4px;
     }
     .msg-row.user { align-items: flex-end; }
-    .msg-row.assistant { align-items: flex-start; }
+    .msg-row.assistant { align-items: flex-start; width: 100%; }
     .msg-row.system { align-items: center; }
     .msg-bubble {
-      max-width: 92%;
-      padding: 12px 14px;
+      max-width: 88%;
+      padding: 11px 14px;
       border-radius: 16px;
       font-size: 14px;
       line-height: 1.6;
@@ -606,21 +606,54 @@ internal static class AcpMobilePage
       background: var(--card);
       backdrop-filter: blur(12px);
       border-bottom-left-radius: 5px;
+      max-width: 100%;
       width: 100%;
+    }
+    .msg-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--muted);
+    }
+    .msg-meta-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .msg-role-label.user { color: #7dd3fc; }
+    .msg-role-label.assistant { color: #cbd5e1; }
+    .msg-time {
+      font-size: 10px;
+      color: var(--muted);
+      opacity: 0.85;
     }
     .msg-badge {
       display: inline-flex;
       align-items: center;
-      font-size: 10px;
+      font-size: 9.5px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      padding: 2px 7px;
+      letter-spacing: 0.05em;
+      padding: 1px 6px;
       border-radius: 999px;
-      margin-bottom: 6px;
       background: rgba(56, 189, 248, 0.14);
       color: var(--accent);
       border: 1px solid rgba(56, 189, 248, 0.26);
+    }
+    .stream-cursor {
+      display: inline-block;
+      margin-left: 3px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-weight: 700;
+      animation: pulse 0.9s infinite ease-in-out;
     }
     .thinking-box {
       margin-bottom: 10px;
@@ -832,9 +865,14 @@ internal static class AcpMobilePage
       width: 100%;
       border-radius: 11px;
       border: 1px solid rgba(56, 189, 248, 0.2);
-      background: rgba(2, 6, 23, 0.84);
+      background: rgba(2, 6, 23, 0.86);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       overflow: hidden;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .tool-card.running {
+      border-color: rgba(56, 189, 248, 0.45);
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
     .tool-header {
       padding: 8px 12px;
@@ -890,6 +928,17 @@ internal static class AcpMobilePage
       gap: 6px;
       flex-shrink: 0;
     }
+    .tool-chevron {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      transition: transform 0.15s ease;
+      display: inline-block;
+    }
+    .tool-card.open .tool-chevron {
+      transform: rotate(90deg);
+      color: var(--accent);
+    }
     .tool-step-count {
       font-family: var(--mono);
       font-size: 10.5px;
@@ -937,6 +986,30 @@ internal static class AcpMobilePage
     }
     .tool-log-line {
       color: #cbd5e1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .live-turn-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 11px;
+      border: 1px dashed rgba(34, 197, 94, 0.35);
+      background: rgba(2, 6, 23, 0.72);
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: #4ade80;
+    }
+    .live-turn-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .live-turn-text {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -1571,6 +1644,14 @@ internal static class AcpMobilePage
     updateJumpBottomButton();
   }, { passive: true });
 
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      if (isNearBottom()) {
+        scrollToBottom();
+      }
+    });
+  }
+
   if (jumpBottomBtn) {
     jumpBottomBtn.addEventListener('click', () => {
       scrollToBottom();
@@ -1682,10 +1763,33 @@ internal static class AcpMobilePage
 
     const isBusy = state.activeSession && state.activeSession.summary && state.activeSession.summary.isTurnActive;
     let actionName = 'send_prompt';
+    let optimisticBadge = null;
     if (isBusy) {
       if (state.busyActionMode === 'queue') actionName = 'enqueue_prompt';
-      else if (state.busyActionMode === 'steer') actionName = 'steer';
-      else if (state.busyActionMode === 'interrupt') actionName = 'interrupt_and_prompt';
+      else if (state.busyActionMode === 'steer') { actionName = 'steer'; optimisticBadge = 'STEERED'; }
+      else if (state.busyActionMode === 'interrupt') { actionName = 'interrupt_and_prompt'; optimisticBadge = 'INTERRUPTED'; }
+    }
+
+    if (actionName !== 'enqueue_prompt' && state.activeSession && !timelineInner.querySelector('.hero-card')) {
+      const optNode = createTimelineItemNode({
+        id: 'optimistic_' + Date.now(),
+        kind: 'message',
+        role: 'user',
+        timestamp: new Date().toISOString(),
+        text: text,
+        badge: optimisticBadge
+      }, false);
+      optNode.classList.add('optimistic-msg');
+      const liveBar = timelineInner.querySelector('#liveTurnBar');
+      if (liveBar) timelineInner.insertBefore(optNode, liveBar);
+      else timelineInner.appendChild(optNode);
+      if (state.activeSession.summary) {
+        state.activeSession.summary.isTurnActive = true;
+        renderActiveSessionHeader();
+        updateComposerModeUI();
+      }
+      syncLiveTurnIndicator();
+      scrollToBottom();
     }
 
     await sendAction({
@@ -1853,9 +1957,12 @@ internal static class AcpMobilePage
     if (env.type === 'session_summary' && env.summary) {
       upsertSessionSummary(env.summary);
       if (state.activeSession && state.activeSession.summary && state.activeSession.summary.sessionKey === env.summary.sessionKey) {
+        const wasNearBottom = isNearBottom();
         state.activeSession.summary = env.summary;
         renderActiveSessionHeader();
         updateComposerModeUI();
+        syncLiveTurnIndicator();
+        if (wasNearBottom) scrollToBottom();
       }
       renderSessionList();
       return;
@@ -2395,15 +2502,32 @@ internal static class AcpMobilePage
     }
   }
 
-  function createTimelineItemNode(item) {
+  function formatMessageClock(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  }
+
+  function getActiveProviderLabel() {
+    const s = state.activeSession && state.activeSession.summary;
+    if (!s) return 'AGENT';
+    return (s.providerDisplayName || s.provider || 'Agent').toUpperCase();
+  }
+
+  function createTimelineItemNode(item, isLatestItem) {
     if (item.kind === 'tool_call') {
+      const isRunning = item.toolStatus === 'in_progress' && !!isLatestItem;
       const card = document.createElement('div');
-      card.className = 'tool-card';
+      card.className = 'tool-card' + (isRunning ? ' running' : '');
       card.dataset.itemId = item.id;
       const header = document.createElement('div');
       header.className = 'tool-header';
 
-      const isRunning = item.toolStatus === 'in_progress';
       const title = document.createElement('div');
       title.className = 'tool-title';
 
@@ -2442,16 +2566,23 @@ internal static class AcpMobilePage
       badge.textContent = isRunning ? 'Running' : 'Done';
       rightWrap.appendChild(badge);
 
+      const hasLog = item.activityLog && item.activityLog.length > 0;
+      const hasDetails = hasLog || item.thinking || item.rawInputJson || item.rawOutput;
+      if (hasDetails) {
+        const chev = document.createElement('span');
+        chev.className = 'tool-chevron';
+        chev.textContent = '▸';
+        rightWrap.appendChild(chev);
+      }
+
       header.append(title, rightWrap);
       card.appendChild(header);
 
-      const hasLog = item.activityLog && item.activityLog.length > 0;
-      const hasDetails = hasLog || item.thinking || item.rawInputJson || item.rawOutput;
       if (hasDetails) {
         const details = document.createElement('div');
         details.className = 'tool-details';
 
-        if (hasLog && item.activityLog.length > 1) {
+        if (hasLog && item.activityLog.length >= 1) {
           const logBox = document.createElement('div');
           logBox.className = 'tool-log-list';
           item.activityLog.forEach((entry, idx) => {
@@ -2518,19 +2649,36 @@ internal static class AcpMobilePage
       return row;
     }
 
+    const isUser = item.role === 'user';
     const row = document.createElement('div');
-    row.className = `msg-row ${item.role === 'user' ? 'user' : 'assistant'}`;
+    row.className = `msg-row ${isUser ? 'user' : 'assistant'}`;
     row.dataset.itemId = item.id;
 
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
 
+    const metaRow = document.createElement('div');
+    metaRow.className = 'msg-meta-row';
+    const metaLeft = document.createElement('div');
+    metaLeft.className = 'msg-meta-left';
+
+    const roleSpan = document.createElement('span');
+    roleSpan.className = `msg-role-label ${isUser ? 'user' : 'assistant'}`;
+    roleSpan.textContent = isUser ? 'YOU' : getActiveProviderLabel();
+    metaLeft.appendChild(roleSpan);
+
     if (item.badge) {
-      const b = document.createElement('div');
+      const b = document.createElement('span');
       b.className = 'msg-badge';
       b.textContent = item.badge;
-      bubble.appendChild(b);
+      metaLeft.appendChild(b);
     }
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'msg-time';
+    timeSpan.textContent = formatMessageClock(item.timestamp);
+    metaRow.append(metaLeft, timeSpan);
+    bubble.appendChild(metaRow);
 
     if (item.thinking) {
       const details = document.createElement('details');
@@ -2549,6 +2697,18 @@ internal static class AcpMobilePage
       const content = document.createElement('div');
       content.className = 'msg-content';
       appendFormattedMessageContent(content, item.text);
+      const isTurnActive = !!(state.activeSession && state.activeSession.summary && state.activeSession.summary.isTurnActive);
+      if (!isUser && isLatestItem && isTurnActive) {
+        const cursor = document.createElement('span');
+        cursor.className = 'stream-cursor';
+        cursor.textContent = '▍';
+        const lastBlock = content.lastElementChild;
+        if (lastBlock && lastBlock.tagName !== 'DIV') {
+          lastBlock.appendChild(cursor);
+        } else {
+          content.appendChild(cursor);
+        }
+      }
       bubble.appendChild(content);
     }
 
@@ -2556,11 +2716,73 @@ internal static class AcpMobilePage
     return row;
   }
 
+  function syncLiveTurnIndicator() {
+    const existingBar = timelineInner.querySelector('#liveTurnBar');
+    const summary = state.activeSession && state.activeSession.summary;
+    const isTurnActive = !!(summary && summary.isTurnActive);
+    const items = (state.activeSession && state.activeSession.timeline) || [];
+    const lastItem = items.length > 0 ? items[items.length - 1] : null;
+    const hasRunningToolCard = lastItem && lastItem.kind === 'tool_call' && lastItem.toolStatus === 'in_progress';
+
+    if (!isTurnActive || hasRunningToolCard || timelineInner.querySelector('.hero-card')) {
+      if (existingBar) existingBar.remove();
+      return;
+    }
+
+    const labelText = (lastItem && lastItem.kind === 'message' && lastItem.role === 'assistant')
+      ? `${getActiveProviderLabel()} is streaming response live…`
+      : `${getActiveProviderLabel()} is working live on desktop…`;
+
+    if (existingBar) {
+      const txt = existingBar.querySelector('.live-turn-text');
+      if (txt) txt.textContent = labelText;
+      timelineInner.appendChild(existingBar);
+      return;
+    }
+
+    const bar = document.createElement('div');
+    bar.id = 'liveTurnBar';
+    bar.className = 'live-turn-bar';
+    const left = document.createElement('div');
+    left.className = 'live-turn-left';
+    const dot = document.createElement('span');
+    dot.className = 'status-dot busy';
+    const txt = document.createElement('span');
+    txt.className = 'live-turn-text';
+    txt.textContent = labelText;
+    left.append(dot, txt);
+    const right = document.createElement('span');
+    right.textContent = 'LIVE';
+    right.style.fontSize = '10px';
+    right.style.fontWeight = '700';
+    bar.append(left, right);
+    timelineInner.appendChild(bar);
+  }
+
+  function markPreviousToolCardsDone() {
+    timelineInner.querySelectorAll('.tool-card.running').forEach(card => {
+      card.classList.remove('running');
+      const glyph = card.querySelector('.tool-prompt-glyph.running');
+      if (glyph) glyph.classList.remove('running');
+      const status = card.querySelector('.tool-status.running');
+      if (status) {
+        status.className = 'tool-status done';
+        status.textContent = 'Done';
+      }
+    });
+  }
+
   function upsertTimelineItemDom(item, wasNearBottom) {
     if (timelineInner.querySelector('.hero-card')) {
       renderTimeline({ scrollMode: 'bottom' });
       return;
     }
+
+    if (item.kind === 'message' && item.role === 'user') {
+      timelineInner.querySelectorAll('.optimistic-msg').forEach(el => el.remove());
+    }
+
+    timelineInner.querySelectorAll('.stream-cursor').forEach(el => el.remove());
 
     let existingNode = null;
     const children = timelineInner.children;
@@ -2571,7 +2793,7 @@ internal static class AcpMobilePage
       }
     }
 
-    const newNode = createTimelineItemNode(item);
+    const newNode = createTimelineItemNode(item, true);
     if (existingNode) {
       if (existingNode.classList.contains('open')) {
         newNode.classList.add('open');
@@ -2583,8 +2805,16 @@ internal static class AcpMobilePage
       }
       existingNode.replaceWith(newNode);
     } else {
-      timelineInner.appendChild(newNode);
+      markPreviousToolCardsDone();
+      const liveBar = timelineInner.querySelector('#liveTurnBar');
+      if (liveBar) {
+        timelineInner.insertBefore(newNode, liveBar);
+      } else {
+        timelineInner.appendChild(newNode);
+      }
     }
+
+    syncLiveTurnIndicator();
 
     if (wasNearBottom) {
       scrollToBottom();
@@ -2663,9 +2893,11 @@ internal static class AcpMobilePage
       timelineInner.appendChild(bar);
     }
 
-    items.forEach(item => {
-      timelineInner.appendChild(createTimelineItemNode(item));
+    items.forEach((item, idx) => {
+      timelineInner.appendChild(createTimelineItemNode(item, idx === items.length - 1));
     });
+
+    syncLiveTurnIndicator();
 
     if (scrollMode === 'preserve' && options && typeof options.prevScrollHeight === 'number') {
       const heightDelta = timelineWrap.scrollHeight - options.prevScrollHeight;
