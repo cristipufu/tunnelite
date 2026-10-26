@@ -679,29 +679,32 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         await session.AttachGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            CancellationTokenSource? oldTailCts;
-            Task? oldTailTask;
+            IAcpSessionHandle? staleHandle = null;
+            CancellationTokenSource? stalePumpCts = null;
+            Task? stalePumpTask = null;
             AcpSessionConfig config;
 
             await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (session.LiveHandle is not null)
+                if (session.LiveHandle is not null && !session.HasExternalTranscriptActivitySinceAttach)
                 {
                     return session.LiveHandle;
                 }
 
-                oldTailCts = session.TailCts;
-                oldTailTask = session.TailTask;
-                session.TailCts = null;
-                session.TailTask = null;
+                staleHandle = session.LiveHandle;
+                stalePumpCts = session.LivePumpCts;
+                stalePumpTask = session.LivePumpTask;
+                session.LiveHandle = null;
+                session.LivePumpCts = null;
+                session.LivePumpTask = null;
 
                 config = new AcpSessionConfig
                 {
                     Provider = session.Provider,
                     WorkingDirectory = session.WorkingDirectory ?? _defaultWorkingDirectory,
                     SessionId = session.SessionId,
-                    ResumeExisting = session.IsDiscoveredOnDisk,
+                    ResumeExisting = session.IsDiscoveredOnDisk || session.HasMobileAttachedOnce,
                     Model = session.Model,
                     AutoApproveTools = session.AutoApproveTools
                 };
@@ -711,11 +714,16 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 session.Gate.Release();
             }
 
-            if (oldTailCts is not null)
+            if (stalePumpCts is not null)
             {
-                await oldTailCts.CancelAsync().ConfigureAwait(false);
-                await WaitBackgroundTaskQuietlyAsync(oldTailTask).ConfigureAwait(false);
-                oldTailCts.Dispose();
+                await stalePumpCts.CancelAsync().ConfigureAwait(false);
+                await WaitBackgroundTaskQuietlyAsync(stalePumpTask).ConfigureAwait(false);
+                stalePumpCts.Dispose();
+            }
+
+            if (staleHandle is not null)
+            {
+                await staleHandle.DisposeAsync().ConfigureAwait(false);
             }
 
             var handle = await _runtime.StartSessionAsync(config, cancellationToken).ConfigureAwait(false);
@@ -724,6 +732,9 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             try
             {
                 session.LiveHandle = handle;
+                session.HasMobileAttachedOnce = true;
+                session.HasExternalTranscriptActivitySinceAttach = false;
+                session.LastMobileTurnActivityAt = DateTimeOffset.UtcNow;
                 session.UpdatedAt = DateTimeOffset.UtcNow;
                 StartLiveHandlePump(session, handle);
             }
@@ -755,14 +766,13 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (session.LiveHandle is not null ||
-                    string.IsNullOrWhiteSpace(session.TranscriptPath) ||
+                if (string.IsNullOrWhiteSpace(session.TranscriptPath) ||
                     !File.Exists(session.TranscriptPath))
                 {
                     return;
                 }
 
-                if (!session.InitialHistoryLoaded)
+                if (!session.InitialHistoryLoaded && session.LiveHandle is null)
                 {
                     discoveredForHistory = new AcpDiscoveredSession(
                         Provider: session.Provider,
@@ -843,8 +853,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (session.LiveHandle is not null ||
-                    session.TailTask is not null ||
+                if (session.TailTask is not null ||
                     string.IsNullOrWhiteSpace(session.TranscriptPath))
                 {
                     return;
@@ -1028,18 +1037,58 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         IReadOnlyList<AcpGatewayPendingPermission>? permissionsToBroadcast = null;
         AcpGatewayTimelineItem? autoDrainedUserItem = null;
         AcpGatewaySessionSummary? summaryToBroadcast = null;
+        IAcpSessionHandle? staleHandleToDispose = null;
+        CancellationTokenSource? stalePumpCts = null;
+        Task? stalePumpTask = null;
 
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (isFromTranscriptTail && session.LiveHandle is not null)
+            var now = DateTimeOffset.UtcNow;
+            if (!isFromTranscriptTail)
             {
-                return;
+                session.LastMobileTurnActivityAt = now;
             }
-
-            if (isFromTranscriptTail)
+            else
             {
-                session.LastDiskActivityAt = DateTimeOffset.UtcNow;
+                // Suppress duplicate .jsonl events while a mobile-initiated turn is actively streaming
+                // over the live handle, or if the .jsonl line is flushing the mobile prompt/response itself.
+                if (session.LiveHandle?.IsTurnActive ?? false)
+                {
+                    return;
+                }
+
+                if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: "user" } userEntry &&
+                    !string.IsNullOrWhiteSpace(session.LastMobilePromptText) &&
+                    string.Equals(CleanUserTranscriptText(userEntry.Text), session.LastMobilePromptText, StringComparison.Ordinal))
+                {
+                    session.LastMobilePromptText = null;
+                    return;
+                }
+
+                if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: "assistant" } asstEntry &&
+                    !string.IsNullOrWhiteSpace(session.LastMobileAssistantText) &&
+                    string.Equals(asstEntry.Text?.Trim(), session.LastMobileAssistantText, StringComparison.Ordinal))
+                {
+                    session.LastMobileAssistantText = null;
+                    return;
+                }
+
+                session.LastDiskActivityAt = now;
+
+                // New activity arrived from the desktop terminal (e.g. Ghostty) while mobile handle was idle:
+                // mark external activity and detach the idle handle so the next mobile prompt resumes with
+                // the updated desktop transcript context.
+                if (session.LiveHandle is not null)
+                {
+                    session.HasExternalTranscriptActivitySinceAttach = true;
+                    staleHandleToDispose = session.LiveHandle;
+                    stalePumpCts = session.LivePumpCts;
+                    stalePumpTask = session.LivePumpTask;
+                    session.LiveHandle = null;
+                    session.LivePumpCts = null;
+                    session.LivePumpTask = null;
+                }
             }
 
             ApplyEventUnderGate(
@@ -1051,11 +1100,50 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 out permissionsToBroadcast,
                 out autoDrainedUserItem);
 
+            if (!isFromTranscriptTail &&
+                acpEvent is AcpTurnCompletedEvent &&
+                session.IsDiscoveredOnDisk &&
+                session.LiveHandle is not null &&
+                session.LiveHandle.GetQueuedPrompts().Count == 0 &&
+                session.PendingPermissions.Count == 0)
+            {
+                staleHandleToDispose = session.LiveHandle;
+                stalePumpCts = session.LivePumpCts;
+                session.LiveHandle = null;
+                session.LivePumpCts = null;
+                session.LivePumpTask = null;
+            }
+
             summaryToBroadcast = BuildSessionSummaryUnderGate(session);
         }
         finally
         {
             session.Gate.Release();
+        }
+
+        if (stalePumpCts is not null || staleHandleToDispose is not null)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (stalePumpCts is not null)
+                    {
+                        await stalePumpCts.CancelAsync().ConfigureAwait(false);
+                        await WaitBackgroundTaskQuietlyAsync(stalePumpTask).ConfigureAwait(false);
+                        stalePumpCts.Dispose();
+                    }
+
+                    if (staleHandleToDispose is not null)
+                    {
+                        await staleHandleToDispose.DisposeAsync().ConfigureAwait(false);
+                    }
+                }
+                catch
+                {
+                    // Ignore teardown errors on detached handle
+                }
+            }, CancellationToken.None);
         }
 
         if (autoDrainedUserItem is not null)
@@ -1120,6 +1208,8 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         try
         {
             session.UpdatedAt = DateTimeOffset.UtcNow;
+            session.LastMobileTurnActivityAt = session.UpdatedAt;
+            session.LastMobilePromptText = prompt.Trim();
             if (session.Title.StartsWith("New ", StringComparison.Ordinal) ||
                 session.Title.StartsWith("Session ", StringComparison.Ordinal))
             {
@@ -1337,6 +1427,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                         Timestamp = textDelta.Timestamp
                     };
                     session.Timeline[^1] = updated;
+                    session.LastMobileAssistantText = updated.Text?.Trim();
                     itemToBroadcast = updated;
                 }
                 else
@@ -1350,6 +1441,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                         Text = textDelta.Delta
                     };
                     AddTimelineItemUnderGate(session, created);
+                    session.LastMobileAssistantText = created.Text?.Trim();
                     itemToBroadcast = created;
                 }
                 break;
@@ -1789,7 +1881,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             Model = session.Model,
             UpdatedAt = session.UpdatedAt,
             CreatedAt = session.CreatedAt,
-            IsLiveAttached = handle is not null,
+            IsLiveAttached = handle is not null || session.HasMobileAttachedOnce,
             IsTurnActive = isTurnActive,
             IsActiveNow = isActiveNow,
             HasPendingPermission = session.PendingPermissions.Count > 0,
@@ -2013,6 +2105,11 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         public int DiscoveredMessageCount { get; set; }
         public bool IsDiscoveredOnDisk { get; set; }
         public bool InitialHistoryLoaded { get; set; }
+        public bool HasMobileAttachedOnce { get; set; }
+        public bool HasExternalTranscriptActivitySinceAttach { get; set; }
+        public DateTimeOffset LastMobileTurnActivityAt { get; set; } = DateTimeOffset.MinValue;
+        public string? LastMobilePromptText { get; set; }
+        public string? LastMobileAssistantText { get; set; }
         public int VisibleTimelineLimit { get; set; } = DefaultTimelinePageSize;
         public string? CurrentStreamingThoughtBuffer { get; set; }
 

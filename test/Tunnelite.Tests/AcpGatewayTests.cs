@@ -378,6 +378,56 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             Assert.Equal("message", timeline[2].Kind);
             Assert.Equal("assistant", timeline[2].Role);
             Assert.Equal("All 187 neighboring cases passed and branches are merged.", timeline[2].Text);
+
+            // 1. Send a prompt from mobile while away from PC -> attaches resumed handle and completes mobile turn
+            var mobileSendRes = await orchestrator.ExecuteActionAsync(new AcpGatewayActionRequest
+            {
+                Action = "send_prompt",
+                SessionKey = "codex:01a14b83-codex",
+                Prompt = "Run lint check from mobile"
+            });
+            Assert.True(mobileSendRes.Ok);
+            var firstHandle = fakeCodex.LastHandle;
+            Assert.NotNull(firstHandle);
+            Assert.True(firstHandle!.LaunchConfig.ResumeExisting);
+            Assert.Contains("Run lint check from mobile", firstHandle.SentPrompts);
+            firstHandle.CompleteActiveTurn("Lint check passed from mobile.");
+            await Task.Delay(120);
+
+            // 2. Return to PC and type a new prompt in Ghostty -> appends to .jsonl on disk,
+            //    and the still-running transcript tailer streams it to the mobile timeline!
+            await File.AppendAllTextAsync(
+                tempCodexTranscript,
+                "{\"timestamp\":\"2026-10-26T18:05:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Back at my PC in Ghostty\" }]}}\n" +
+                "{\"timestamp\":\"2026-10-26T18:05:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Continuing in Ghostty on PC.\"}]}}\n");
+
+            AcpGatewayStateSnapshot? afterGhosttySnap = null;
+            for (var attempt = 0; attempt < 25; attempt++)
+            {
+                await Task.Delay(120);
+                afterGhosttySnap = await orchestrator.GetStateSnapshotAsync();
+                if (afterGhosttySnap.ActiveSession?.Timeline.Any(i => i.Text == "Continuing in Ghostty on PC.") == true)
+                {
+                    break;
+                }
+            }
+
+            Assert.NotNull(afterGhosttySnap?.ActiveSession);
+            Assert.Contains(afterGhosttySnap!.ActiveSession!.Timeline, i => i.Role == "user" && i.Text == "Back at my PC in Ghostty");
+            Assert.Contains(afterGhosttySnap.ActiveSession.Timeline, i => i.Role == "assistant" && i.Text == "Continuing in Ghostty on PC.");
+
+            // 3. Send a second prompt from mobile after Ghostty activity -> starts a fresh resumed handle
+            var secondMobileRes = await orchestrator.ExecuteActionAsync(new AcpGatewayActionRequest
+            {
+                Action = "send_prompt",
+                SessionKey = "codex:01a14b83-codex",
+                Prompt = "Second mobile prompt after Ghostty"
+            });
+            Assert.True(secondMobileRes.Ok);
+            Assert.NotNull(fakeCodex.LastHandle);
+            Assert.NotSame(firstHandle, fakeCodex.LastHandle);
+            Assert.True(fakeCodex.LastHandle!.LaunchConfig.ResumeExisting);
+            Assert.Contains("Second mobile prompt after Ghostty", fakeCodex.LastHandle.SentPrompts);
         }
         finally
         {
@@ -617,6 +667,7 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
 
     private sealed class ControllableSessionHandle : AcpSessionHandleBase
     {
+        public AcpSessionConfig LaunchConfig => Config;
         public List<string> SentPrompts { get; } = [];
         public List<string> SteeredPrompts { get; } = [];
         public int CancelCount { get; private set; }
