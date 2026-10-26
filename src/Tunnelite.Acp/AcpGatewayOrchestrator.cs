@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text;
-using System.Text.Json;
 using Acplite.Sdk;
 using Acplite.Sdk.Protocol;
 using Acplite.Sdk.Runtime;
@@ -14,18 +12,13 @@ namespace Tunnelite.Acp;
 /// </summary>
 public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 {
-    private const int DefaultTimelinePageSize = 30;
-    private const int TimelinePageStep = 40;
-    private const int MaxTimelineItemsPerSession = 2000;
-    private const int MaxToolPayloadChars = 12000;
-
     private readonly AcpliteRuntime _runtime;
     private readonly bool _ownsRuntime;
     private readonly AgentProviderKind? _scopedProvider;
     private readonly string _defaultWorkingDirectory;
     private readonly SemaphoreSlim _stateGate = new(1, 1);
     private readonly SemaphoreSlim _disposeGate = new(1, 1);
-    private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, AcpManagedSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<AgentProviderKind, AcpUsageSnapshot> _usageByProvider = new();
     private readonly ConcurrentDictionary<long, Func<AcpGatewayRealtimeEnvelope, Task>> _subscribers = new();
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -69,79 +62,20 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
     public async Task RefreshDiscoveryAsync(CancellationToken cancellationToken = default)
     {
-        var filteredProviders = await _runtime.DiscoverProvidersAsync(
+        _providers = await _runtime.DiscoverProvidersAsync(
             providerFilter: _scopedProvider,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        _providers = filteredProviders;
-
         var discoveredSessions = await _runtime.DiscoverSessionsAsync(
             providerFilter: _scopedProvider,
-            maxSessionsPerProvider: 30,
+            maxSessionsPerProvider: AcpGatewayDefaults.MaxDiscoveredSessionsPerProvider,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         await _stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var disc in discoveredSessions)
-            {
-                var key = BuildSessionKey(disc.Provider, disc.SessionId);
-                if (!_sessions.TryGetValue(key, out var existing))
-                {
-                    existing = new ManagedSession(disc.Provider, disc.SessionId)
-                    {
-                        Title = string.IsNullOrWhiteSpace(disc.Title) ? $"Session {ShortId(disc.SessionId)}" : disc.Title,
-                        WorkingDirectory = disc.WorkingDirectory ?? _defaultWorkingDirectory,
-                        TranscriptPath = disc.TranscriptPath,
-                        GitBranch = disc.GitBranch,
-                        Model = disc.Model,
-                        CreatedAt = disc.CreatedAt,
-                        UpdatedAt = disc.UpdatedAt,
-                        DiscoveredMessageCount = disc.MessageCount,
-                        IsDiscoveredOnDisk = true
-                    };
-                    _sessions[key] = existing;
-                }
-                else
-                {
-                    await existing.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    try
-                    {
-                        if (!string.IsNullOrWhiteSpace(disc.Title) &&
-                            (existing.Title.StartsWith("Session ", StringComparison.Ordinal) ||
-                             existing.Title.StartsWith("Codex session ", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            existing.Title = disc.Title;
-                        }
-                        existing.TranscriptPath ??= disc.TranscriptPath;
-                        existing.WorkingDirectory ??= disc.WorkingDirectory;
-                        existing.GitBranch ??= disc.GitBranch;
-                        existing.Model ??= disc.Model;
-                        if (disc.UpdatedAt > existing.UpdatedAt)
-                        {
-                            existing.UpdatedAt = disc.UpdatedAt;
-                        }
-                        existing.DiscoveredMessageCount = Math.Max(existing.DiscoveredMessageCount, disc.MessageCount);
-                    }
-                    finally
-                    {
-                        existing.Gate.Release();
-                    }
-                }
-            }
-
-            if (string.IsNullOrEmpty(_activeSessionKey) || !_sessions.ContainsKey(_activeSessionKey))
-            {
-                ManagedSession? mostRecent = null;
-                foreach (var (_, candidate) in _sessions)
-                {
-                    if (mostRecent is null || candidate.UpdatedAt > mostRecent.UpdatedAt)
-                    {
-                        mostRecent = candidate;
-                    }
-                }
-                _activeSessionKey = mostRecent?.SessionKey;
-            }
+            await MergeDiscoveredSessionsUnderStateGateAsync(discoveredSessions, cancellationToken).ConfigureAwait(false);
+            EnsureActiveSessionSelectedUnderStateGate();
         }
         finally
         {
@@ -152,6 +86,50 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         {
             await EnsureTailingStartedAsync(activeSession, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private async Task MergeDiscoveredSessionsUnderStateGateAsync(
+        IReadOnlyList<AcpDiscoveredSession> discoveredSessions,
+        CancellationToken cancellationToken)
+    {
+        foreach (var discovered in discoveredSessions)
+        {
+            var key = AcpTextFormatter.BuildSessionKey(discovered.Provider, discovered.SessionId);
+            if (!_sessions.TryGetValue(key, out var existing))
+            {
+                _sessions[key] = AcpManagedSession.FromDiscovered(discovered, _defaultWorkingDirectory);
+                continue;
+            }
+
+            await existing.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                existing.UpdateFromDiscoveryUnderGate(discovered);
+            }
+            finally
+            {
+                existing.Gate.Release();
+            }
+        }
+    }
+
+    private void EnsureActiveSessionSelectedUnderStateGate()
+    {
+        if (!string.IsNullOrEmpty(_activeSessionKey) && _sessions.ContainsKey(_activeSessionKey))
+        {
+            return;
+        }
+
+        AcpManagedSession? mostRecent = null;
+        foreach (var (_, candidate) in _sessions)
+        {
+            if (mostRecent is null || candidate.UpdatedAt > mostRecent.UpdatedAt)
+            {
+                mostRecent = candidate;
+            }
+        }
+
+        _activeSessionKey = mostRecent?.SessionKey;
     }
 
     public async Task ProbeAllUsageAsync(CancellationToken cancellationToken = default)
@@ -187,40 +165,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(targetKey) && _sessions.TryGetValue(targetKey, out var activeSession))
         {
             await EnsureTailingStartedAsync(activeSession, cancellationToken).ConfigureAwait(false);
-            activeDetail = await BuildSessionDetailAsync(activeSession, cancellationToken).ConfigureAwait(false);
+            activeDetail = await activeSession.BuildDetailAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        var summaries = new List<AcpGatewaySessionSummary>();
-        var recentDirs = new HashSet<string>(StringComparer.Ordinal);
-        recentDirs.Add(_defaultWorkingDirectory);
-
-        foreach (var (_, session) in _sessions)
-        {
-            summaries.Add(await BuildSessionSummaryAsync(session, cancellationToken).ConfigureAwait(false));
-            if (!string.IsNullOrWhiteSpace(session.WorkingDirectory))
-            {
-                recentDirs.Add(session.WorkingDirectory!);
-            }
-        }
-
-        summaries.Sort(static (a, b) =>
-        {
-            var permCompare = b.HasPendingPermission.CompareTo(a.HasPendingPermission);
-            if (permCompare != 0) return permCompare;
-            var activeTurnCompare = b.IsTurnActive.CompareTo(a.IsTurnActive);
-            if (activeTurnCompare != 0) return activeTurnCompare;
-            var activeNowCompare = b.IsActiveNow.CompareTo(a.IsActiveNow);
-            if (activeNowCompare != 0) return activeNowCompare;
-            var attachedCompare = b.IsLiveAttached.CompareTo(a.IsLiveAttached);
-            if (attachedCompare != 0) return attachedCompare;
-            return b.UpdatedAt.CompareTo(a.UpdatedAt);
-        });
-
-        var usages = new List<AcpUsageSnapshot>();
-        foreach (var (_, usage) in _usageByProvider)
-        {
-            usages.Add(usage);
-        }
+        var (summaries, recentDirectories) = await CollectSessionSummariesAndDirectoriesAsync(cancellationToken).ConfigureAwait(false);
 
         return new AcpGatewayStateSnapshot
         {
@@ -228,12 +176,54 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             DefaultWorkingDirectory = _defaultWorkingDirectory,
             ScopedProvider = _scopedProvider?.ToShortId(),
             Providers = _providers,
-            UsageSnapshots = usages,
+            UsageSnapshots = CollectUsageSnapshots(),
             Sessions = summaries,
-            RecentDirectories = recentDirs.Take(8).ToArray(),
+            RecentDirectories = recentDirectories,
             ActiveSessionKey = targetKey,
             ActiveSession = activeDetail
         };
+    }
+
+    private async Task<(List<AcpGatewaySessionSummary> Summaries, string[] RecentDirectories)> CollectSessionSummariesAndDirectoriesAsync(
+        CancellationToken cancellationToken)
+    {
+        var summaries = new List<AcpGatewaySessionSummary>();
+        var recentDirs = new HashSet<string>(StringComparer.Ordinal) { _defaultWorkingDirectory };
+
+        foreach (var (_, session) in _sessions)
+        {
+            summaries.Add(await session.BuildSummaryAsync(cancellationToken).ConfigureAwait(false));
+            if (!string.IsNullOrWhiteSpace(session.WorkingDirectory))
+            {
+                recentDirs.Add(session.WorkingDirectory!);
+            }
+        }
+
+        summaries.Sort(CompareSessionSummaries);
+        return (summaries, recentDirs.Take(AcpGatewayDefaults.MaxRecentDirectories).ToArray());
+    }
+
+    private static int CompareSessionSummaries(AcpGatewaySessionSummary a, AcpGatewaySessionSummary b)
+    {
+        var permCompare = b.HasPendingPermission.CompareTo(a.HasPendingPermission);
+        if (permCompare != 0) return permCompare;
+        var activeTurnCompare = b.IsTurnActive.CompareTo(a.IsTurnActive);
+        if (activeTurnCompare != 0) return activeTurnCompare;
+        var activeNowCompare = b.IsActiveNow.CompareTo(a.IsActiveNow);
+        if (activeNowCompare != 0) return activeNowCompare;
+        var attachedCompare = b.IsLiveAttached.CompareTo(a.IsLiveAttached);
+        if (attachedCompare != 0) return attachedCompare;
+        return b.UpdatedAt.CompareTo(a.UpdatedAt);
+    }
+
+    private List<AcpUsageSnapshot> CollectUsageSnapshots()
+    {
+        var usages = new List<AcpUsageSnapshot>();
+        foreach (var (_, usage) in _usageByProvider)
+        {
+            usages.Add(usage);
+        }
+        return usages;
     }
 
     public async Task<AcpGatewayActionResponse> ExecuteActionAsync(
@@ -243,7 +233,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(request);
         try
         {
-            return await ExecuteActionCoreAsync(request, cancellationToken).ConfigureAwait(false);
+            return await DispatchActionAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -259,364 +249,404 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         }
     }
 
-    private async Task<AcpGatewayActionResponse> ExecuteActionCoreAsync(
+    private Task<AcpGatewayActionResponse> DispatchActionAsync(
         AcpGatewayActionRequest request,
         CancellationToken cancellationToken)
     {
         var action = (request.Action ?? string.Empty).Trim().ToLowerInvariant();
-
-        switch (action)
+        return action switch
         {
-            case "select_session":
-            {
-                if (string.IsNullOrWhiteSpace(request.SessionKey) ||
-                    !_sessions.TryGetValue(request.SessionKey, out var session))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Session not found." };
-                }
-
-                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    session.VisibleTimelineLimit = request.TimelineLimit is > 0
-                        ? request.TimelineLimit.Value
-                        : DefaultTimelinePageSize;
-                }
-                finally
-                {
-                    session.Gate.Release();
-                }
-
-                _activeSessionKey = session.SessionKey;
-                await EnsureTailingStartedAsync(session, cancellationToken).ConfigureAwait(false);
-                var detail = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false);
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    SessionKey = session.SessionKey,
-                    Session = detail
-                };
-            }
-
-            case "load_older":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session is null)
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Session not found." };
-                }
-
-                await EnsureTailingStartedAsync(session, cancellationToken).ConfigureAwait(false);
-                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    session.VisibleTimelineLimit = request.TimelineLimit is > 0
-                        ? request.TimelineLimit.Value
-                        : session.VisibleTimelineLimit + TimelinePageStep;
-                }
-                finally
-                {
-                    session.Gate.Release();
-                }
-
-                var detail = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false);
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    SessionKey = session.SessionKey,
-                    Session = detail
-                };
-            }
-
-            case "refresh_sessions":
-            {
-                await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
-                var state = await GetStateSnapshotAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                await BroadcastStateAsync().ConfigureAwait(false);
-                return new AcpGatewayActionResponse { Ok = true, State = state };
-            }
-
-            case "probe_usage":
-            {
-                await ProbeAllUsageAsync(cancellationToken).ConfigureAwait(false);
-                var state = await GetStateSnapshotAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                return new AcpGatewayActionResponse { Ok = true, State = state };
-            }
-
-            case "create_session":
-            {
-                var providerKind = _scopedProvider ??
-                    (AgentProviderParser.TryParse(request.Provider, out var parsed) ? parsed : AgentProviderKind.Claude);
-
-                var cwd = !string.IsNullOrWhiteSpace(request.WorkingDirectory)
-                    ? request.WorkingDirectory.Trim()
-                    : _defaultWorkingDirectory;
-
-                var session = await CreateInteractiveSessionAsync(
-                    providerKind,
-                    cwd,
-                    request.Model,
-                    request.AutoApproveTools ?? false,
-                    request.Prompt,
-                    cancellationToken).ConfigureAwait(false);
-
-                _activeSessionKey = session.SessionKey;
-                var state = await GetStateSnapshotAsync(session.SessionKey, cancellationToken).ConfigureAwait(false);
-                await BroadcastStateAsync().ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    SessionKey = session.SessionKey,
-                    State = state,
-                    Session = state.ActiveSession
-                };
-            }
-
-            case "send_prompt":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter a prompt." };
-                }
-
-                var prompt = request.Prompt.Trim();
-                var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
-                await AppendUserPromptItemAsync(session, prompt, badge: null, cancellationToken).ConfigureAwait(false);
-                await handle.SendPromptAsync(prompt, cancellationToken).ConfigureAwait(false);
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    SessionKey = session.SessionKey,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            case "steer":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter steering instructions." };
-                }
-
-                var prompt = request.Prompt.Trim();
-                var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
-                await AppendUserPromptItemAsync(session, prompt, badge: "STEERED", cancellationToken).ConfigureAwait(false);
-                var accepted = await handle.SteerAsync(prompt, cancellationToken).ConfigureAwait(false);
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = accepted,
-                    Message = accepted ? "Live steering injected." : "Steering was not accepted by the provider.",
-                    SessionKey = session.SessionKey,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            case "enqueue_prompt":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter a prompt to queue." };
-                }
-
-                var prompt = request.Prompt.Trim();
-                var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
-                var wasBusy = handle.IsTurnActive;
-                if (!wasBusy)
-                {
-                    await AppendUserPromptItemAsync(session, prompt, badge: null, cancellationToken).ConfigureAwait(false);
-                }
-
-                var queuedItem = await handle.EnqueuePromptAsync(prompt, cancellationToken).ConfigureAwait(false);
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    Message = queuedItem is not null ? "Prompt queued for next turn." : "Session was idle; prompt sent immediately.",
-                    SessionKey = session.SessionKey,
-                    QueuedItem = queuedItem,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            case "remove_queued":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session?.LiveHandle is null || string.IsNullOrWhiteSpace(request.QueueItemId))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Queued item not found." };
-                }
-
-                var removed = await session.LiveHandle.RemoveQueuedPromptAsync(request.QueueItemId, cancellationToken).ConfigureAwait(false);
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = removed,
-                    SessionKey = session.SessionKey,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            case "clear_queued":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session?.LiveHandle is not null)
-                {
-                    await session.LiveHandle.ClearQueuedPromptsAsync(cancellationToken).ConfigureAwait(false);
-                    await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-                }
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    SessionKey = session?.SessionKey,
-                    Session = session is not null ? await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false) : null
-                };
-            }
-
-            case "interrupt_and_prompt":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter an interrupting prompt." };
-                }
-
-                var prompt = request.Prompt.Trim();
-                var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
-                await AppendUserPromptItemAsync(session, prompt, badge: "INTERRUPT", cancellationToken).ConfigureAwait(false);
-                await handle.InterruptAndSendPromptAsync(prompt, cancellationToken).ConfigureAwait(false);
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    Message = "Interrupted current turn and started new prompt.",
-                    SessionKey = session.SessionKey,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            case "cancel_turn":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session?.LiveHandle is null)
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "No active live session to stop." };
-                }
-
-                await session.LiveHandle.CancelTurnAsync(cancellationToken).ConfigureAwait(false);
-                await AppendSystemNoteAsync(session, "Turn interrupted from mobile.", cancellationToken).ConfigureAwait(false);
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    Message = "Interrupt signal sent.",
-                    SessionKey = session.SessionKey,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            case "respond_permission":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session?.LiveHandle is null || string.IsNullOrWhiteSpace(request.PermissionRequestId))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Permission request is no longer active." };
-                }
-
-                var approved = request.Approved ?? true;
-                await session.LiveHandle.RespondPermissionAsync(
-                    request.PermissionRequestId,
-                    approved,
-                    request.SelectedOptionId,
-                    cancellationToken).ConfigureAwait(false);
-
-                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                IReadOnlyList<AcpGatewayPendingPermission> remainingPermissions;
-                try
-                {
-                    session.PendingPermissions.RemoveAll(p => string.Equals(p.RequestId, request.PermissionRequestId, StringComparison.Ordinal));
-                    remainingPermissions = session.PendingPermissions.ToArray();
-                }
-                finally
-                {
-                    session.Gate.Release();
-                }
-
-                await AppendSystemNoteAsync(
-                    session,
-                    approved ? "Tool execution approved from mobile." : "Tool execution denied from mobile.",
-                    cancellationToken).ConfigureAwait(false);
-
-                await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
-                {
-                    Type = "permission_updated",
-                    SessionKey = session.SessionKey,
-                    PendingPermissions = remainingPermissions
-                }).ConfigureAwait(false);
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    SessionKey = session.SessionKey,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            case "set_model":
-            {
-                var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-                if (session is null || string.IsNullOrWhiteSpace(request.Model))
-                {
-                    return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and specify a model." };
-                }
-
-                var modelId = request.Model.Trim();
-                IAcpSessionHandle? handle;
-                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    session.Model = modelId;
-                    handle = session.LiveHandle;
-                }
-                finally
-                {
-                    session.Gate.Release();
-                }
-
-                if (handle is not null)
-                {
-                    await handle.SetModelAsync(modelId, cancellationToken).ConfigureAwait(false);
-                }
-                await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
-
-                return new AcpGatewayActionResponse
-                {
-                    Ok = true,
-                    Message = $"Model updated to {modelId}.",
-                    SessionKey = session.SessionKey,
-                    Session = await BuildSessionDetailAsync(session, cancellationToken).ConfigureAwait(false)
-                };
-            }
-
-            default:
-                return new AcpGatewayActionResponse { Ok = false, Message = $"Unknown action '{request.Action}'." };
-        }
+            GatewayActions.SelectSession => HandleSelectSessionAsync(request, cancellationToken),
+            GatewayActions.LoadOlder => HandleLoadOlderAsync(request, cancellationToken),
+            GatewayActions.RefreshSessions => HandleRefreshSessionsAsync(request, cancellationToken),
+            GatewayActions.ProbeUsage => HandleProbeUsageAsync(request, cancellationToken),
+            GatewayActions.CreateSession => HandleCreateSessionAsync(request, cancellationToken),
+            GatewayActions.SendPrompt => HandleSendPromptAsync(request, cancellationToken),
+            GatewayActions.Steer => HandleSteerAsync(request, cancellationToken),
+            GatewayActions.EnqueuePrompt => HandleEnqueuePromptAsync(request, cancellationToken),
+            GatewayActions.RemoveQueued => HandleRemoveQueuedAsync(request, cancellationToken),
+            GatewayActions.ClearQueued => HandleClearQueuedAsync(request, cancellationToken),
+            GatewayActions.InterruptAndPrompt => HandleInterruptAndPromptAsync(request, cancellationToken),
+            GatewayActions.CancelTurn => HandleCancelTurnAsync(request, cancellationToken),
+            GatewayActions.RespondPermission => HandleRespondPermissionAsync(request, cancellationToken),
+            GatewayActions.SetModel => HandleSetModelAsync(request, cancellationToken),
+            _ => Task.FromResult(new AcpGatewayActionResponse { Ok = false, Message = $"Unknown action '{request.Action}'." })
+        };
     }
 
-    private async Task<ManagedSession?> ResolveTargetSessionAsync(string? sessionKey, CancellationToken cancellationToken)
+    private async Task<AcpGatewayActionResponse> HandleSelectSessionAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.SessionKey) ||
+            !_sessions.TryGetValue(request.SessionKey, out var session))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Session not found." };
+        }
+
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            session.VisibleTimelineLimit = request.TimelineLimit is > 0
+                ? request.TimelineLimit.Value
+                : AcpGatewayDefaults.DefaultTimelinePageSize;
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+
+        _activeSessionKey = session.SessionKey;
+        await EnsureTailingStartedAsync(session, cancellationToken).ConfigureAwait(false);
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleLoadOlderAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session is null)
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Session not found." };
+        }
+
+        await EnsureTailingStartedAsync(session, cancellationToken).ConfigureAwait(false);
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            session.VisibleTimelineLimit = request.TimelineLimit is > 0
+                ? request.TimelineLimit.Value
+                : session.VisibleTimelineLimit + AcpGatewayDefaults.TimelinePageStep;
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleRefreshSessionsAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
+        var state = await GetStateSnapshotAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        await BroadcastStateAsync().ConfigureAwait(false);
+        return new AcpGatewayActionResponse { Ok = true, State = state };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleProbeUsageAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        await ProbeAllUsageAsync(cancellationToken).ConfigureAwait(false);
+        var state = await GetStateSnapshotAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        return new AcpGatewayActionResponse { Ok = true, State = state };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleCreateSessionAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var providerKind = _scopedProvider ??
+            (AgentProviderParser.TryParse(request.Provider, out var parsed) ? parsed : AgentProviderKind.Claude);
+
+        var cwd = !string.IsNullOrWhiteSpace(request.WorkingDirectory)
+            ? request.WorkingDirectory.Trim()
+            : _defaultWorkingDirectory;
+
+        var session = await CreateInteractiveSessionAsync(
+            providerKind,
+            cwd,
+            request.Model,
+            request.AutoApproveTools ?? false,
+            request.Prompt,
+            cancellationToken).ConfigureAwait(false);
+
+        _activeSessionKey = session.SessionKey;
+        var state = await GetStateSnapshotAsync(session.SessionKey, cancellationToken).ConfigureAwait(false);
+        await BroadcastStateAsync().ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            SessionKey = session.SessionKey,
+            State = state,
+            Session = state.ActiveSession
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleSendPromptAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter a prompt." };
+        }
+
+        var prompt = request.Prompt.Trim();
+        var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
+        await AppendUserPromptItemAsync(session, prompt, badge: null, cancellationToken).ConfigureAwait(false);
+        await handle.SendPromptAsync(prompt, cancellationToken).ConfigureAwait(false);
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleSteerAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter steering instructions." };
+        }
+
+        var prompt = request.Prompt.Trim();
+        var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
+        await AppendUserPromptItemAsync(session, prompt, badge: TimelineBadges.Steered, cancellationToken).ConfigureAwait(false);
+        var accepted = await handle.SteerAsync(prompt, cancellationToken).ConfigureAwait(false);
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = accepted,
+            Message = accepted ? "Live steering injected." : "Steering was not accepted by the provider.",
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleEnqueuePromptAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter a prompt to queue." };
+        }
+
+        var prompt = request.Prompt.Trim();
+        var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
+        if (!handle.IsTurnActive)
+        {
+            await AppendUserPromptItemAsync(session, prompt, badge: null, cancellationToken).ConfigureAwait(false);
+        }
+
+        var queuedItem = await handle.EnqueuePromptAsync(prompt, cancellationToken).ConfigureAwait(false);
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            Message = queuedItem is not null ? "Prompt queued for next turn." : "Session was idle; prompt sent immediately.",
+            SessionKey = session.SessionKey,
+            QueuedItem = queuedItem,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleRemoveQueuedAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session?.LiveHandle is null || string.IsNullOrWhiteSpace(request.QueueItemId))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Queued item not found." };
+        }
+
+        var removed = await session.LiveHandle.RemoveQueuedPromptAsync(request.QueueItemId, cancellationToken).ConfigureAwait(false);
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = removed,
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleClearQueuedAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session?.LiveHandle is not null)
+        {
+            await session.LiveHandle.ClearQueuedPromptsAsync(cancellationToken).ConfigureAwait(false);
+            await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+        }
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            SessionKey = session?.SessionKey,
+            Session = session is not null ? await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false) : null
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleInterruptAndPromptAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session is null || string.IsNullOrWhiteSpace(request.Prompt))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and enter an interrupting prompt." };
+        }
+
+        var prompt = request.Prompt.Trim();
+        var handle = await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
+        await AppendUserPromptItemAsync(session, prompt, badge: TimelineBadges.Interrupt, cancellationToken).ConfigureAwait(false);
+        await handle.InterruptAndSendPromptAsync(prompt, cancellationToken).ConfigureAwait(false);
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            Message = "Interrupted current turn and started new prompt.",
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleCancelTurnAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session?.LiveHandle is null)
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "No active live session to stop." };
+        }
+
+        await session.LiveHandle.CancelTurnAsync(cancellationToken).ConfigureAwait(false);
+        await AppendSystemNoteAsync(session, "Turn interrupted from mobile.", cancellationToken).ConfigureAwait(false);
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            Message = "Interrupt signal sent.",
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleRespondPermissionAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session?.LiveHandle is null || string.IsNullOrWhiteSpace(request.PermissionRequestId))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Permission request is no longer active." };
+        }
+
+        var approved = request.Approved ?? true;
+        await session.LiveHandle.RespondPermissionAsync(
+            request.PermissionRequestId,
+            approved,
+            request.SelectedOptionId,
+            cancellationToken).ConfigureAwait(false);
+
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<AcpGatewayPendingPermission> remainingPermissions;
+        try
+        {
+            session.PendingPermissions.RemoveAll(
+                p => string.Equals(p.RequestId, request.PermissionRequestId, StringComparison.Ordinal));
+            remainingPermissions = session.PendingPermissions.ToArray();
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+
+        await AppendSystemNoteAsync(
+            session,
+            approved ? "Tool execution approved from mobile." : "Tool execution denied from mobile.",
+            cancellationToken).ConfigureAwait(false);
+
+        await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
+        {
+            Type = RealtimeEnvelopeTypes.PermissionUpdated,
+            SessionKey = session.SessionKey,
+            PendingPermissions = remainingPermissions
+        }).ConfigureAwait(false);
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpGatewayActionResponse> HandleSetModelAsync(
+        AcpGatewayActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
+        if (session is null || string.IsNullOrWhiteSpace(request.Model))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Select a session and specify a model." };
+        }
+
+        var modelId = request.Model.Trim();
+        IAcpSessionHandle? handle;
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            session.Model = modelId;
+            handle = session.LiveHandle;
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+
+        if (handle is not null)
+        {
+            await handle.SetModelAsync(modelId, cancellationToken).ConfigureAwait(false);
+        }
+        await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
+
+        return new AcpGatewayActionResponse
+        {
+            Ok = true,
+            Message = $"Model updated to {modelId}.",
+            SessionKey = session.SessionKey,
+            Session = await session.BuildDetailAsync(cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    private async Task<AcpManagedSession?> ResolveTargetSessionAsync(
+        string? sessionKey,
+        CancellationToken cancellationToken)
     {
         var key = !string.IsNullOrWhiteSpace(sessionKey) ? sessionKey : _activeSessionKey;
         if (!string.IsNullOrWhiteSpace(key) && _sessions.TryGetValue(key, out var found))
@@ -626,10 +656,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
         await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
         key = !string.IsNullOrWhiteSpace(sessionKey) ? sessionKey : _activeSessionKey;
-        return !string.IsNullOrWhiteSpace(key) && _sessions.TryGetValue(key, out var afterRefresh) ? afterRefresh : null;
+        return !string.IsNullOrWhiteSpace(key) && _sessions.TryGetValue(key, out var afterRefresh)
+            ? afterRefresh
+            : null;
     }
 
-    private async Task<ManagedSession> CreateInteractiveSessionAsync(
+    private async Task<AcpManagedSession> CreateInteractiveSessionAsync(
         AgentProviderKind provider,
         string workingDirectory,
         string? model,
@@ -646,18 +678,13 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             AutoApproveTools = autoApproveTools
         }, cancellationToken).ConfigureAwait(false);
 
-        var session = new ManagedSession(provider, handle.SessionId)
-        {
-            Title = !string.IsNullOrWhiteSpace(initialPrompt)
-                ? TruncateTitle(initialPrompt!)
-                : $"New {provider.ToDisplayName()} Session",
-            WorkingDirectory = workingDirectory,
-            Model = model,
-            AutoApproveTools = autoApproveTools,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
-            LiveHandle = handle
-        };
+        var session = AcpManagedSession.FromInteractive(
+            provider,
+            handle,
+            workingDirectory,
+            model,
+            autoApproveTools,
+            initialPrompt);
 
         _sessions[session.SessionKey] = session;
         StartLiveHandlePump(session, handle);
@@ -673,15 +700,13 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
     }
 
     private async Task<IAcpSessionHandle> EnsureLiveHandleAttachedAsync(
-        ManagedSession session,
+        AcpManagedSession session,
         CancellationToken cancellationToken)
     {
         await session.AttachGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            IAcpSessionHandle? staleHandle = null;
-            CancellationTokenSource? stalePumpCts = null;
-            Task? stalePumpTask = null;
+            DetachedLiveHandle staleHandle;
             AcpSessionConfig config;
 
             await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -692,39 +717,15 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                     return session.LiveHandle;
                 }
 
-                staleHandle = session.LiveHandle;
-                stalePumpCts = session.LivePumpCts;
-                stalePumpTask = session.LivePumpTask;
-                session.LiveHandle = null;
-                session.LivePumpCts = null;
-                session.LivePumpTask = null;
-
-                config = new AcpSessionConfig
-                {
-                    Provider = session.Provider,
-                    WorkingDirectory = session.WorkingDirectory ?? _defaultWorkingDirectory,
-                    SessionId = session.SessionId,
-                    ResumeExisting = session.IsDiscoveredOnDisk || session.HasMobileAttachedOnce,
-                    Model = session.Model,
-                    AutoApproveTools = session.AutoApproveTools
-                };
+                staleHandle = session.DetachLiveHandleUnderGate();
+                config = session.BuildAttachConfigUnderGate(_defaultWorkingDirectory);
             }
             finally
             {
                 session.Gate.Release();
             }
 
-            if (stalePumpCts is not null)
-            {
-                await stalePumpCts.CancelAsync().ConfigureAwait(false);
-                await WaitBackgroundTaskQuietlyAsync(stalePumpTask).ConfigureAwait(false);
-                stalePumpCts.Dispose();
-            }
-
-            if (staleHandle is not null)
-            {
-                await staleHandle.DisposeAsync().ConfigureAwait(false);
-            }
+            await staleHandle.DisposeAsync().ConfigureAwait(false);
 
             var handle = await _runtime.StartSessionAsync(config, cancellationToken).ConfigureAwait(false);
 
@@ -734,10 +735,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 session.LiveHandle = handle;
                 session.HasMobileAttachedOnce = true;
                 session.HasExternalTranscriptActivitySinceAttach = false;
-                session.MobileTurnStartingUntil = DateTimeOffset.UtcNow.AddSeconds(5);
-                session.SuppressTranscriptTailUntilNextUserMessage = true;
-                session.LastMobileTurnActivityAt = DateTimeOffset.UtcNow;
-                session.UpdatedAt = DateTimeOffset.UtcNow;
+                session.MarkMobileTurnStartingUnderGate(DateTimeOffset.UtcNow);
                 StartLiveHandlePump(session, handle);
             }
             finally
@@ -745,7 +743,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 session.Gate.Release();
             }
 
-            var actualKey = BuildSessionKey(session.Provider, handle.SessionId);
+            var actualKey = AcpTextFormatter.BuildSessionKey(session.Provider, handle.SessionId);
             if (!string.Equals(actualKey, session.SessionKey, StringComparison.Ordinal))
             {
                 _sessions[actualKey] = session;
@@ -759,127 +757,18 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         }
     }
 
-    private async Task EnsureTailingStartedAsync(ManagedSession session, CancellationToken cancellationToken)
+    private async Task EnsureTailingStartedAsync(AcpManagedSession session, CancellationToken cancellationToken)
     {
         await session.AttachGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            AcpDiscoveredSession? discoveredForHistory = null;
-            await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                if (string.IsNullOrWhiteSpace(session.TranscriptPath) ||
-                    !File.Exists(session.TranscriptPath))
-                {
-                    return;
-                }
-
-                if (!session.InitialHistoryLoaded && session.LiveHandle is null)
-                {
-                    discoveredForHistory = new AcpDiscoveredSession(
-                        Provider: session.Provider,
-                        SessionId: session.SessionId,
-                        Title: session.Title,
-                        WorkingDirectory: session.WorkingDirectory,
-                        TranscriptPath: session.TranscriptPath!,
-                        UpdatedAt: session.UpdatedAt,
-                        CreatedAt: session.CreatedAt,
-                        Model: session.Model,
-                        GitBranch: session.GitBranch);
-                }
-            }
-            finally
-            {
-                session.Gate.Release();
-            }
-
+            var discoveredForHistory = await TryPrepareInitialHistoryLoadAsync(session, cancellationToken).ConfigureAwait(false);
             if (discoveredForHistory is not null)
             {
-                var historicalEvents = new List<AcpEvent>();
-                try
-                {
-                    var adapter = _runtime.GetAdapter(session.Provider);
-                    await foreach (var ev in adapter.TailSessionTranscriptAsync(
-                        discoveredForHistory,
-                        includeHistory: true,
-                        followLive: false,
-                        cancellationToken).ConfigureAwait(false))
-                    {
-                        historicalEvents.Add(ev);
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch
-                {
-                    // Ignore malformed transcript history lines
-                }
-
-                await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    if (!session.InitialHistoryLoaded && session.LiveHandle is null)
-                    {
-                        foreach (var ev in historicalEvents)
-                        {
-                            ApplyEventUnderGate(session, ev, isHistoricalLoad: true, out _, out _, out _, out _);
-                        }
-                        session.InitialHistoryLoaded = true;
-                        try
-                        {
-                            var fi = new FileInfo(discoveredForHistory.TranscriptPath);
-                            if (fi.Exists)
-                            {
-                                session.LastObservedFileLength = fi.Length;
-                                var lastWrite = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
-                                if (lastWrite > session.UpdatedAt)
-                                {
-                                    session.UpdatedAt = lastWrite;
-                                }
-                            }
-                        }
-                        catch
-                        {
-                            // Ignore file stat error
-                        }
-                    }
-                }
-                finally
-                {
-                    session.Gate.Release();
-                }
+                await LoadInitialTranscriptHistoryAsync(session, discoveredForHistory, cancellationToken).ConfigureAwait(false);
             }
 
-            await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                if (session.TailTask is not null ||
-                    string.IsNullOrWhiteSpace(session.TranscriptPath))
-                {
-                    return;
-                }
-
-                var tailCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-                session.TailCts = tailCts;
-                var discovered = new AcpDiscoveredSession(
-                    Provider: session.Provider,
-                    SessionId: session.SessionId,
-                    Title: session.Title,
-                    WorkingDirectory: session.WorkingDirectory,
-                    TranscriptPath: session.TranscriptPath!,
-                    UpdatedAt: session.UpdatedAt,
-                    CreatedAt: session.CreatedAt,
-                    Model: session.Model,
-                    GitBranch: session.GitBranch);
-
-                session.TailTask = Task.Run(() => PumpTranscriptTailAsync(session, discovered, tailCts.Token), tailCts.Token);
-            }
-            finally
-            {
-                session.Gate.Release();
-            }
+            await StartBackgroundTranscriptTailerIfNeededAsync(session, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -887,8 +776,127 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         }
     }
 
+    private static async Task<AcpDiscoveredSession?> TryPrepareInitialHistoryLoadAsync(
+        AcpManagedSession session,
+        CancellationToken cancellationToken)
+    {
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(session.TranscriptPath) || !File.Exists(session.TranscriptPath))
+            {
+                return null;
+            }
+
+            return !session.InitialHistoryLoaded && session.LiveHandle is null
+                ? session.ToDiscoveredSessionUnderGate()
+                : null;
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+    }
+
+    private async Task LoadInitialTranscriptHistoryAsync(
+        AcpManagedSession session,
+        AcpDiscoveredSession discoveredForHistory,
+        CancellationToken cancellationToken)
+    {
+        var historicalEvents = new List<AcpEvent>();
+        try
+        {
+            var adapter = _runtime.GetAdapter(session.Provider);
+            await foreach (var ev in adapter.TailSessionTranscriptAsync(
+                discoveredForHistory,
+                includeHistory: true,
+                followLive: false,
+                cancellationToken).ConfigureAwait(false))
+            {
+                historicalEvents.Add(ev);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Ignore malformed transcript history lines
+        }
+
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (session.InitialHistoryLoaded || session.LiveHandle is not null)
+            {
+                return;
+            }
+
+            foreach (var ev in historicalEvents)
+            {
+                AcpTimelineProjector.ApplyEventUnderGate(session, ev, isHistoricalLoad: true, NextItemId);
+            }
+
+            session.InitialHistoryLoaded = true;
+            RecordTranscriptFileMetricsUnderGate(session, discoveredForHistory.TranscriptPath);
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+    }
+
+    private static void RecordTranscriptFileMetricsUnderGate(AcpManagedSession session, string transcriptPath)
+    {
+        try
+        {
+            var fi = new FileInfo(transcriptPath);
+            if (!fi.Exists)
+            {
+                return;
+            }
+
+            session.LastObservedFileLength = fi.Length;
+            var lastWrite = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
+            if (lastWrite > session.UpdatedAt)
+            {
+                session.UpdatedAt = lastWrite;
+            }
+        }
+        catch
+        {
+            // Ignore file stat error
+        }
+    }
+
+    private async Task StartBackgroundTranscriptTailerIfNeededAsync(
+        AcpManagedSession session,
+        CancellationToken cancellationToken)
+    {
+        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (session.TailTask is not null ||
+                string.IsNullOrWhiteSpace(session.TranscriptPath) ||
+                !File.Exists(session.TranscriptPath))
+            {
+                return;
+            }
+
+            var tailCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            session.TailCts = tailCts;
+            var discovered = session.ToDiscoveredSessionUnderGate();
+            session.TailTask = Task.Run(() => PumpTranscriptTailAsync(session, discovered, tailCts.Token), tailCts.Token);
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
+    }
+
     private async Task PumpTranscriptTailAsync(
-        ManagedSession session,
+        AcpManagedSession session,
         AcpDiscoveredSession discovered,
         CancellationToken cancellationToken)
     {
@@ -906,7 +914,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Normal stop (either switched to live handle or shutting down)
+            // Normal shutdown
         }
         catch
         {
@@ -921,77 +929,15 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(2.5), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(AcpGatewayDefaults.MonitorLoopInterval, cancellationToken).ConfigureAwait(false);
                 tick++;
 
-                if (tick % 5 == 0)
+                if (tick % AcpGatewayDefaults.DiscoveryRefreshEveryMonitorTicks == 0)
                 {
                     await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                foreach (var (_, session) in _sessions)
-                {
-                    var path = session.TranscriptPath;
-                    if (string.IsNullOrWhiteSpace(path))
-                    {
-                        continue;
-                    }
-
-                    FileInfo fi;
-                    try
-                    {
-                        fi = new FileInfo(path);
-                        if (!fi.Exists)
-                        {
-                            continue;
-                        }
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-
-                    var lastWriteUtc = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
-                    var currentLen = fi.Length;
-                    AcpGatewaySessionSummary? changedSummary = null;
-
-                    await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    try
-                    {
-                        var lengthGrew = session.LastObservedFileLength > 0 && currentLen > session.LastObservedFileLength;
-                        var writeAdvanced = lastWriteUtc > session.UpdatedAt.AddSeconds(1);
-
-                        if (session.LastObservedFileLength == 0)
-                        {
-                            session.LastObservedFileLength = currentLen;
-                        }
-
-                        if (lengthGrew || writeAdvanced)
-                        {
-                            session.LastObservedFileLength = currentLen;
-                            session.UpdatedAt = lastWriteUtc > DateTimeOffset.UtcNow ? DateTimeOffset.UtcNow : lastWriteUtc;
-                            if (lengthGrew)
-                            {
-                                session.LastDiskActivityAt = DateTimeOffset.UtcNow;
-                            }
-                            changedSummary = BuildSessionSummaryUnderGate(session);
-                        }
-                    }
-                    finally
-                    {
-                        session.Gate.Release();
-                    }
-
-                    if (changedSummary is not null)
-                    {
-                        await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
-                        {
-                            Type = "session_summary",
-                            SessionKey = session.SessionKey,
-                            Summary = changedSummary
-                        }).ConfigureAwait(false);
-                    }
-                }
+                await CheckTranscriptFilesForActivityAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1004,7 +950,57 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         }
     }
 
-    private void StartLiveHandlePump(ManagedSession session, IAcpSessionHandle handle)
+    private async Task CheckTranscriptFilesForActivityAsync(CancellationToken cancellationToken)
+    {
+        foreach (var (_, session) in _sessions)
+        {
+            var path = session.TranscriptPath;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            FileInfo fi;
+            try
+            {
+                fi = new FileInfo(path);
+                if (!fi.Exists)
+                {
+                    continue;
+                }
+            }
+            catch
+            {
+                continue;
+            }
+
+            var lastWriteUtc = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
+            var currentLen = fi.Length;
+            AcpGatewaySessionSummary? changedSummary;
+
+            await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                changedSummary = session.AdvanceDiskActivityUnderGate(currentLen, lastWriteUtc);
+            }
+            finally
+            {
+                session.Gate.Release();
+            }
+
+            if (changedSummary is not null)
+            {
+                await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
+                {
+                    Type = RealtimeEnvelopeTypes.SessionSummary,
+                    SessionKey = session.SessionKey,
+                    Summary = changedSummary
+                }).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private void StartLiveHandlePump(AcpManagedSession session, IAcpSessionHandle handle)
     {
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
         session.LivePumpCts = linkedCts;
@@ -1029,19 +1025,14 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
     }
 
     private async Task ApplyEventToSessionAsync(
-        ManagedSession session,
+        AcpManagedSession session,
         AcpEvent acpEvent,
         bool isFromTranscriptTail,
         CancellationToken cancellationToken)
     {
-        AcpGatewayTimelineItem? itemToBroadcast = null;
-        IReadOnlyList<AcpQueuedPromptItem>? queueToBroadcast = null;
-        IReadOnlyList<AcpGatewayPendingPermission>? permissionsToBroadcast = null;
-        AcpGatewayTimelineItem? autoDrainedUserItem = null;
-        AcpGatewaySessionSummary? summaryToBroadcast = null;
-        IAcpSessionHandle? staleHandleToDispose = null;
-        CancellationTokenSource? stalePumpCts = null;
-        Task? stalePumpTask = null;
+        SessionEventProjection projection;
+        AcpGatewaySessionSummary summaryToBroadcast;
+        DetachedLiveHandle detachedHandle = default;
 
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -1054,174 +1045,91 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             }
             else
             {
-                // Suppress duplicate .jsonl events while a mobile-initiated turn is starting or actively streaming
-                // over the live handle.
-                if ((session.LiveHandle?.IsTurnActive ?? false) || now < session.MobileTurnStartingUntil)
+                var decision = session.EvaluateTranscriptTailEventUnderGate(acpEvent, now);
+                if (!decision.ShouldProcess)
                 {
                     return;
                 }
-
-                if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: "user" } userEntry)
-                {
-                    var cleanedUser = CleanUserTranscriptText(userEntry.Text);
-                    if (!string.IsNullOrWhiteSpace(session.LastMobilePromptText) &&
-                        string.Equals(cleanedUser, session.LastMobilePromptText, StringComparison.Ordinal))
-                    {
-                        session.LastMobilePromptText = null;
-                        return;
-                    }
-
-                    // A new user prompt arrived from the desktop terminal (e.g. Ghostty):
-                    // immediately lift mobile-turn tail suppression so this turn streams live to mobile.
-                    session.SuppressTranscriptTailUntilNextUserMessage = false;
-                }
-                else if (session.SuppressTranscriptTailUntilNextUserMessage)
-                {
-                    if ((now - session.LastMobileTurnCompletedAt) <= TimeSpan.FromSeconds(2.5))
-                    {
-                        return;
-                    }
-
-                    session.SuppressTranscriptTailUntilNextUserMessage = false;
-                }
-
-                if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: "assistant" } asstEntry &&
-                    !string.IsNullOrWhiteSpace(session.LastMobileAssistantText) &&
-                    string.Equals(asstEntry.Text?.Trim(), session.LastMobileAssistantText, StringComparison.Ordinal))
-                {
-                    session.LastMobileAssistantText = null;
-                    return;
-                }
-
-                session.LastDiskActivityAt = now;
-
-                // New activity arrived from the desktop terminal (e.g. Ghostty) while mobile handle was idle:
-                // mark external activity and detach the idle handle so the next mobile prompt resumes with
-                // the updated desktop transcript context.
-                if (session.LiveHandle is not null)
-                {
-                    session.HasExternalTranscriptActivitySinceAttach = true;
-                    staleHandleToDispose = session.LiveHandle;
-                    stalePumpCts = session.LivePumpCts;
-                    stalePumpTask = session.LivePumpTask;
-                    session.LiveHandle = null;
-                    session.LivePumpCts = null;
-                    session.LivePumpTask = null;
-                }
+                detachedHandle = decision.DetachedHandle;
             }
 
-            ApplyEventUnderGate(
+            projection = AcpTimelineProjector.ApplyEventUnderGate(
                 session,
                 acpEvent,
                 isHistoricalLoad: false,
-                out itemToBroadcast,
-                out queueToBroadcast,
-                out permissionsToBroadcast,
-                out autoDrainedUserItem);
+                NextItemId);
 
-            if (!isFromTranscriptTail && acpEvent is AcpTurnCompletedEvent)
+            if (!isFromTranscriptTail)
             {
-                session.LastMobileTurnCompletedAt = now;
-                session.MobileTurnStartingUntil = DateTimeOffset.MinValue;
-
-                if (session.IsDiscoveredOnDisk &&
-                    session.LiveHandle is not null &&
-                    session.LiveHandle.GetQueuedPrompts().Count == 0 &&
-                    session.PendingPermissions.Count == 0)
-                {
-                    staleHandleToDispose = session.LiveHandle;
-                    stalePumpCts = session.LivePumpCts;
-                    session.LiveHandle = null;
-                    session.LivePumpCts = null;
-                    session.LivePumpTask = null;
-                }
+                detachedHandle = session.OnLiveEventAppliedUnderGate(acpEvent, now);
             }
 
-            summaryToBroadcast = BuildSessionSummaryUnderGate(session);
+            summaryToBroadcast = session.BuildSummaryUnderGate();
         }
         finally
         {
             session.Gate.Release();
         }
 
-        if (stalePumpCts is not null || staleHandleToDispose is not null)
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    if (stalePumpCts is not null)
-                    {
-                        await stalePumpCts.CancelAsync().ConfigureAwait(false);
-                        await WaitBackgroundTaskQuietlyAsync(stalePumpTask).ConfigureAwait(false);
-                        stalePumpCts.Dispose();
-                    }
+        detachedHandle.DisposeInBackground();
+        await BroadcastProjectionAndSummaryAsync(session.SessionKey, projection, summaryToBroadcast).ConfigureAwait(false);
+    }
 
-                    if (staleHandleToDispose is not null)
-                    {
-                        await staleHandleToDispose.DisposeAsync().ConfigureAwait(false);
-                    }
-                }
-                catch
-                {
-                    // Ignore teardown errors on detached handle
-                }
-            }, CancellationToken.None);
-        }
-
-        if (autoDrainedUserItem is not null)
+    private async Task BroadcastProjectionAndSummaryAsync(
+        string sessionKey,
+        SessionEventProjection projection,
+        AcpGatewaySessionSummary summary)
+    {
+        if (projection.PreceedingTimelineItem is not null)
         {
             await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
             {
-                Type = "timeline_item",
-                SessionKey = session.SessionKey,
-                TimelineItem = autoDrainedUserItem
+                Type = RealtimeEnvelopeTypes.TimelineItem,
+                SessionKey = sessionKey,
+                TimelineItem = projection.PreceedingTimelineItem
             }).ConfigureAwait(false);
         }
 
-        if (itemToBroadcast is not null)
+        if (projection.TimelineItem is not null)
         {
             await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
             {
-                Type = "timeline_item",
-                SessionKey = session.SessionKey,
-                TimelineItem = itemToBroadcast
+                Type = RealtimeEnvelopeTypes.TimelineItem,
+                SessionKey = sessionKey,
+                TimelineItem = projection.TimelineItem
             }).ConfigureAwait(false);
         }
 
-        if (queueToBroadcast is not null)
+        if (projection.QueuedPrompts is not null)
         {
             await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
             {
-                Type = "queue_updated",
-                SessionKey = session.SessionKey,
-                QueuedPrompts = queueToBroadcast
+                Type = RealtimeEnvelopeTypes.QueueUpdated,
+                SessionKey = sessionKey,
+                QueuedPrompts = projection.QueuedPrompts
             }).ConfigureAwait(false);
         }
 
-        if (permissionsToBroadcast is not null)
+        if (projection.PendingPermissions is not null)
         {
             await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
             {
-                Type = "permission_updated",
-                SessionKey = session.SessionKey,
-                PendingPermissions = permissionsToBroadcast
+                Type = RealtimeEnvelopeTypes.PermissionUpdated,
+                SessionKey = sessionKey,
+                PendingPermissions = projection.PendingPermissions
             }).ConfigureAwait(false);
         }
 
-        if (summaryToBroadcast is not null)
+        await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
         {
-            await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
-            {
-                Type = "session_summary",
-                SessionKey = session.SessionKey,
-                Summary = summaryToBroadcast
-            }).ConfigureAwait(false);
-        }
+            Type = RealtimeEnvelopeTypes.SessionSummary,
+            SessionKey = sessionKey,
+            Summary = summary
+        }).ConfigureAwait(false);
     }
 
     private async Task AppendUserPromptItemAsync(
-        ManagedSession session,
+        AcpManagedSession session,
         string prompt,
         string? badge,
         CancellationToken cancellationToken)
@@ -1230,27 +1138,18 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            session.UpdatedAt = DateTimeOffset.UtcNow;
-            session.LastMobileTurnActivityAt = session.UpdatedAt;
-            session.MobileTurnStartingUntil = session.UpdatedAt.AddSeconds(5);
-            session.SuppressTranscriptTailUntilNextUserMessage = true;
-            session.LastMobilePromptText = prompt.Trim();
-            if (session.Title.StartsWith("New ", StringComparison.Ordinal) ||
-                session.Title.StartsWith("Session ", StringComparison.Ordinal))
-            {
-                session.Title = TruncateTitle(prompt);
-            }
-
+            var now = DateTimeOffset.UtcNow;
+            session.MarkMobileTurnStartingUnderGate(now, prompt);
             item = new AcpGatewayTimelineItem
             {
                 Id = NextItemId(),
-                Kind = "message",
-                Role = "user",
-                Timestamp = session.UpdatedAt,
+                Kind = TimelineItemKinds.Message,
+                Role = AcpRoles.User,
+                Timestamp = now,
                 Text = prompt,
                 Badge = badge
             };
-            AddTimelineItemUnderGate(session, item);
+            session.AddTimelineItemUnderGate(item);
         }
         finally
         {
@@ -1259,14 +1158,14 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
         await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
         {
-            Type = "timeline_item",
+            Type = RealtimeEnvelopeTypes.TimelineItem,
             SessionKey = session.SessionKey,
             TimelineItem = item
         }).ConfigureAwait(false);
     }
 
     private async Task AppendSystemNoteAsync(
-        ManagedSession session,
+        AcpManagedSession session,
         string message,
         CancellationToken cancellationToken)
     {
@@ -1277,12 +1176,12 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             item = new AcpGatewayTimelineItem
             {
                 Id = NextItemId(),
-                Kind = "system_note",
-                Role = "system",
+                Kind = TimelineItemKinds.SystemNote,
+                Role = AcpRoles.System,
                 Timestamp = DateTimeOffset.UtcNow,
                 Text = message
             };
-            AddTimelineItemUnderGate(session, item);
+            session.AddTimelineItemUnderGate(item);
         }
         finally
         {
@@ -1291,712 +1190,18 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
         await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
         {
-            Type = "timeline_item",
+            Type = RealtimeEnvelopeTypes.TimelineItem,
             SessionKey = session.SessionKey,
             TimelineItem = item
         }).ConfigureAwait(false);
     }
 
-    private void ApplyEventUnderGate(
-        ManagedSession session,
-        AcpEvent acpEvent,
-        bool isHistoricalLoad,
-        out AcpGatewayTimelineItem? itemToBroadcast,
-        out IReadOnlyList<AcpQueuedPromptItem>? queueToBroadcast,
-        out IReadOnlyList<AcpGatewayPendingPermission>? permissionsToBroadcast,
-        out AcpGatewayTimelineItem? autoDrainedUserItem)
+    private async Task BroadcastSessionSummaryAsync(AcpManagedSession session)
     {
-        itemToBroadcast = null;
-        queueToBroadcast = null;
-        permissionsToBroadcast = null;
-        autoDrainedUserItem = null;
-
-        if (!isHistoricalLoad || acpEvent.Timestamp > session.UpdatedAt)
-        {
-            session.UpdatedAt = acpEvent.Timestamp;
-        }
-
-        switch (acpEvent)
-        {
-            case AcpSessionStartedEvent started:
-            {
-                if (!string.IsNullOrWhiteSpace(started.Model))
-                {
-                    session.Model = started.Model;
-                }
-                if (!string.IsNullOrWhiteSpace(started.WorkingDirectory))
-                {
-                    session.WorkingDirectory = started.WorkingDirectory;
-                }
-                break;
-            }
-
-            case AcpTranscriptHistoryEntryEvent hist:
-            {
-                var cleanedText = hist.Role == "user" ? CleanUserTranscriptText(hist.Text) : hist.Text;
-                if (string.IsNullOrWhiteSpace(cleanedText) &&
-                    string.IsNullOrWhiteSpace(hist.Thinking) &&
-                    string.IsNullOrWhiteSpace(hist.ToolName))
-                {
-                    break;
-                }
-
-                var hasProseText = !string.IsNullOrWhiteSpace(cleanedText) &&
-                                   hist.Role is not ("tool" or "system") &&
-                                   !string.Equals(cleanedText, hist.ToolName, StringComparison.OrdinalIgnoreCase);
-
-                var thoughtPreview = hist.Role != "user" ? FormatThoughtPreview(hist.Thinking, 140) : null;
-
-                // If this step has no user/assistant prose text (only tool execution and/or intermediate thinking),
-                // update the single in-line terminal bar in place with both the latest thought and running command.
-                if (!hasProseText && hist.Role != "user")
-                {
-                    if (!string.IsNullOrWhiteSpace(hist.ToolName))
-                    {
-                        var rawOut = !string.IsNullOrWhiteSpace(cleanedText) && !string.Equals(cleanedText, hist.ToolName, StringComparison.OrdinalIgnoreCase)
-                            ? TruncateLargePayload(cleanedText, MaxToolPayloadChars)
-                            : null;
-                        var summaryText = NormalizeToolText(hist.ToolName, cleanedText);
-
-                        itemToBroadcast = UpsertInlineActivityUnderGate(
-                            session,
-                            hist.Timestamp,
-                            hist.ToolName,
-                            summaryText,
-                            hist.ToolCallId,
-                            toolKind: "command",
-                            toolStatus: isHistoricalLoad ? "completed" : "in_progress",
-                            rawInputJson: null,
-                            rawOutput: rawOut,
-                            thoughtPreview: thoughtPreview);
-                        break;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(hist.Thinking))
-                    {
-                        itemToBroadcast = UpsertInlineThoughtUnderGate(
-                            session,
-                            hist.Timestamp,
-                            hist.Thinking,
-                            isStreamingDelta: false,
-                            toolStatus: isHistoricalLoad ? "completed" : "in_progress");
-                        break;
-                    }
-                }
-
-                if (hist.Role == "assistant")
-                {
-                    if (!string.IsNullOrWhiteSpace(hist.Thinking) && string.IsNullOrWhiteSpace(hist.ToolName))
-                    {
-                        UpsertInlineThoughtUnderGate(
-                            session,
-                            hist.Timestamp,
-                            hist.Thinking,
-                            isStreamingDelta: false,
-                            toolStatus: "in_progress");
-                    }
-                    autoDrainedUserItem = CompleteInlineActivityUnderGate(session);
-                }
-
-                var item = new AcpGatewayTimelineItem
-                {
-                    Id = NextItemId(),
-                    Kind = "message",
-                    Role = hist.Role,
-                    Timestamp = hist.Timestamp,
-                    Text = cleanedText,
-                    ToolName = hist.ToolName,
-                    ToolCallId = hist.ToolCallId
-                };
-                AddTimelineItemUnderGate(session, item);
-                itemToBroadcast = item;
-
-                if (!string.IsNullOrWhiteSpace(hist.ToolName) && hist.Role != "user")
-                {
-                    itemToBroadcast = UpsertInlineActivityUnderGate(
-                        session,
-                        hist.Timestamp,
-                        hist.ToolName,
-                        NormalizeToolText(hist.ToolName, null),
-                        hist.ToolCallId,
-                        toolKind: "command",
-                        toolStatus: "completed",
-                        rawInputJson: null,
-                        rawOutput: null,
-                        thoughtPreview: thoughtPreview);
-                }
-                break;
-            }
-
-            case AcpThinkingDeltaEvent thinkingDelta:
-            {
-                itemToBroadcast = UpsertInlineThoughtUnderGate(
-                    session,
-                    thinkingDelta.Timestamp,
-                    thinkingDelta.Delta,
-                    isStreamingDelta: true,
-                    toolStatus: "in_progress");
-                break;
-            }
-
-            case AcpAssistantTextDeltaEvent textDelta:
-            {
-                autoDrainedUserItem = CompleteInlineActivityUnderGate(session);
-
-                var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-                if (last is not null && last.Role == "assistant" && last.Kind == "message")
-                {
-                    var updated = last with
-                    {
-                        Text = (last.Text ?? string.Empty) + textDelta.Delta,
-                        Timestamp = textDelta.Timestamp
-                    };
-                    session.Timeline[^1] = updated;
-                    session.LastMobileAssistantText = updated.Text?.Trim();
-                    itemToBroadcast = updated;
-                }
-                else
-                {
-                    var created = new AcpGatewayTimelineItem
-                    {
-                        Id = NextItemId(),
-                        Kind = "message",
-                        Role = "assistant",
-                        Timestamp = textDelta.Timestamp,
-                        Text = textDelta.Delta
-                    };
-                    AddTimelineItemUnderGate(session, created);
-                    session.LastMobileAssistantText = created.Text?.Trim();
-                    itemToBroadcast = created;
-                }
-                break;
-            }
-
-            case AcpToolCallEvent toolCall:
-            {
-                var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-                var isSameCallId = last is not null &&
-                                   last.Kind == "tool_call" &&
-                                   !string.IsNullOrWhiteSpace(toolCall.ToolCallId) &&
-                                   string.Equals(last.ToolCallId, toolCall.ToolCallId, StringComparison.Ordinal);
-
-                itemToBroadcast = UpsertInlineActivityUnderGate(
-                    session,
-                    toolCall.Timestamp,
-                    toolCall.ToolName,
-                    NormalizeToolText(toolCall.ToolName, toolCall.Title),
-                    toolCall.ToolCallId,
-                    toolCall.Kind ?? "command",
-                    toolCall.Status,
-                    rawInputJson: toolCall.RawInputJson,
-                    rawOutput: toolCall.RawOutput,
-                    isUpdateToSameToolCallId: isSameCallId);
-                break;
-            }
-
-            case AcpPermissionRequestEvent perm:
-            {
-                var pending = new AcpGatewayPendingPermission
-                {
-                    RequestId = perm.RequestId,
-                    SessionKey = session.SessionKey,
-                    Provider = session.Provider.ToShortId(),
-                    ToolName = perm.ToolName,
-                    Title = perm.Title,
-                    Description = perm.Description,
-                    RawInputJson = TruncateLargePayload(perm.RawInputJson, MaxToolPayloadChars),
-                    Options = perm.Options,
-                    RequestedAt = perm.Timestamp
-                };
-                session.PendingPermissions.RemoveAll(p => string.Equals(p.RequestId, perm.RequestId, StringComparison.Ordinal));
-                session.PendingPermissions.Add(pending);
-                permissionsToBroadcast = session.PendingPermissions.ToArray();
-                break;
-            }
-
-            case AcpPromptQueueUpdatedEvent queueUpdated:
-            {
-                if (session.LastKnownQueue.Count > queueUpdated.QueuedPrompts.Count &&
-                    session.LastKnownQueue.Count > 0)
-                {
-                    var previousHead = session.LastKnownQueue[0];
-                    var stillPresent = queueUpdated.QueuedPrompts.Any(q => string.Equals(q.QueueItemId, previousHead.QueueItemId, StringComparison.Ordinal));
-                    if (!stillPresent && session.LastTurnJustCompleted)
-                    {
-                        autoDrainedUserItem = new AcpGatewayTimelineItem
-                        {
-                            Id = NextItemId(),
-                            Kind = "message",
-                            Role = "user",
-                            Timestamp = queueUpdated.Timestamp,
-                            Text = previousHead.Prompt,
-                            Badge = "QUEUED"
-                        };
-                        AddTimelineItemUnderGate(session, autoDrainedUserItem);
-                    }
-                }
-
-                session.LastTurnJustCompleted = false;
-                session.LastKnownQueue = queueUpdated.QueuedPrompts;
-                queueToBroadcast = queueUpdated.QueuedPrompts;
-                break;
-            }
-
-            case AcpInterruptionEvent interruption:
-            {
-                var item = new AcpGatewayTimelineItem
-                {
-                    Id = NextItemId(),
-                    Kind = "interruption",
-                    Role = "system",
-                    Timestamp = interruption.Timestamp,
-                    Text = interruption.Classification.Message,
-                    Badge = interruption.Classification.Kind.ToString(),
-                    IsError = true,
-                    IsRetryable = interruption.Classification.IsRetryable
-                };
-                AddTimelineItemUnderGate(session, item);
-                itemToBroadcast = item;
-                break;
-            }
-
-            case AcpTurnCompletedEvent turnCompleted:
-            {
-                autoDrainedUserItem = CompleteInlineActivityUnderGate(session);
-
-                session.LastTurnJustCompleted = true;
-                var item = new AcpGatewayTimelineItem
-                {
-                    Id = NextItemId(),
-                    Kind = "turn_completed",
-                    Role = "system",
-                    Timestamp = turnCompleted.Timestamp,
-                    StopReason = turnCompleted.StopReason,
-                    InputTokens = turnCompleted.InputTokens,
-                    OutputTokens = turnCompleted.OutputTokens,
-                    CostUsd = turnCompleted.CostUsd,
-                    DurationMs = turnCompleted.DurationMs,
-                    IsError = string.Equals(turnCompleted.StopReason, "error", StringComparison.OrdinalIgnoreCase)
-                };
-                AddTimelineItemUnderGate(session, item);
-                itemToBroadcast = item;
-                break;
-            }
-        }
-    }
-
-    private static string? CleanUserTranscriptText(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return text;
-        }
-
-        const string startTag = "<USER_REQUEST>";
-        const string endTag = "</USER_REQUEST>";
-        var startIdx = text.IndexOf(startTag, StringComparison.Ordinal);
-        var endIdx = text.IndexOf(endTag, StringComparison.Ordinal);
-        if (startIdx >= 0 && endIdx > startIdx)
-        {
-            return text[(startIdx + startTag.Length)..endIdx].Trim();
-        }
-
-        return text.Trim();
-    }
-
-    private static string? NormalizeToolText(string? toolName, string? text)
-    {
-        var trimmed = text?.Trim();
-        if (!string.IsNullOrWhiteSpace(trimmed) &&
-            !string.Equals(trimmed, toolName, StringComparison.OrdinalIgnoreCase))
-        {
-            return TruncateLargePayload(trimmed, 200);
-        }
-
-        return null;
-    }
-
-    private static string? FormatThoughtPreview(string? rawThinking, int maxLen = 110)
-    {
-        if (string.IsNullOrWhiteSpace(rawThinking))
-        {
-            return null;
-        }
-
-        var sb = new StringBuilder(Math.Min(rawThinking.Length, maxLen + 32));
-        var prevSpace = true;
-        foreach (var ch in rawThinking)
-        {
-            if (ch is '*' or '`' or '_' or '#')
-            {
-                continue;
-            }
-            if (char.IsWhiteSpace(ch))
-            {
-                if (!prevSpace)
-                {
-                    sb.Append(' ');
-                    prevSpace = true;
-                }
-                continue;
-            }
-            sb.Append(ch);
-            prevSpace = false;
-            if (sb.Length >= maxLen + 16)
-            {
-                break;
-            }
-        }
-
-        var cleaned = sb.ToString().Trim();
-        if (cleaned.Length <= maxLen)
-        {
-            return cleaned;
-        }
-
-        var cut = cleaned.LastIndexOf(' ', maxLen);
-        if (cut < maxLen / 2)
-        {
-            cut = maxLen;
-        }
-        return cleaned[..cut].TrimEnd() + "…";
-    }
-
-    private static string? TruncateLargePayload(string? value, int maxChars)
-    {
-        if (string.IsNullOrEmpty(value) || value.Length <= maxChars)
-        {
-            return value;
-        }
-        return value[..maxChars] + "\n... [truncated]";
-    }
-
-    private AcpGatewayTimelineItem? UpsertInlineThoughtUnderGate(
-        ManagedSession session,
-        DateTimeOffset timestamp,
-        string? rawThinking,
-        bool isStreamingDelta,
-        string toolStatus)
-    {
-        if (string.IsNullOrWhiteSpace(rawThinking))
-        {
-            return null;
-        }
-
-        var combined = isStreamingDelta
-            ? (session.CurrentStreamingThoughtBuffer ?? string.Empty) + rawThinking
-            : rawThinking;
-        session.CurrentStreamingThoughtBuffer = isStreamingDelta ? TruncateLargePayload(combined, 1200) : null;
-
-        var preview = FormatThoughtPreview(combined, 140);
-        if (string.IsNullOrWhiteSpace(preview))
-        {
-            return session.Timeline.Count > 0 && session.Timeline[^1].Kind == "tool_call"
-                ? session.Timeline[^1]
-                : null;
-        }
-
-        var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-        if (last is not null && last.Kind == "tool_call")
-        {
-            var hasCommands = last.ActivityLog is { Count: > 0 };
-            var updated = hasCommands
-                ? last with
-                {
-                    Timestamp = timestamp,
-                    ToolStatus = toolStatus,
-                    Thinking = preview
-                }
-                : last with
-                {
-                    Timestamp = timestamp,
-                    ToolName = "thinking",
-                    ToolKind = "thought",
-                    ToolStatus = toolStatus,
-                    Text = preview,
-                    Thinking = preview
-                };
-            session.Timeline[^1] = updated;
-            return updated;
-        }
-
-        var created = new AcpGatewayTimelineItem
-        {
-            Id = NextItemId(),
-            Kind = "tool_call",
-            Role = "assistant",
-            Timestamp = timestamp,
-            ToolName = "thinking",
-            ToolKind = "thought",
-            ToolStatus = toolStatus,
-            Text = preview,
-            StepCount = 0,
-            ActivityLog = [],
-            Thinking = preview
-        };
-        AddTimelineItemUnderGate(session, created);
-        return created;
-    }
-
-    private static AcpGatewayTimelineItem? CompleteInlineActivityUnderGate(ManagedSession session)
-    {
-        session.CurrentStreamingThoughtBuffer = null;
-
-        if (session.Timeline.Count == 0 || session.Timeline[^1].Kind != "tool_call")
-        {
-            return null;
-        }
-
-        var lastTool = session.Timeline[^1];
-        if (string.Equals(lastTool.ToolKind, "thought", StringComparison.Ordinal) &&
-            lastTool.ActivityLog is { Count: > 0 } logs)
-        {
-            var lastLog = logs[^1];
-            var sepIdx = lastLog.IndexOf(" · ", StringComparison.Ordinal);
-            var cmdName = sepIdx >= 0 ? lastLog[..sepIdx] : lastLog;
-            var cmdTarget = sepIdx >= 0 ? lastLog[(sepIdx + 3)..] : null;
-
-            var settled = lastTool with
-            {
-                ToolName = cmdName,
-                Text = cmdTarget,
-                ToolKind = "command",
-                ToolStatus = "completed"
-            };
-            session.Timeline[^1] = settled;
-            return settled;
-        }
-
-        if (!string.Equals(lastTool.ToolStatus, "completed", StringComparison.OrdinalIgnoreCase))
-        {
-            var settled = lastTool with
-            {
-                ToolStatus = "completed"
-            };
-            session.Timeline[^1] = settled;
-            return settled;
-        }
-
-        return null;
-    }
-
-    private AcpGatewayTimelineItem UpsertInlineActivityUnderGate(
-        ManagedSession session,
-        DateTimeOffset timestamp,
-        string? toolName,
-        string? summaryText,
-        string? toolCallId,
-        string? toolKind,
-        string toolStatus,
-        string? rawInputJson,
-        string? rawOutput,
-        bool isUpdateToSameToolCallId = false,
-        string? thoughtPreview = null)
-    {
-        session.CurrentStreamingThoughtBuffer = null;
-
-        var cleanToolName = string.IsNullOrWhiteSpace(toolName) ? "tool" : toolName.Trim();
-        var logLine = !string.IsNullOrWhiteSpace(summaryText)
-            ? $"{cleanToolName} · {summaryText}"
-            : cleanToolName;
-
-        var last = session.Timeline.Count > 0 ? session.Timeline[^1] : null;
-        if (last is not null && last.Kind == "tool_call")
-        {
-            var logs = new List<string>(last.ActivityLog ?? []);
-            var nextStepCount = last.StepCount;
-
-            if (isUpdateToSameToolCallId && logs.Count > 0)
-            {
-                logs[^1] = logLine;
-                nextStepCount = Math.Max(1, nextStepCount);
-            }
-            else
-            {
-                logs.Add(logLine);
-                nextStepCount++;
-            }
-
-            while (logs.Count > 60)
-            {
-                logs.RemoveAt(0);
-            }
-
-            var updated = last with
-            {
-                Timestamp = timestamp,
-                ToolName = cleanToolName,
-                Text = !string.IsNullOrWhiteSpace(summaryText) ? summaryText : (isUpdateToSameToolCallId ? last.Text : null),
-                ToolCallId = toolCallId ?? last.ToolCallId,
-                ToolKind = toolKind ?? "command",
-                ToolStatus = toolStatus,
-                StepCount = nextStepCount,
-                ActivityLog = logs,
-                Thinking = !string.IsNullOrWhiteSpace(thoughtPreview) ? thoughtPreview : last.Thinking,
-                RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars) ?? last.RawInputJson,
-                RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars) ?? last.RawOutput
-            };
-            session.Timeline[^1] = updated;
-            return updated;
-        }
-
-        var created = new AcpGatewayTimelineItem
-        {
-            Id = NextItemId(),
-            Kind = "tool_call",
-            Role = "assistant",
-            Timestamp = timestamp,
-            Text = summaryText,
-            ToolName = cleanToolName,
-            ToolCallId = toolCallId,
-            ToolKind = toolKind ?? "command",
-            ToolStatus = toolStatus,
-            StepCount = 1,
-            ActivityLog = [logLine],
-            Thinking = thoughtPreview,
-            RawInputJson = TruncateLargePayload(rawInputJson, MaxToolPayloadChars),
-            RawOutput = TruncateLargePayload(rawOutput, MaxToolPayloadChars)
-        };
-        AddTimelineItemUnderGate(session, created);
-        return created;
-    }
-
-    private static void AddTimelineItemUnderGate(ManagedSession session, AcpGatewayTimelineItem item)
-    {
-        session.Timeline.Add(item);
-        while (session.Timeline.Count > MaxTimelineItemsPerSession)
-        {
-            session.Timeline.RemoveAt(0);
-        }
-    }
-
-    private async Task<AcpGatewaySessionSummary> BuildSessionSummaryAsync(
-        ManagedSession session,
-        CancellationToken cancellationToken)
-    {
-        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            return BuildSessionSummaryUnderGate(session);
-        }
-        finally
-        {
-            session.Gate.Release();
-        }
-    }
-
-    private static AcpGatewaySessionSummary BuildSessionSummaryUnderGate(ManagedSession session)
-    {
-        var handle = session.LiveHandle;
-        var queuedCount = handle?.GetQueuedPrompts().Count ?? 0;
-        var now = DateTimeOffset.UtcNow;
-        var recentDiskTurn = (now - session.LastDiskActivityAt) <= TimeSpan.FromSeconds(35);
-        var isTurnActive = (handle?.IsTurnActive ?? false) || recentDiskTurn;
-        var isActiveNow = isTurnActive || handle is not null || (now - session.UpdatedAt) <= TimeSpan.FromMinutes(10);
-
-        return new AcpGatewaySessionSummary
-        {
-            SessionKey = session.SessionKey,
-            Provider = session.Provider.ToShortId(),
-            ProviderDisplayName = session.Provider.ToDisplayName(),
-            SessionId = session.SessionId,
-            Title = session.Title,
-            WorkingDirectory = session.WorkingDirectory,
-            GitBranch = session.GitBranch,
-            Model = session.Model,
-            UpdatedAt = session.UpdatedAt,
-            CreatedAt = session.CreatedAt,
-            IsLiveAttached = handle is not null || session.HasMobileAttachedOnce,
-            IsTurnActive = isTurnActive,
-            IsActiveNow = isActiveNow,
-            HasPendingPermission = session.PendingPermissions.Count > 0,
-            QueuedPromptCount = queuedCount,
-            MessageCount = Math.Max(session.DiscoveredMessageCount, session.Timeline.Count)
-        };
-    }
-
-    private async Task<AcpGatewaySessionDetail> BuildSessionDetailAsync(
-        ManagedSession session,
-        CancellationToken cancellationToken)
-    {
-        await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var summary = BuildSessionSummaryUnderGate(session);
-            var queued = session.LiveHandle?.GetQueuedPrompts() ?? [];
-            var timeline = session.Timeline;
-            var limit = Math.Max(DefaultTimelinePageSize, session.VisibleTimelineLimit);
-
-            var totalMessages = 0;
-            for (var i = 0; i < timeline.Count; i++)
-            {
-                if (timeline[i].Kind == "message")
-                {
-                    totalMessages++;
-                }
-            }
-
-            if (totalMessages <= limit)
-            {
-                return new AcpGatewaySessionDetail
-                {
-                    Summary = summary,
-                    Timeline = timeline.ToArray(),
-                    TotalTimelineCount = totalMessages > 0 ? totalMessages : timeline.Count,
-                    HiddenOlderCount = 0,
-                    HasOlderMessages = false,
-                    QueuedPrompts = queued,
-                    PendingPermissions = session.PendingPermissions.ToArray()
-                };
-            }
-
-            var messagesSeen = 0;
-            var startIndex = 0;
-            for (var i = timeline.Count - 1; i >= 0; i--)
-            {
-                if (timeline[i].Kind == "message")
-                {
-                    messagesSeen++;
-                    if (messagesSeen == limit)
-                    {
-                        startIndex = i;
-                        if (startIndex > 0 &&
-                            timeline[startIndex - 1].Kind == "tool_call" &&
-                            timeline[startIndex].Role == "assistant")
-                        {
-                            startIndex--;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            var hiddenOlderMessages = Math.Max(0, totalMessages - messagesSeen);
-            var slice = timeline.GetRange(startIndex, timeline.Count - startIndex).ToArray();
-
-            return new AcpGatewaySessionDetail
-            {
-                Summary = summary,
-                Timeline = slice,
-                TotalTimelineCount = totalMessages,
-                HiddenOlderCount = hiddenOlderMessages,
-                HasOlderMessages = hiddenOlderMessages > 0,
-                QueuedPrompts = queued,
-                PendingPermissions = session.PendingPermissions.ToArray()
-            };
-        }
-        finally
-        {
-            session.Gate.Release();
-        }
-    }
-
-    private async Task BroadcastSessionSummaryAsync(ManagedSession session)
-    {
-        var summary = await BuildSessionSummaryAsync(session, CancellationToken.None).ConfigureAwait(false);
+        var summary = await session.BuildSummaryAsync(CancellationToken.None).ConfigureAwait(false);
         await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
         {
-            Type = "session_summary",
+            Type = RealtimeEnvelopeTypes.SessionSummary,
             SessionKey = session.SessionKey,
             Summary = summary
         }).ConfigureAwait(false);
@@ -2007,7 +1212,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         var state = await GetStateSnapshotAsync(cancellationToken: CancellationToken.None).ConfigureAwait(false);
         await BroadcastEnvelopeAsync(new AcpGatewayRealtimeEnvelope
         {
-            Type = "state_snapshot",
+            Type = RealtimeEnvelopeTypes.StateSnapshot,
             State = state
         }).ConfigureAwait(false);
     }
@@ -2029,18 +1234,6 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
     private string NextItemId() => $"item_{Interlocked.Increment(ref _timelineItemCounter)}";
 
-    private static string BuildSessionKey(AgentProviderKind provider, string sessionId)
-        => $"{provider.ToShortId()}:{sessionId}";
-
-    private static string ShortId(string id)
-        => id.Length <= 8 ? id : id[..8];
-
-    private static string TruncateTitle(string text)
-    {
-        var firstLine = text.Split('\n', '\r')[0].Trim();
-        return firstLine.Length <= 72 ? firstLine : firstLine[..69] + "...";
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (Volatile.Read(ref _isDisposed) != 0)
@@ -2058,9 +1251,9 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
             await _lifetimeCts.CancelAsync().ConfigureAwait(false);
             _subscribers.Clear();
-            await WaitBackgroundTaskQuietlyAsync(_monitorTask).ConfigureAwait(false);
+            await AcpManagedSession.WaitBackgroundTaskQuietlyAsync(_monitorTask).ConfigureAwait(false);
 
-            var uniqueSessions = new HashSet<ManagedSession>(ReferenceEqualityComparer.Instance);
+            var uniqueSessions = new HashSet<AcpManagedSession>(ReferenceEqualityComparer.Instance);
             foreach (var (_, session) in _sessions)
             {
                 if (uniqueSessions.Add(session))
@@ -2083,113 +1276,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         }
     }
 
-    private static async Task WaitBackgroundTaskQuietlyAsync(Task? task)
-    {
-        if (task is null)
-        {
-            return;
-        }
-
-        try
-        {
-            await task.WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Ignore cancellation or completion errors on teardown
-        }
-    }
-
-    private sealed class SubscriptionToken(ConcurrentDictionary<long, Func<AcpGatewayRealtimeEnvelope, Task>> dict, long id) : IDisposable
+    private sealed class SubscriptionToken(
+        ConcurrentDictionary<long, Func<AcpGatewayRealtimeEnvelope, Task>> dict,
+        long id) : IDisposable
     {
         public void Dispose() => dict.TryRemove(id, out _);
-    }
-
-    private sealed class ManagedSession(AgentProviderKind provider, string sessionId) : IAsyncDisposable
-    {
-        public AgentProviderKind Provider { get; } = provider;
-        public string SessionId { get; } = sessionId;
-        public string SessionKey { get; } = BuildSessionKey(provider, sessionId);
-        public SemaphoreSlim Gate { get; } = new(1, 1);
-        public SemaphoreSlim AttachGate { get; } = new(1, 1);
-        public List<AcpGatewayTimelineItem> Timeline { get; } = [];
-        public List<AcpGatewayPendingPermission> PendingPermissions { get; } = [];
-        public IReadOnlyList<AcpQueuedPromptItem> LastKnownQueue { get; set; } = [];
-        public bool LastTurnJustCompleted { get; set; }
-
-        public string Title { get; set; } = $"Session {ShortId(sessionId)}";
-        public string? WorkingDirectory { get; set; }
-        public string? TranscriptPath { get; set; }
-        public string? GitBranch { get; set; }
-        public string? Model { get; set; }
-        public bool AutoApproveTools { get; set; }
-        public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
-        public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
-        public DateTimeOffset LastDiskActivityAt { get; set; } = DateTimeOffset.MinValue;
-        public long LastObservedFileLength { get; set; }
-        public int DiscoveredMessageCount { get; set; }
-        public bool IsDiscoveredOnDisk { get; set; }
-        public bool InitialHistoryLoaded { get; set; }
-        public bool HasMobileAttachedOnce { get; set; }
-        public bool HasExternalTranscriptActivitySinceAttach { get; set; }
-        public bool SuppressTranscriptTailUntilNextUserMessage { get; set; }
-        public DateTimeOffset MobileTurnStartingUntil { get; set; } = DateTimeOffset.MinValue;
-        public DateTimeOffset LastMobileTurnActivityAt { get; set; } = DateTimeOffset.MinValue;
-        public DateTimeOffset LastMobileTurnCompletedAt { get; set; } = DateTimeOffset.MinValue;
-        public string? LastMobilePromptText { get; set; }
-        public string? LastMobileAssistantText { get; set; }
-        public int VisibleTimelineLimit { get; set; } = DefaultTimelinePageSize;
-        public string? CurrentStreamingThoughtBuffer { get; set; }
-
-        public IAcpSessionHandle? LiveHandle { get; set; }
-        public CancellationTokenSource? TailCts { get; set; }
-        public Task? TailTask { get; set; }
-        public CancellationTokenSource? LivePumpCts { get; set; }
-        public Task? LivePumpTask { get; set; }
-
-        public async ValueTask DisposeAsync()
-        {
-            CancellationTokenSource? tailCts;
-            CancellationTokenSource? livePumpCts;
-            Task? tailTask;
-            Task? livePumpTask;
-            IAcpSessionHandle? liveHandle;
-
-            await Gate.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                tailCts = TailCts;
-                livePumpCts = LivePumpCts;
-                tailTask = TailTask;
-                livePumpTask = LivePumpTask;
-                liveHandle = LiveHandle;
-                TailCts = null;
-                LivePumpCts = null;
-                TailTask = null;
-                LivePumpTask = null;
-                LiveHandle = null;
-            }
-            finally
-            {
-                Gate.Release();
-            }
-
-            if (tailCts is not null)
-            {
-                try { await tailCts.CancelAsync().ConfigureAwait(false); } catch { }
-            }
-            if (livePumpCts is not null)
-            {
-                try { await livePumpCts.CancelAsync().ConfigureAwait(false); } catch { }
-            }
-            await WaitBackgroundTaskQuietlyAsync(tailTask).ConfigureAwait(false);
-            await WaitBackgroundTaskQuietlyAsync(livePumpTask).ConfigureAwait(false);
-            if (liveHandle is not null)
-            {
-                try { await liveHandle.DisposeAsync().ConfigureAwait(false); } catch { }
-            }
-            tailCts?.Dispose();
-            livePumpCts?.Dispose();
-        }
     }
 }

@@ -24,28 +24,35 @@ public class Program
         return await root.InvokeAsync(args);
     }
 
-    private static void ConfigureAcp(Command command)
+    private sealed record CommonCliOptions(
+        Option<string> Relay,
+        Option<LogLevel?> Log,
+        Option<string> Name,
+        Option<string?> Identity)
     {
-        var provider = new Argument<string?>("provider", () => null, "Optional coding agent filter: claude, codex, grok, or agy (default: all).");
-        var relay = new Option<string>("--publicUrl", () => "https://tunnelite.com", "The relay server URL.");
-        var log = new Option<LogLevel?>("--log", () => null, "Client log verbosity.");
-        var name = new Option<string>("--name", () => "default", "Desktop profile name; the same profile keeps the same address.");
-        var identity = new Option<string?>("--identity-file", "Desktop profile file (identity and paired devices).");
-        var cwd = new Option<string?>("--cwd", () => null, "Default working directory for new agent sessions.");
-        command.AddArgument(provider);
-        foreach (var option in new Option[] { relay, log, name, identity, cwd }) command.AddOption(option);
+        public static CommonCliOptions AttachTo(Command command)
+        {
+            var options = new CommonCliOptions(
+                new Option<string>("--publicUrl", () => "https://tunnelite.com", "The relay server URL."),
+                new Option<LogLevel?>("--log", () => null, "Client log verbosity."),
+                new Option<string>("--name", () => "default", "Desktop profile name; the same profile keeps the same address."),
+                new Option<string?>("--identity-file", "Desktop profile file (identity and paired devices)."));
+
+            command.AddOption(options.Relay);
+            command.AddOption(options.Log);
+            command.AddOption(options.Name);
+            command.AddOption(options.Identity);
+            return options;
+        }
+    }
+
+    private static void SetSafeCommandHandler(Command command, Func<InvocationContext, Task> action)
+    {
         command.SetHandler(async (InvocationContext invocation) =>
         {
             try
             {
-                await RunAcpAsync(
-                    invocation.ParseResult.GetValueForArgument(provider),
-                    invocation.ParseResult.GetValueForOption(relay)!,
-                    invocation.ParseResult.GetValueForOption(log),
-                    invocation.ParseResult.GetValueForOption(name)!,
-                    invocation.ParseResult.GetValueForOption(identity),
-                    invocation.ParseResult.GetValueForOption(cwd),
-                    invocation.GetCancellationToken());
+                await action(invocation);
             }
             catch (OperationCanceledException) { }
             catch (Exception exception)
@@ -54,6 +61,25 @@ public class Program
                 invocation.ExitCode = 1;
             }
         });
+    }
+
+    private static void ConfigureAcp(Command command)
+    {
+        var provider = new Argument<string?>("provider", () => null, "Optional coding agent filter: claude, codex, grok, or agy (default: all).");
+        var cwd = new Option<string?>("--cwd", () => null, "Default working directory for new agent sessions.");
+        command.AddArgument(provider);
+        var common = CommonCliOptions.AttachTo(command);
+        command.AddOption(cwd);
+
+        SetSafeCommandHandler(command, invocation =>
+            RunAcpAsync(
+                invocation.ParseResult.GetValueForArgument(provider),
+                invocation.ParseResult.GetValueForOption(common.Relay)!,
+                invocation.ParseResult.GetValueForOption(common.Log),
+                invocation.ParseResult.GetValueForOption(common.Name)!,
+                invocation.ParseResult.GetValueForOption(common.Identity),
+                invocation.ParseResult.GetValueForOption(cwd),
+                invocation.GetCancellationToken()));
     }
 
     private static async Task RunAcpAsync(
@@ -81,30 +107,23 @@ public class Program
     private static void Configure(Command command, bool pairedMode)
     {
         var local = new Argument<string>("localUrl", "The local URL to tunnel to.");
-        var relay = new Option<string>("--publicUrl", () => "https://tunnelite.com", "The relay server URL.");
-        var log = new Option<LogLevel?>("--log", () => null, "Client log verbosity.");
         var pair = new Option<bool>("--pair", "Require QR pairing before allowing browser access.");
-        var name = new Option<string>("--name", () => "default", "Desktop profile name; the same profile keeps the same address.");
-        var identity = new Option<string?>("--identity-file", "Desktop profile file (identity and paired devices).");
         var insecureLocal = new Option<bool>("--insecure-local", "Allow an untrusted HTTPS certificate only on a loopback local server.");
         command.AddArgument(local);
-        foreach (var option in new Option[] { relay, log, pair, name, identity, insecureLocal }) command.AddOption(option);
-        command.SetHandler(async (InvocationContext invocation) =>
-        {
-            try
-            {
-                await RunAsync(invocation.ParseResult.GetValueForArgument(local), invocation.ParseResult.GetValueForOption(relay)!,
-                    invocation.ParseResult.GetValueForOption(log), pairedMode || invocation.ParseResult.GetValueForOption(pair),
-                    invocation.ParseResult.GetValueForOption(name)!, invocation.ParseResult.GetValueForOption(identity),
-                    invocation.ParseResult.GetValueForOption(insecureLocal), invocation.GetCancellationToken());
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception exception)
-            {
-                AnsiConsole.Write(new Text(TerminalText.Clean(exception.Message) + Environment.NewLine, new Style(Color.Red)));
-                invocation.ExitCode = 1;
-            }
-        });
+        var common = CommonCliOptions.AttachTo(command);
+        command.AddOption(pair);
+        command.AddOption(insecureLocal);
+
+        SetSafeCommandHandler(command, invocation =>
+            RunAsync(
+                invocation.ParseResult.GetValueForArgument(local),
+                invocation.ParseResult.GetValueForOption(common.Relay)!,
+                invocation.ParseResult.GetValueForOption(common.Log),
+                pairedMode || invocation.ParseResult.GetValueForOption(pair),
+                invocation.ParseResult.GetValueForOption(common.Name)!,
+                invocation.ParseResult.GetValueForOption(common.Identity),
+                invocation.ParseResult.GetValueForOption(insecureLocal),
+                invocation.GetCancellationToken()));
     }
 
     private static async Task RunAsync(string localUrl, string publicUrl, LogLevel? logLevel, bool pair,

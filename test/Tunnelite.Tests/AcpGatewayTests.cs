@@ -710,7 +710,7 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
         public override Task CancelTurnAsync(CancellationToken cancellationToken = default)
         {
             CancelCount++;
-            PublishEvent(new AcpTurnCompletedEvent(Provider, SessionId, DateTimeOffset.UtcNow, "cancelled"));
+            PublishEvent(new AcpTurnCompletedEvent(Provider, SessionId, DateTimeOffset.UtcNow, AcpStopReasons.Cancelled));
             return Task.CompletedTask;
         }
 
@@ -725,14 +725,14 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
                 title,
                 "dotnet test",
                 "{\"cmd\":\"dotnet test\"}",
-                [new AcpPermissionOption("allow", "Allow", "allow_once"), new AcpPermissionOption("deny", "Deny", "reject_once")]));
+                AcpPermissionOptions.DefaultAllowDeny));
         }
 
         public void CompleteActiveTurn(string responseText)
         {
             var now = DateTimeOffset.UtcNow;
             PublishEvent(new AcpAssistantTextDeltaEvent(Provider, SessionId, now, responseText));
-            PublishEvent(new AcpTurnCompletedEvent(Provider, SessionId, now, "end_turn", InputTokens: 100, OutputTokens: 50, CostUsd: 0.01m, DurationMs: 500));
+            PublishEvent(new AcpTurnCompletedEvent(Provider, SessionId, now, AcpStopReasons.EndTurn, InputTokens: 100, OutputTokens: 50, CostUsd: 0.01m, DurationMs: 500));
         }
     }
 }
