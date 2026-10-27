@@ -81,7 +81,7 @@ public sealed class PtySessionBridge(string? registryDirectory = null) : IAcpExt
 
                     if (client is null)
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                        await Task.Delay(TimeSpan.FromMilliseconds(2500), cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 

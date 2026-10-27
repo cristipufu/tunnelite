@@ -56,15 +56,21 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshDiscoveryCoreAsync(refreshProviders: true, cancellationToken).ConfigureAwait(false);
         _monitorTask ??= Task.Run(() => MonitorActiveSessionsLoopAsync(_lifetimeCts.Token), _lifetimeCts.Token);
     }
 
-    public async Task RefreshDiscoveryAsync(CancellationToken cancellationToken = default)
+    public Task RefreshDiscoveryAsync(CancellationToken cancellationToken = default)
+        => RefreshDiscoveryCoreAsync(refreshProviders: _providers.Count == 0, cancellationToken);
+
+    private async Task RefreshDiscoveryCoreAsync(bool refreshProviders, CancellationToken cancellationToken)
     {
-        _providers = await _runtime.DiscoverProvidersAsync(
-            providerFilter: _scopedProvider,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (refreshProviders || _providers.Count == 0)
+        {
+            _providers = await _runtime.DiscoverProvidersAsync(
+                providerFilter: _scopedProvider,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
 
         var discoveredSessions = await _runtime.DiscoverSessionsAsync(
             providerFilter: _scopedProvider,
@@ -341,7 +347,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         AcpGatewayActionRequest request,
         CancellationToken cancellationToken)
     {
-        await RefreshDiscoveryAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshDiscoveryCoreAsync(refreshProviders: true, cancellationToken).ConfigureAwait(false);
         var state = await GetStateSnapshotAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
         await BroadcastStateAsync().ConfigureAwait(false);
         return new AcpGatewayActionResponse { Ok = true, State = state };
@@ -992,10 +998,19 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
     private async Task CheckTranscriptFilesForActivityAsync(CancellationToken cancellationToken)
     {
-        foreach (var (_, session) in _sessions)
+        var now = DateTimeOffset.UtcNow;
+        foreach (var (sessionKey, session) in _sessions)
         {
             var path = session.TranscriptPath;
             if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            var isRecentlyActive = string.Equals(sessionKey, _activeSessionKey, StringComparison.Ordinal) ||
+                                   session.LiveHandle is not null ||
+                                   (now - session.UpdatedAt) <= AcpGatewayDefaults.ActiveSessionRecencyThreshold;
+            if (!isRecentlyActive)
             {
                 continue;
             }

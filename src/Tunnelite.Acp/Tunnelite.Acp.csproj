@@ -8,8 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Acplite.Pty" Version="0.2.0" />
-    <PackageReference Include="Acplite.Sdk" Version="0.2.0" />
+    <PackageReference Include="Acplite.Pty" Version="0.2.1" />
+    <PackageReference Include="Acplite.Sdk" Version="0.2.1" />
     <ProjectReference Include="..\Tunnelite.Sdk\Tunnelite.Sdk.csproj" />
     <InternalsVisibleTo Include="Tunnelite.Tests" />
   </ItemGroup>

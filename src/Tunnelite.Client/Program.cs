@@ -15,6 +15,8 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        SanitizeProcessEnvironment();
+
         if (args.Length >= 2 &&
             string.Equals(args[0], "acp", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(args[1], "--pty", StringComparison.OrdinalIgnoreCase))
@@ -42,6 +44,18 @@ public class Program
         ConfigureAcp(acp);
         root.AddCommand(acp);
         return await root.InvokeAsync(args);
+    }
+
+    private static void SanitizeProcessEnvironment()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        Environment.SetEnvironmentVariable("MallocStackLogging", null);
+        Environment.SetEnvironmentVariable("MallocStackLoggingNoCompact", null);
+        Environment.SetEnvironmentVariable("MallocScribble", null);
     }
 
     private static bool IsHelpFlag(string arg)
