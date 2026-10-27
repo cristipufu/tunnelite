@@ -139,6 +139,15 @@ internal static class AcpTimelineProjector
             ? AcpTextFormatter.CleanUserTranscriptText(hist.Text)
             : hist.Text;
 
+        if (!isHistoricalLoad &&
+            hist.Role == AcpRoles.User &&
+            !string.IsNullOrWhiteSpace(session.LastMobilePromptText) &&
+            string.Equals(cleanedText, session.LastMobilePromptText, StringComparison.Ordinal))
+        {
+            session.LastMobilePromptText = null;
+            return default;
+        }
+
         if (string.IsNullOrWhiteSpace(cleanedText) &&
             string.IsNullOrWhiteSpace(hist.Thinking) &&
             string.IsNullOrWhiteSpace(hist.ToolName))
@@ -342,6 +351,19 @@ internal static class AcpTimelineProjector
         AcpManagedSession session,
         AcpPermissionRequestEvent perm)
     {
+        if (perm.Options.Count == 0)
+        {
+            if (string.IsNullOrWhiteSpace(perm.RequestId))
+            {
+                session.PendingPermissions.Clear();
+            }
+            else
+            {
+                session.PendingPermissions.RemoveAll(p => string.Equals(p.RequestId, perm.RequestId, StringComparison.Ordinal));
+            }
+            return new SessionEventProjection(PendingPermissions: session.PendingPermissions.ToArray());
+        }
+
         var pending = new AcpGatewayPendingPermission
         {
             RequestId = perm.RequestId,

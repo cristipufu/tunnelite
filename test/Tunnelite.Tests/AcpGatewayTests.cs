@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using Acplite.Pty;
 using Acplite.Sdk;
 using Acplite.Sdk.Adapters;
 using Acplite.Sdk.Protocol;
@@ -578,6 +579,122 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
             Assert.Contains("latest tokens at the end.", trailingTool.Text, StringComparison.Ordinal);
             Assert.NotNull(trailingTool.Thinking);
             Assert.Contains("Initial paragraph checking the workspace.\nSecond paragraph", trailingTool.Thinking, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AcpGatewayServer_bridges_live_terminal_pty_permissions_and_prompts_without_spawning_duplicate_process()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "tunnelite-acp-pty-" + Guid.NewGuid().ToString("N"));
+        var registryDir = Path.Combine(tempDir, "registry");
+        Directory.CreateDirectory(registryDir);
+        var currentPid = Environment.ProcessId;
+        var ptyInputStream = new MemoryStream();
+
+        try
+        {
+            var transcriptPath = Path.Combine(tempDir, "transcript.jsonl");
+            await File.WriteAllTextAsync(
+                transcriptPath,
+                "{\"step_index\":1,\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"content\":\"<USER_REQUEST>\\nDeploy service\\n</USER_REQUEST>\"}\n");
+
+            var metadata = new PtySessionMetadata
+            {
+                Pid = currentPid,
+                ChildPid = currentPid,
+                PipeName = $"acplite-t-{Guid.NewGuid():N}"[..18],
+                Provider = "agy",
+                WorkingDirectory = tempDir,
+                StartedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
+                LastActiveAt = DateTimeOffset.UtcNow,
+                SessionId = "disc-agy-pty",
+                TranscriptPath = transcriptPath
+            };
+
+            var inspector = new PtyTuiInspector();
+            await using var ptyServer = new PtyControlServer(metadata, ptyInputStream, inspector, registryDir);
+            await ptyServer.StartAsync();
+
+            // Simulate the desktop terminal showing a tool approval prompt before or while mobile connects
+            var activePerm = await inspector.ProcessOutputTextAsync(
+                "Do you want to run this command?\r\n❯ 1. Yes, allow once\r\n  2. Yes, allow always\r\n  3. No, suggest changes\r\n");
+            Assert.NotNull(activePerm);
+            await ptyServer.BroadcastPermissionRequestAsync(activePerm!);
+
+            var fakeAgy = new ControllableTestAdapter(AgentProviderKind.Antigravity, "agy", "Google Antigravity")
+            {
+                DiscoveredSessions =
+                [
+                    new AcpDiscoveredSession(
+                        Provider: AgentProviderKind.Antigravity,
+                        SessionId: "disc-agy-pty",
+                        Title: "Deploy service",
+                        WorkingDirectory: tempDir,
+                        TranscriptPath: transcriptPath,
+                        UpdatedAt: DateTimeOffset.UtcNow,
+                        CreatedAt: DateTimeOffset.UtcNow.AddMinutes(-2),
+                        Model: "gemini-2.5-pro",
+                        IsActive: true,
+                        MessageCount: 1)
+                ]
+            };
+
+            var bridge = new PtySessionBridge(registryDir);
+            await using var runtime = new AcpliteRuntime([fakeAgy], bridge);
+            await using var orchestrator = new AcpGatewayOrchestrator(
+                scopedProvider: AgentProviderKind.Antigravity,
+                defaultWorkingDirectory: tempDir,
+                runtime: runtime);
+
+            await orchestrator.InitializeAsync();
+
+            // 1. Wait for the live PTY permission to appear on the mobile session state
+            AcpGatewayStateSnapshot? snapWithPerm = null;
+            for (var i = 0; i < 30; i++)
+            {
+                snapWithPerm = await orchestrator.GetStateSnapshotAsync();
+                if (snapWithPerm.ActiveSession?.PendingPermissions.Count > 0)
+                {
+                    break;
+                }
+                await Task.Delay(40);
+            }
+
+            Assert.NotNull(snapWithPerm?.ActiveSession);
+            var perm = Assert.Single(snapWithPerm!.ActiveSession!.PendingPermissions);
+            Assert.Equal(activePerm!.RequestId, perm.RequestId);
+
+            // 2. Approve the permission from mobile -> attaches to live PTY and injects keystroke without spawning a duplicate process
+            var permRes = await orchestrator.ExecuteActionAsync(new AcpGatewayActionRequest
+            {
+                Action = GatewayActions.RespondPermission,
+                SessionKey = "agy:disc-agy-pty",
+                PermissionRequestId = activePerm.RequestId,
+                Approved = true
+            });
+            Assert.True(permRes.Ok);
+            Assert.Null(fakeAgy.LastHandle);
+            Assert.Empty(permRes.Session!.PendingPermissions);
+
+            // 3. Send a prompt from mobile -> injects directly into the live terminal PTY stdin
+            var promptRes = await orchestrator.ExecuteActionAsync(new AcpGatewayActionRequest
+            {
+                Action = GatewayActions.SendPrompt,
+                SessionKey = "agy:disc-agy-pty",
+                Prompt = "Verify rollout status"
+            });
+            Assert.True(promptRes.Ok);
+            Assert.Null(fakeAgy.LastHandle);
+
+            var writtenPtyInput = Encoding.UTF8.GetString(ptyInputStream.ToArray());
+            Assert.Contains("Verify rollout status\r", writtenPtyInput, StringComparison.Ordinal);
         }
         finally
         {

@@ -267,8 +267,11 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
     {
         UpdatedAt = now;
         LastMobileTurnActivityAt = now;
-        MobileTurnStartingUntil = now.Add(AcpGatewayDefaults.MobileTurnStartingWindow);
-        SuppressTranscriptTailUntilNextUserMessage = true;
+        if (LiveHandle is not PtyAttachedSessionHandle)
+        {
+            MobileTurnStartingUntil = now.Add(AcpGatewayDefaults.MobileTurnStartingWindow);
+            SuppressTranscriptTailUntilNextUserMessage = true;
+        }
 
         if (!string.IsNullOrWhiteSpace(promptText))
         {
@@ -284,6 +287,18 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
         AcpEvent acpEvent,
         DateTimeOffset now)
     {
+        if (LiveHandle is PtyAttachedSessionHandle)
+        {
+            LastDiskActivityAt = now;
+            return new TranscriptTailDecision(ShouldProcess: false);
+        }
+
+        if (acpEvent is AcpPermissionRequestEvent)
+        {
+            LastDiskActivityAt = now;
+            return new TranscriptTailDecision(ShouldProcess: true);
+        }
+
         if ((LiveHandle?.IsTurnActive ?? false) || now < MobileTurnStartingUntil)
         {
             return new TranscriptTailDecision(ShouldProcess: false);
@@ -340,6 +355,11 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
 
         LastMobileTurnCompletedAt = now;
         MobileTurnStartingUntil = DateTimeOffset.MinValue;
+
+        if (LiveHandle is PtyAttachedSessionHandle)
+        {
+            return default;
+        }
 
         if (IsDiscoveredOnDisk &&
             LiveHandle is not null &&

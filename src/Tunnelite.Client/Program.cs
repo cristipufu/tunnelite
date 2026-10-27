@@ -1,4 +1,6 @@
 using System.CommandLine.Invocation;
+using Acplite.Pty;
+using Acplite.Sdk;
 using Acplite.Sdk.Protocol;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
@@ -13,6 +15,15 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length >= 2 &&
+            string.Equals(args[0], "acp-pty", StringComparison.OrdinalIgnoreCase) &&
+            !IsHelpFlag(args[1]) &&
+            !string.Equals(args[1], "list", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(args[1], "--list", StringComparison.OrdinalIgnoreCase))
+        {
+            return await ExecuteDirectPtyPassThroughAsync(args).ConfigureAwait(false);
+        }
+
         var root = new RootCommand("CLI tool to create a tunnel to a local server.");
         Configure(root, pairedMode: false);
         var serve = new Command("serve", "Serve a local web app to paired browsers with a QR code.");
@@ -21,7 +32,109 @@ public class Program
         var acp = new Command("acp", "Bridge local coding agents (claude, codex, grok, agy) to paired mobile browsers.");
         ConfigureAcp(acp);
         root.AddCommand(acp);
+        root.AddCommand(BuildAcpPtyCommand());
         return await root.InvokeAsync(args);
+    }
+
+    private static bool IsHelpFlag(string arg)
+        => string.Equals(arg, "-h", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(arg, "--help", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(arg, "-?", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<int> ExecuteDirectPtyPassThroughAsync(string[] args)
+    {
+        try
+        {
+            var rawAgent = args[1].Trim();
+            string providerShortId;
+            string? resolvedBinaryPath = null;
+
+            if (AgentProviderParser.TryParse(rawAgent, out var kind))
+            {
+                providerShortId = kind.ToShortId();
+                await using var runtime = new AcpliteRuntime(externalSessionBridge: PtySessionBridge.Instance);
+                var descriptor = await runtime.GetAdapter(kind).DiscoverInstalledAsync().ConfigureAwait(false);
+                if (descriptor.IsInstalled && !string.IsNullOrWhiteSpace(descriptor.ResolvedBinaryPath))
+                {
+                    resolvedBinaryPath = descriptor.ResolvedBinaryPath;
+                }
+            }
+            else
+            {
+                providerShortId = rawAgent.ToLowerInvariant();
+            }
+
+            resolvedBinaryPath ??= PtyFactory.ResolveExecutableOnPath(rawAgent);
+            if (string.IsNullOrWhiteSpace(resolvedBinaryPath))
+            {
+                AnsiConsole.Write(new Text($"Could not find '{TerminalText.Clean(rawAgent)}' CLI executable on PATH.\n", new Style(Color.Red)));
+                return 1;
+            }
+
+            var startIdx = 2;
+            if (startIdx < args.Length && string.Equals(args[startIdx], "--", StringComparison.Ordinal))
+            {
+                startIdx++;
+            }
+
+            var forwardedArgs = startIdx < args.Length
+                ? args[startIdx..]
+                : [];
+
+            return await PtySessionRunner.RunInteractiveAsync(
+                providerShortId,
+                resolvedBinaryPath,
+                forwardedArgs).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.Write(new Text(TerminalText.Clean(ex.Message) + Environment.NewLine, new Style(Color.Red)));
+            return 1;
+        }
+    }
+
+    private static Command BuildAcpPtyCommand()
+    {
+        var cmd = new Command("acp-pty", "Run an interactive coding agent inside a transparent pseudo-terminal (PTY) with a local control socket, or list active PTY sessions.");
+        var providerArg = new Argument<string?>("provider", () => "list", "Coding agent to launch (claude, codex, grok, agy) or 'list' to inspect active PTY tabs.");
+        var listOpt = new Option<bool>("--list", "List active PTY sessions registered on this machine.");
+        cmd.AddArgument(providerArg);
+        cmd.AddOption(listOpt);
+        SetSafeCommandHandler(cmd, async invocation =>
+        {
+            await RenderActivePtySessionsTableAsync(invocation.GetCancellationToken()).ConfigureAwait(false);
+        });
+        return cmd;
+    }
+
+    private static async Task RenderActivePtySessionsTableAsync(CancellationToken cancellationToken)
+    {
+        var active = await PtySessionRegistry.ListActiveSessionsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (active.Count == 0)
+        {
+            AnsiConsole.Write(new Text("No active PTY sessions found.\n", new Style(Color.Grey)));
+            return;
+        }
+
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .AddColumn("PID")
+            .AddColumn("Child PID")
+            .AddColumn("Provider")
+            .AddColumn("Session ID")
+            .AddColumn("Workspace");
+
+        foreach (var s in active)
+        {
+            table.AddRow(
+                new Text(s.Pid.ToString()),
+                new Text(s.ChildPid.ToString()),
+                new Text(TerminalText.Clean(s.Provider), new Style(Color.Cyan1)),
+                new Text(TerminalText.Clean(s.SessionId ?? "-")),
+                new Text(TerminalText.Clean(s.WorkingDirectory, 60)));
+        }
+
+        AnsiConsole.Write(table);
     }
 
     private sealed record CommonCliOptions(
@@ -67,19 +180,99 @@ public class Program
     {
         var provider = new Argument<string?>("provider", () => null, "Optional coding agent filter: claude, codex, grok, or agy (default: all).");
         var cwd = new Option<string?>("--cwd", () => null, "Default working directory for new agent sessions.");
+        var installHooks = new Option<bool>("--install-hooks", "Install transparent PTY shell hooks so terminal agent sessions can be controlled and approved from mobile.");
+        var uninstallHooks = new Option<bool>("--uninstall-hooks", "Remove transparent PTY shell hooks from your shell profile.");
+        var hooksStatus = new Option<bool>("--hooks-status", "Inspect PTY shell hook installation status and active PTY sessions.");
+        var shellOpt = new Option<string?>("--shell", () => null, "Optional shell override for --install-hooks / --uninstall-hooks (zsh, bash, fish, pwsh, powershell).");
+        var agentsOpt = new Option<string?>("--agents", () => null, "Optional comma-separated list of agent commands to wrap with --install-hooks (default: claude,codex,grok,agy).");
         command.AddArgument(provider);
         var common = CommonCliOptions.AttachTo(command);
         command.AddOption(cwd);
+        command.AddOption(installHooks);
+        command.AddOption(uninstallHooks);
+        command.AddOption(hooksStatus);
+        command.AddOption(shellOpt);
+        command.AddOption(agentsOpt);
 
-        SetSafeCommandHandler(command, invocation =>
-            RunAcpAsync(
+        SetSafeCommandHandler(command, async invocation =>
+        {
+            var ct = invocation.GetCancellationToken();
+            var doInstall = invocation.ParseResult.GetValueForOption(installHooks);
+            var doUninstall = invocation.ParseResult.GetValueForOption(uninstallHooks);
+            var doStatus = invocation.ParseResult.GetValueForOption(hooksStatus);
+            var shell = invocation.ParseResult.GetValueForOption(shellOpt);
+            var agentsCsv = invocation.ParseResult.GetValueForOption(agentsOpt);
+
+            if (doInstall || doUninstall || doStatus)
+            {
+                await HandleAcpHooksFlagAsync(doInstall, doUninstall, doStatus, shell, agentsCsv, ct).ConfigureAwait(false);
+                return;
+            }
+
+            await RunAcpAsync(
                 invocation.ParseResult.GetValueForArgument(provider),
                 invocation.ParseResult.GetValueForOption(common.Relay)!,
                 invocation.ParseResult.GetValueForOption(common.Log),
                 invocation.ParseResult.GetValueForOption(common.Name)!,
                 invocation.ParseResult.GetValueForOption(common.Identity),
                 invocation.ParseResult.GetValueForOption(cwd),
-                invocation.GetCancellationToken()));
+                ct).ConfigureAwait(false);
+        });
+    }
+
+    private static async Task HandleAcpHooksFlagAsync(
+        bool install,
+        bool uninstall,
+        bool status,
+        string? shell,
+        string? agentsCsv,
+        CancellationToken cancellationToken)
+    {
+        if (install)
+        {
+            var providers = ShellHookInstaller.ParseProvidersList(agentsCsv);
+            var result = await ShellHookInstaller.InstallAsync(
+                shell,
+                wrapperCommand: "tunnelite acp-pty",
+                providers: providers,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            AnsiConsole.Write(new Text(
+                $"Installed PTY shell hooks ({string.Join(", ", providers)}) for {TerminalText.Clean(result.ShellName)} in {TerminalText.Clean(result.ProfilePath)}\n",
+                new Style(Color.Green)));
+            return;
+        }
+
+        if (uninstall)
+        {
+            var result = await ShellHookInstaller.UninstallAsync(
+                shell,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            AnsiConsole.Write(new Text(
+                $"Removed PTY shell hooks for {TerminalText.Clean(result.ShellName)} from {TerminalText.Clean(result.ProfilePath)}\n",
+                new Style(Color.Yellow)));
+            return;
+        }
+
+        if (status)
+        {
+            var statuses = await ShellHookInstaller.GetAllStatusesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            var table = new Table()
+                .Border(TableBorder.Rounded)
+                .AddColumn("Shell")
+                .AddColumn("Installed")
+                .AddColumn("Profile Path");
+
+            foreach (var s in statuses)
+            {
+                table.AddRow(
+                    new Text(TerminalText.Clean(s.ShellName), new Style(Color.Cyan1)),
+                    new Text(s.IsInstalled ? "Yes" : "No", new Style(s.IsInstalled ? Color.Green : Color.Grey)),
+                    new Text(TerminalText.Clean(s.ProfilePath)));
+            }
+
+            AnsiConsole.Write(table);
+            await RenderActivePtySessionsTableAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static async Task RunAcpAsync(

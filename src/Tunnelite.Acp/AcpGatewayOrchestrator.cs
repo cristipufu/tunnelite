@@ -40,7 +40,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             ? Path.GetFullPath(defaultWorkingDirectory)
             : Environment.CurrentDirectory;
         _ownsRuntime = runtime is null;
-        _runtime = runtime ?? new AcpliteRuntime();
+        _runtime = runtime ?? new AcpliteRuntime(externalSessionBridge: PtySessionBridge.Instance);
     }
 
     public AgentProviderKind? ScopedProvider => _scopedProvider;
@@ -537,12 +537,18 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-        if (session?.LiveHandle is null)
+        if (session is null)
         {
             return new AcpGatewayActionResponse { Ok = false, Message = "No active live session to stop." };
         }
 
-        await session.LiveHandle.CancelTurnAsync(cancellationToken).ConfigureAwait(false);
+        var handle = session.LiveHandle ?? await TryAttachLiveHandleQuietlyAsync(session, cancellationToken).ConfigureAwait(false);
+        if (handle is null)
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "No active live session to stop." };
+        }
+
+        await handle.CancelTurnAsync(cancellationToken).ConfigureAwait(false);
         await AppendSystemNoteAsync(session, "Turn interrupted from mobile.", cancellationToken).ConfigureAwait(false);
         await BroadcastSessionSummaryAsync(session).ConfigureAwait(false);
 
@@ -560,13 +566,19 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var session = await ResolveTargetSessionAsync(request.SessionKey, cancellationToken).ConfigureAwait(false);
-        if (session?.LiveHandle is null || string.IsNullOrWhiteSpace(request.PermissionRequestId))
+        if (session is null || string.IsNullOrWhiteSpace(request.PermissionRequestId))
+        {
+            return new AcpGatewayActionResponse { Ok = false, Message = "Permission request is no longer active." };
+        }
+
+        var handle = session.LiveHandle ?? await TryAttachLiveHandleQuietlyAsync(session, cancellationToken).ConfigureAwait(false);
+        if (handle is null)
         {
             return new AcpGatewayActionResponse { Ok = false, Message = "Permission request is no longer active." };
         }
 
         var approved = request.Approved ?? true;
-        await session.LiveHandle.RespondPermissionAsync(
+        await handle.RespondPermissionAsync(
             request.PermissionRequestId,
             approved,
             request.SelectedOptionId,
@@ -699,6 +711,20 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         return session;
     }
 
+    private async Task<IAcpSessionHandle?> TryAttachLiveHandleQuietlyAsync(
+        AcpManagedSession session,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await EnsureLiveHandleAttachedAsync(session, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private async Task<IAcpSessionHandle> EnsureLiveHandleAttachedAsync(
         AcpManagedSession session,
         CancellationToken cancellationToken)
@@ -735,7 +761,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
                 session.LiveHandle = handle;
                 session.HasMobileAttachedOnce = true;
                 session.HasExternalTranscriptActivitySinceAttach = false;
-                session.MarkMobileTurnStartingUnderGate(DateTimeOffset.UtcNow);
+                if (handle is not PtyAttachedSessionHandle)
+                {
+                    session.MarkMobileTurnStartingUnderGate(DateTimeOffset.UtcNow);
+                }
                 StartLiveHandlePump(session, handle);
             }
             finally
@@ -899,8 +928,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
     {
         try
         {
-            var adapter = _runtime.GetAdapter(session.Provider);
-            await foreach (var ev in adapter.TailSessionTranscriptAsync(
+            await foreach (var ev in _runtime.TailSessionAsync(
                 discovered,
                 includeHistory: false,
                 followLive: true,
@@ -1038,7 +1066,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
             if (!isFromTranscriptTail)
             {
                 session.LastMobileTurnActivityAt = now;
-                session.SuppressTranscriptTailUntilNextUserMessage = true;
+                if (session.LiveHandle is not PtyAttachedSessionHandle)
+                {
+                    session.SuppressTranscriptTailUntilNextUserMessage = true;
+                }
             }
             else
             {
