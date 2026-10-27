@@ -1022,6 +1022,134 @@ internal static partial class AcpMobilePage
     return (s.providerDisplayName || s.provider || 'Agent').toUpperCase();
   }
 
+  const thoughtStreamers = new Map();
+
+  function computeThoughtWindowChars() {
+    const w = window.innerWidth || 390;
+    return Math.max(44, Math.min(108, Math.floor((w - 118) / 6.8)));
+  }
+
+  function extractLatestThoughtParagraph(rawText) {
+    if (!rawText) return '';
+    const cleaned = String(rawText).trim();
+    const lastNl = cleaned.lastIndexOf('\n');
+    const latest = lastNl >= 0 ? cleaned.slice(lastNl + 1).trim() : cleaned;
+    return latest || cleaned.replace(/\n+/g, ' ').trim();
+  }
+
+  function formatThoughtLineWindow(rawText, windowChars) {
+    const latest = extractLatestThoughtParagraph(rawText);
+    if (!latest) return '';
+    const limit = windowChars || computeThoughtWindowChars();
+    if (latest.length <= limit) return latest;
+    const words = latest.split(/\s+/).filter(Boolean);
+    let currentLine = '';
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i].length <= limit ? words[i] : words[i].slice(-limit);
+      if (!currentLine) {
+        currentLine = w;
+      } else if (currentLine.length + 1 + w.length <= limit) {
+        currentLine += ' ' + w;
+      } else {
+        currentLine = w;
+      }
+    }
+    return currentLine || latest.slice(-limit);
+  }
+
+  function stopAllThoughtStreamersExcept(activeItemId) {
+    thoughtStreamers.forEach((st, id) => {
+      if (id !== activeItemId && st.timer) {
+        clearInterval(st.timer);
+        st.timer = null;
+      }
+    });
+  }
+
+  function bindThoughtRowStream(item, isRunning, thoughtRow, thoughtSpan, rawThoughtText) {
+    const windowChars = computeThoughtWindowChars();
+    thoughtRow.dataset.fullThought = rawThoughtText;
+
+    if (!isRunning) {
+      const prev = thoughtStreamers.get(item.id);
+      if (prev && prev.timer) {
+        clearInterval(prev.timer);
+        prev.timer = null;
+      }
+      thoughtSpan.textContent = thoughtRow.classList.contains('wrap')
+        ? rawThoughtText
+        : formatThoughtLineWindow(rawThoughtText, windowChars);
+      return;
+    }
+
+    stopAllThoughtStreamersExcept(item.id);
+    const latestPara = extractLatestThoughtParagraph(rawThoughtText);
+    const words = latestPara ? latestPara.split(/\s+/).filter(Boolean) : [];
+    let st = thoughtStreamers.get(item.id);
+
+    if (!st || st.paragraph !== latestPara) {
+      const isPrefixExtension = st && st.paragraph && latestPara.startsWith(st.paragraph);
+      if (isPrefixExtension) {
+        st.paragraph = latestPara;
+        st.words = words;
+      } else {
+        if (st && st.timer) clearInterval(st.timer);
+        st = {
+          paragraph: latestPara,
+          words,
+          wordIndex: 0,
+          currentLine: '',
+          timer: null,
+          rowEl: thoughtRow,
+          spanEl: thoughtSpan
+        };
+        thoughtStreamers.set(item.id, st);
+      }
+    }
+
+    st.rowEl = thoughtRow;
+    st.spanEl = thoughtSpan;
+
+    const advanceWord = () => {
+      const limit = computeThoughtWindowChars();
+      if (st.wordIndex >= st.words.length) {
+        if (st.timer) {
+          clearInterval(st.timer);
+          st.timer = null;
+        }
+        return;
+      }
+      const nextWord = st.words[st.wordIndex++];
+      const clipped = nextWord.length <= limit ? nextWord : nextWord.slice(-limit);
+      if (!st.currentLine) {
+        st.currentLine = clipped;
+      } else if (st.currentLine.length + 1 + clipped.length <= limit) {
+        st.currentLine += ' ' + clipped;
+      } else {
+        st.currentLine = clipped;
+      }
+      if (st.rowEl && st.spanEl) {
+        st.spanEl.textContent = st.rowEl.classList.contains('wrap')
+          ? (st.rowEl.dataset.fullThought || latestPara)
+          : st.currentLine;
+      }
+    };
+
+    if (!st.currentLine && st.words.length > 0) {
+      advanceWord();
+    } else {
+      thoughtSpan.textContent = thoughtRow.classList.contains('wrap')
+        ? rawThoughtText
+        : (st.currentLine || formatThoughtLineWindow(rawThoughtText, windowChars));
+    }
+
+    if (!st.timer && st.wordIndex < st.words.length) {
+      const remaining = st.words.length - st.wordIndex;
+      const stepMs = remaining > 24 ? 16 : 28;
+      st.timer = setInterval(advanceWord, stepMs);
+    }
+  }
+
   function createTimelineItemNode(item, isLatestItem) {
     if (item.kind === 'tool_call') {
       const isRunning = item.toolStatus === 'in_progress' && !!isLatestItem;
@@ -1056,8 +1184,9 @@ internal static partial class AcpMobilePage
 
         const thoughtSpan = document.createElement('span');
         thoughtSpan.className = 'tool-target-text thought';
-        thoughtSpan.textContent = thoughtText;
         thoughtTitle.appendChild(thoughtSpan);
+
+        bindThoughtRowStream(item, isRunning, thoughtRow, thoughtSpan, thoughtText);
 
         thoughtRow.appendChild(thoughtTitle);
 
@@ -1073,7 +1202,11 @@ internal static partial class AcpMobilePage
 
         thoughtRow.addEventListener('click', e => {
           e.stopPropagation();
-          thoughtRow.classList.toggle('wrap');
+          const wrapped = thoughtRow.classList.toggle('wrap');
+          const full = thoughtRow.dataset.fullThought || thoughtText;
+          thoughtSpan.textContent = wrapped
+            ? full
+            : formatThoughtLineWindow(full, computeThoughtWindowChars());
         });
 
         card.appendChild(thoughtRow);
@@ -1274,9 +1407,9 @@ internal static partial class AcpMobilePage
     const isTurnActive = !!(summary && summary.isTurnActive);
     const items = (state.activeSession && state.activeSession.timeline) || [];
     const lastItem = items.length > 0 ? items[items.length - 1] : null;
-    const hasRunningToolCard = lastItem && lastItem.kind === 'tool_call' && lastItem.toolStatus === 'in_progress';
+    const hasEmptyHero = !state.loadingSession && !!timelineInner.querySelector('.hero-card');
 
-    if (!isTurnActive || hasRunningToolCard || timelineInner.querySelector('.hero-card')) {
+    if (!isTurnActive || hasEmptyHero) {
       if (existingBar) existingBar.remove();
       return;
     }
@@ -1354,6 +1487,10 @@ internal static partial class AcpMobilePage
       const nextThoughtRow = newNode.querySelector('.tool-thought-row');
       if (prevThoughtRow && nextThoughtRow && prevThoughtRow.classList.contains('wrap')) {
         nextThoughtRow.classList.add('wrap');
+        const nextSpan = nextThoughtRow.querySelector('.tool-target-text.thought');
+        if (nextSpan && nextThoughtRow.dataset.fullThought) {
+          nextSpan.textContent = nextThoughtRow.dataset.fullThought;
+        }
       }
       const prevDetails = existingNode.querySelector('details.thinking-box');
       const nextDetails = newNode.querySelector('details.thinking-box');
@@ -1413,6 +1550,7 @@ internal static partial class AcpMobilePage
 
       box.append(iconWrap, h2, p);
       timelineInner.appendChild(box);
+      syncLiveTurnIndicator();
       updateJumpBottomButton();
       return;
     }

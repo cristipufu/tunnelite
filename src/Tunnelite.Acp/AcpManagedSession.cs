@@ -100,6 +100,11 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
 
     public static AcpManagedSession FromDiscovered(AcpDiscoveredSession discovered, string defaultWorkingDirectory)
     {
+        var now = DateTimeOffset.UtcNow;
+        var initialDiskActivity = discovered.IsActive && (now - discovered.UpdatedAt) <= AcpGatewayDefaults.ActiveDiskTurnThreshold
+            ? discovered.UpdatedAt
+            : DateTimeOffset.MinValue;
+
         return new AcpManagedSession(discovered.Provider, discovered.SessionId)
         {
             Title = string.IsNullOrWhiteSpace(discovered.Title)
@@ -111,6 +116,7 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
             Model = discovered.Model,
             CreatedAt = discovered.CreatedAt,
             UpdatedAt = discovered.UpdatedAt,
+            LastDiskActivityAt = initialDiskActivity,
             DiscoveredMessageCount = discovered.MessageCount,
             IsDiscoveredOnDisk = true
         };
@@ -157,7 +163,68 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
             UpdatedAt = discovered.UpdatedAt;
         }
 
+        if (!InitialHistoryLoaded &&
+            discovered.IsActive &&
+            (DateTimeOffset.UtcNow - discovered.UpdatedAt) <= AcpGatewayDefaults.ActiveDiskTurnThreshold &&
+            discovered.UpdatedAt > LastDiskActivityAt)
+        {
+            LastDiskActivityAt = discovered.UpdatedAt;
+        }
+
         DiscoveredMessageCount = Math.Max(DiscoveredMessageCount, discovered.MessageCount);
+    }
+
+    public void ReconcileInitialHistoryActivityUnderGate(DateTimeOffset fileLastWriteUtc)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var clampedWrite = fileLastWriteUtc > now ? now : fileLastWriteUtc;
+        if (clampedWrite > UpdatedAt)
+        {
+            UpdatedAt = clampedWrite;
+        }
+
+        var isRecentWrite = (now - clampedWrite) <= AcpGatewayDefaults.ActiveDiskTurnThreshold;
+        var lastItem = Timeline.Count > 0 ? Timeline[^1] : null;
+
+        if (lastItem is null)
+        {
+            return;
+        }
+
+        if (lastItem.Kind == TimelineItemKinds.ToolCall)
+        {
+            if (isRecentWrite)
+            {
+                if (clampedWrite > LastDiskActivityAt)
+                {
+                    LastDiskActivityAt = clampedWrite;
+                }
+
+                if (!string.Equals(lastItem.ToolStatus, AcpToolStatuses.InProgress, StringComparison.OrdinalIgnoreCase))
+                {
+                    Timeline[^1] = lastItem with { ToolStatus = AcpToolStatuses.InProgress };
+                }
+            }
+            else
+            {
+                LastDiskActivityAt = DateTimeOffset.MinValue;
+            }
+            return;
+        }
+
+        if (lastItem.Kind == TimelineItemKinds.Message && lastItem.Role == AcpRoles.User)
+        {
+            if (isRecentWrite && clampedWrite > LastDiskActivityAt)
+            {
+                LastDiskActivityAt = clampedWrite;
+            }
+            return;
+        }
+
+        if ((now - clampedWrite) > AcpGatewayDefaults.CompletedAssistantTurnGraceThreshold)
+        {
+            LastDiskActivityAt = DateTimeOffset.MinValue;
+        }
     }
 
     public AcpSessionConfig BuildAttachConfigUnderGate(string defaultWorkingDirectory)
@@ -200,8 +267,15 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
     {
         UpdatedAt = now;
         LastMobileTurnActivityAt = now;
-        MobileTurnStartingUntil = now.Add(AcpGatewayDefaults.MobileTurnStartingWindow);
-        SuppressTranscriptTailUntilNextUserMessage = true;
+        if (LiveHandle is PtyAttachedSessionHandle)
+        {
+            LastDiskActivityAt = now;
+        }
+        else
+        {
+            MobileTurnStartingUntil = now.Add(AcpGatewayDefaults.MobileTurnStartingWindow);
+            SuppressTranscriptTailUntilNextUserMessage = true;
+        }
 
         if (!string.IsNullOrWhiteSpace(promptText))
         {
@@ -217,7 +291,21 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
         AcpEvent acpEvent,
         DateTimeOffset now)
     {
-        if ((LiveHandle?.IsTurnActive ?? false) || now < MobileTurnStartingUntil)
+        var isPtyAttached = LiveHandle is PtyAttachedSessionHandle;
+
+        if (acpEvent is AcpPermissionRequestEvent)
+        {
+            if (isPtyAttached)
+            {
+                // PtyAttachedSessionHandle already streams permission events on its control pump.
+                return new TranscriptTailDecision(ShouldProcess: false);
+            }
+
+            LastDiskActivityAt = now;
+            return new TranscriptTailDecision(ShouldProcess: true);
+        }
+
+        if ((!isPtyAttached && (LiveHandle?.IsTurnActive ?? false)) || now < MobileTurnStartingUntil)
         {
             return new TranscriptTailDecision(ShouldProcess: false);
         }
@@ -229,12 +317,13 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
                 string.Equals(cleanedUser, LastMobilePromptText, StringComparison.Ordinal))
             {
                 LastMobilePromptText = null;
+                LastDiskActivityAt = now;
                 return new TranscriptTailDecision(ShouldProcess: false);
             }
 
             SuppressTranscriptTailUntilNextUserMessage = false;
         }
-        else if (SuppressTranscriptTailUntilNextUserMessage)
+        else if (!isPtyAttached && SuppressTranscriptTailUntilNextUserMessage)
         {
             if ((now - LastMobileTurnCompletedAt) <= AcpGatewayDefaults.PostTurnTailSuppressionWindow)
             {
@@ -244,7 +333,8 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
             SuppressTranscriptTailUntilNextUserMessage = false;
         }
 
-        if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: AcpRoles.Assistant } asstEntry &&
+        if (!isPtyAttached &&
+            acpEvent is AcpTranscriptHistoryEntryEvent { Role: AcpRoles.Assistant } asstEntry &&
             !string.IsNullOrWhiteSpace(LastMobileAssistantText) &&
             string.Equals(asstEntry.Text?.Trim(), LastMobileAssistantText, StringComparison.Ordinal))
         {
@@ -255,7 +345,7 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
         LastDiskActivityAt = now;
 
         DetachedLiveHandle detachedOnExternalActivity = default;
-        if (LiveHandle is not null)
+        if (LiveHandle is not null and not PtyAttachedSessionHandle)
         {
             HasExternalTranscriptActivitySinceAttach = true;
             detachedOnExternalActivity = DetachLiveHandleUnderGate();
@@ -273,6 +363,11 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
 
         LastMobileTurnCompletedAt = now;
         MobileTurnStartingUntil = DateTimeOffset.MinValue;
+
+        if (LiveHandle is PtyAttachedSessionHandle)
+        {
+            return default;
+        }
 
         if (IsDiscoveredOnDisk &&
             LiveHandle is not null &&
@@ -341,7 +436,8 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
         var queuedCount = handle?.GetQueuedPrompts().Count ?? 0;
         var now = DateTimeOffset.UtcNow;
         var recentDiskTurn = (now - LastDiskActivityAt) <= AcpGatewayDefaults.ActiveDiskTurnThreshold;
-        var isTurnActive = (handle?.IsTurnActive ?? false) || recentDiskTurn;
+        var isLiveSubprocessTurn = handle is not null and not PtyAttachedSessionHandle && handle.IsTurnActive;
+        var isTurnActive = isLiveSubprocessTurn || recentDiskTurn;
         var isActiveNow = isTurnActive ||
                           handle is not null ||
                           (now - UpdatedAt) <= AcpGatewayDefaults.ActiveSessionRecencyThreshold;

@@ -162,6 +162,9 @@ See [paired access](docs/paired-access.md) for profile options and device manage
 Bridge your local **Claude Code**, **OpenAI Codex**, **Grok**, and **Google Antigravity** sessions to a paired mobile browser using [Acplite](https://github.com/cristipufu/acplite):
 
 ```bash
+# Optional one-time setup: wrap terminal agent tabs so mobile prompts and tool approvals run inside your open terminal
+tunnelite acp --install-hooks
+
 # Connect all installed local coding agents (claude, codex, grok, agy)
 tunnelite acp
 
@@ -172,7 +175,7 @@ tunnelite acp grok
 tunnelite acp agy
 ```
 
-Scan the pairing QR code on your phone to live-tail active desktop sessions, take over a session, steer active turns in real time, queue follow-up prompts for the next turn, interrupt turns, and approve or deny tool calls.
+Scan the pairing QR code on your phone to live-tail active desktop sessions, take over a session, steer active turns in real time, queue follow-up prompts for the next turn, interrupt turns, and approve or deny tool calls. With `--install-hooks`, prompts and tool approvals from your phone are injected directly into your open terminal tabs (`--hooks-status` / `--uninstall-hooks`), falling back to background session resume when hooks are not installed.
 
 ## Self-hosting
 
