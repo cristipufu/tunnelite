@@ -53,16 +53,17 @@ internal static class AcpGatewayDefaults
     public const int MaxToolPayloadChars = 12000;
     public const int MaxToolSummaryChars = 200;
     public const int MaxActivityLogEntries = 60;
-    public const int DefaultThoughtPreviewChars = 140;
-    public const int MaxStreamingThoughtBufferChars = 1200;
+    public const int DefaultThoughtPreviewChars = 110;
+    public const int MaxStreamingThoughtBufferChars = 1600;
     public const int MaxRecentDirectories = 8;
     public const int MaxDiscoveredSessionsPerProvider = 30;
 
-    public static readonly TimeSpan MonitorLoopInterval = TimeSpan.FromSeconds(2.5);
-    public const int DiscoveryRefreshEveryMonitorTicks = 5;
+    public static readonly TimeSpan MonitorLoopInterval = TimeSpan.FromSeconds(1.0);
+    public const int DiscoveryRefreshEveryMonitorTicks = 8;
     public static readonly TimeSpan MobileTurnStartingWindow = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan PostTurnTailSuppressionWindow = TimeSpan.FromSeconds(2.5);
     public static readonly TimeSpan ActiveDiskTurnThreshold = TimeSpan.FromSeconds(35);
+    public static readonly TimeSpan CompletedAssistantTurnGraceThreshold = TimeSpan.FromSeconds(6);
     public static readonly TimeSpan ActiveSessionRecencyThreshold = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan BackgroundTaskShutdownTimeout = TimeSpan.FromMilliseconds(500);
 }

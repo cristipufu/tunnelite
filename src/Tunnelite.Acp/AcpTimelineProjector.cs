@@ -150,13 +150,13 @@ internal static class AcpTimelineProjector
                            hist.Role is not (AcpRoles.Tool or AcpRoles.System) &&
                            !string.Equals(cleanedText, hist.ToolName, StringComparison.OrdinalIgnoreCase);
 
-        var thoughtPreview = hist.Role != AcpRoles.User
-            ? AcpTextFormatter.FormatThoughtPreview(hist.Thinking, AcpGatewayDefaults.DefaultThoughtPreviewChars)
+        var thoughtStream = hist.Role != AcpRoles.User
+            ? AcpTextFormatter.CleanThoughtStream(hist.Thinking)
             : null;
 
         if (!hasProseText && hist.Role != AcpRoles.User)
         {
-            return ApplyNonProseHistoryStep(session, hist, cleanedText, thoughtPreview, isHistoricalLoad, nextItemId);
+            return ApplyNonProseHistoryStep(session, hist, cleanedText, thoughtStream, isHistoricalLoad, nextItemId);
         }
 
         AcpGatewayTimelineItem? settledActivity = null;
@@ -199,7 +199,7 @@ internal static class AcpTimelineProjector
                     ToolCallId: hist.ToolCallId,
                     ToolKind: AcpToolKinds.Command,
                     ToolStatus: AcpToolStatuses.Completed,
-                    ThoughtPreview: thoughtPreview),
+                    ThoughtPreview: thoughtStream),
                 nextItemId);
         }
 
@@ -461,8 +461,9 @@ internal static class AcpTimelineProjector
             ? AcpTextFormatter.TruncateLargePayload(combined, AcpGatewayDefaults.MaxStreamingThoughtBufferChars)
             : null;
 
-        var preview = AcpTextFormatter.FormatThoughtPreview(combined, AcpGatewayDefaults.DefaultThoughtPreviewChars);
-        if (string.IsNullOrWhiteSpace(preview))
+        var previewWindow = AcpTextFormatter.FormatThoughtPreview(combined, AcpGatewayDefaults.DefaultThoughtPreviewChars);
+        var cleanedStream = AcpTextFormatter.CleanThoughtStream(combined) ?? previewWindow;
+        if (string.IsNullOrWhiteSpace(previewWindow))
         {
             return session.Timeline.Count > 0 && session.Timeline[^1].Kind == TimelineItemKinds.ToolCall
                 ? session.Timeline[^1]
@@ -478,7 +479,7 @@ internal static class AcpTimelineProjector
                 {
                     Timestamp = timestamp,
                     ToolStatus = toolStatus,
-                    Thinking = preview
+                    Thinking = cleanedStream
                 }
                 : last with
                 {
@@ -486,8 +487,8 @@ internal static class AcpTimelineProjector
                     ToolName = "thinking",
                     ToolKind = AcpToolKinds.Thought,
                     ToolStatus = toolStatus,
-                    Text = preview,
-                    Thinking = preview
+                    Text = previewWindow,
+                    Thinking = cleanedStream
                 };
             session.Timeline[^1] = updated;
             return updated;
@@ -502,10 +503,10 @@ internal static class AcpTimelineProjector
             ToolName = "thinking",
             ToolKind = AcpToolKinds.Thought,
             ToolStatus = toolStatus,
-            Text = preview,
+            Text = previewWindow,
             StepCount = 0,
             ActivityLog = [],
-            Thinking = preview
+            Thinking = cleanedStream
         };
         session.AddTimelineItemUnderGate(created);
         return created;

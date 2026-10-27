@@ -59,53 +59,10 @@ internal static class AcpTextFormatter
     }
 
     public static string? FormatThoughtPreview(string? rawThinking, int maxLen = AcpGatewayDefaults.DefaultThoughtPreviewChars)
-    {
-        if (string.IsNullOrWhiteSpace(rawThinking))
-        {
-            return null;
-        }
+        => TextSanitizer.FormatThoughtLineWindow(rawThinking, maxLen);
 
-        var sb = new StringBuilder(Math.Min(rawThinking.Length, maxLen + 32));
-        var prevSpace = true;
-        foreach (var ch in rawThinking)
-        {
-            if (ch is '*' or '`' or '_' or '#')
-            {
-                continue;
-            }
-
-            if (char.IsWhiteSpace(ch))
-            {
-                if (!prevSpace)
-                {
-                    sb.Append(' ');
-                    prevSpace = true;
-                }
-                continue;
-            }
-
-            sb.Append(ch);
-            prevSpace = false;
-            if (sb.Length >= maxLen + 16)
-            {
-                break;
-            }
-        }
-
-        var cleaned = sb.ToString().Trim();
-        if (cleaned.Length <= maxLen)
-        {
-            return cleaned;
-        }
-
-        var cut = cleaned.LastIndexOf(' ', maxLen);
-        if (cut < maxLen / 2)
-        {
-            cut = maxLen;
-        }
-
-        return cleaned[..cut].TrimEnd() + "…";
-    }
+    public static string? CleanThoughtStream(string? rawThinking, int maxTailChars = AcpGatewayDefaults.MaxStreamingThoughtBufferChars)
+        => TextSanitizer.CleanThoughtStream(rawThinking, maxTailChars);
 
     public static string? TruncateLargePayload(string? value, int maxChars)
     {

@@ -505,6 +505,89 @@ public class AcpGatewayTests(BareTunnelHost host) : IClassFixture<BareTunnelHost
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", cts.Token);
     }
 
+    [Fact]
+    public async Task SelectSession_immediately_marks_active_disk_turn_and_streams_thought_line_windows()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "tunnelite-acp-live-switch-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var transcriptPath = Path.Combine(tempDir, "transcript.jsonl");
+            await File.WriteAllTextAsync(transcriptPath, "{\"step_index\":1}\n");
+            File.SetLastWriteTimeUtc(transcriptPath, DateTime.UtcNow);
+
+            var now = DateTimeOffset.UtcNow;
+            var longThought = "**Initial paragraph** checking the workspace.\n\n\nSecond paragraph streaming live thought tokens across the inline bar width so the mobile client replaces the line window with the latest tokens at the end.";
+
+            var fakeAgy = new ControllableTestAdapter(AgentProviderKind.Antigravity, "agy", "Google Antigravity")
+            {
+                DiscoveredSessions =
+                [
+                    new AcpDiscoveredSession(
+                        Provider: AgentProviderKind.Antigravity,
+                        SessionId: "disc-agy-101",
+                        Title: "Live Ghostty session",
+                        WorkingDirectory: tempDir,
+                        TranscriptPath: transcriptPath,
+                        UpdatedAt: now,
+                        CreatedAt: now.AddMinutes(-5),
+                        Model: "gemini-2.5-pro",
+                        IsActive: true,
+                        MessageCount: 2)
+                ],
+                TranscriptHistoryEvents =
+                [
+                    new AcpTranscriptHistoryEntryEvent(
+                        Provider: AgentProviderKind.Antigravity,
+                        SessionId: "disc-agy-101",
+                        Timestamp: now.AddSeconds(-2),
+                        Role: AcpRoles.User,
+                        Text: "Stream live thoughts"),
+                    new AcpTranscriptHistoryEntryEvent(
+                        Provider: AgentProviderKind.Antigravity,
+                        SessionId: "disc-agy-101",
+                        Timestamp: now.AddSeconds(-1),
+                        Role: AcpRoles.Assistant,
+                        Text: string.Empty,
+                        Thinking: longThought)
+                ]
+            };
+
+            await using var runtime = new AcpliteRuntime([fakeAgy]);
+            await using var orchestrator = new AcpGatewayOrchestrator(
+                scopedProvider: AgentProviderKind.Antigravity,
+                defaultWorkingDirectory: tempDir,
+                runtime: runtime);
+
+            await orchestrator.InitializeAsync();
+
+            var selectRes = await orchestrator.ExecuteActionAsync(new AcpGatewayActionRequest
+            {
+                Action = GatewayActions.SelectSession,
+                SessionKey = "agy:disc-agy-101"
+            });
+
+            Assert.True(selectRes.Ok);
+            Assert.NotNull(selectRes.Session);
+            Assert.True(selectRes.Session!.Summary.IsTurnActive);
+
+            var trailingTool = Assert.Single(selectRes.Session.Timeline, i => i.Kind == TimelineItemKinds.ToolCall);
+            Assert.Equal(AcpToolStatuses.InProgress, trailingTool.ToolStatus);
+            Assert.NotNull(trailingTool.Text);
+            Assert.True(trailingTool.Text!.Length <= AcpGatewayDefaults.DefaultThoughtPreviewChars);
+            Assert.Contains("latest tokens at the end.", trailingTool.Text, StringComparison.Ordinal);
+            Assert.NotNull(trailingTool.Thinking);
+            Assert.Contains("Initial paragraph checking the workspace.\nSecond paragraph", trailingTool.Thinking, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
     [Trait("Category", "Cli")]
     [CliFact]
     public async Task Cli_acp_subcommand_scopes_provider_and_serves_paired_mobile_orchestrator()

@@ -859,10 +859,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
             session.LastObservedFileLength = fi.Length;
             var lastWrite = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
-            if (lastWrite > session.UpdatedAt)
-            {
-                session.UpdatedAt = lastWrite;
-            }
+            session.ReconcileInitialHistoryActivityUnderGate(lastWrite);
         }
         catch
         {

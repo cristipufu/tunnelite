@@ -100,6 +100,11 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
 
     public static AcpManagedSession FromDiscovered(AcpDiscoveredSession discovered, string defaultWorkingDirectory)
     {
+        var now = DateTimeOffset.UtcNow;
+        var initialDiskActivity = discovered.IsActive && (now - discovered.UpdatedAt) <= AcpGatewayDefaults.ActiveDiskTurnThreshold
+            ? discovered.UpdatedAt
+            : DateTimeOffset.MinValue;
+
         return new AcpManagedSession(discovered.Provider, discovered.SessionId)
         {
             Title = string.IsNullOrWhiteSpace(discovered.Title)
@@ -111,6 +116,7 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
             Model = discovered.Model,
             CreatedAt = discovered.CreatedAt,
             UpdatedAt = discovered.UpdatedAt,
+            LastDiskActivityAt = initialDiskActivity,
             DiscoveredMessageCount = discovered.MessageCount,
             IsDiscoveredOnDisk = true
         };
@@ -157,7 +163,68 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
             UpdatedAt = discovered.UpdatedAt;
         }
 
+        if (!InitialHistoryLoaded &&
+            discovered.IsActive &&
+            (DateTimeOffset.UtcNow - discovered.UpdatedAt) <= AcpGatewayDefaults.ActiveDiskTurnThreshold &&
+            discovered.UpdatedAt > LastDiskActivityAt)
+        {
+            LastDiskActivityAt = discovered.UpdatedAt;
+        }
+
         DiscoveredMessageCount = Math.Max(DiscoveredMessageCount, discovered.MessageCount);
+    }
+
+    public void ReconcileInitialHistoryActivityUnderGate(DateTimeOffset fileLastWriteUtc)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var clampedWrite = fileLastWriteUtc > now ? now : fileLastWriteUtc;
+        if (clampedWrite > UpdatedAt)
+        {
+            UpdatedAt = clampedWrite;
+        }
+
+        var isRecentWrite = (now - clampedWrite) <= AcpGatewayDefaults.ActiveDiskTurnThreshold;
+        var lastItem = Timeline.Count > 0 ? Timeline[^1] : null;
+
+        if (lastItem is null)
+        {
+            return;
+        }
+
+        if (lastItem.Kind == TimelineItemKinds.ToolCall)
+        {
+            if (isRecentWrite)
+            {
+                if (clampedWrite > LastDiskActivityAt)
+                {
+                    LastDiskActivityAt = clampedWrite;
+                }
+
+                if (!string.Equals(lastItem.ToolStatus, AcpToolStatuses.InProgress, StringComparison.OrdinalIgnoreCase))
+                {
+                    Timeline[^1] = lastItem with { ToolStatus = AcpToolStatuses.InProgress };
+                }
+            }
+            else
+            {
+                LastDiskActivityAt = DateTimeOffset.MinValue;
+            }
+            return;
+        }
+
+        if (lastItem.Kind == TimelineItemKinds.Message && lastItem.Role == AcpRoles.User)
+        {
+            if (isRecentWrite && clampedWrite > LastDiskActivityAt)
+            {
+                LastDiskActivityAt = clampedWrite;
+            }
+            return;
+        }
+
+        if ((now - clampedWrite) > AcpGatewayDefaults.CompletedAssistantTurnGraceThreshold)
+        {
+            LastDiskActivityAt = DateTimeOffset.MinValue;
+        }
     }
 
     public AcpSessionConfig BuildAttachConfigUnderGate(string defaultWorkingDirectory)
