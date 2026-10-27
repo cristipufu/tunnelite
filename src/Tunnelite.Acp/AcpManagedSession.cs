@@ -267,7 +267,11 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
     {
         UpdatedAt = now;
         LastMobileTurnActivityAt = now;
-        if (LiveHandle is not PtyAttachedSessionHandle)
+        if (LiveHandle is PtyAttachedSessionHandle)
+        {
+            LastDiskActivityAt = now;
+        }
+        else
         {
             MobileTurnStartingUntil = now.Add(AcpGatewayDefaults.MobileTurnStartingWindow);
             SuppressTranscriptTailUntilNextUserMessage = true;
@@ -287,19 +291,21 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
         AcpEvent acpEvent,
         DateTimeOffset now)
     {
-        if (LiveHandle is PtyAttachedSessionHandle)
-        {
-            LastDiskActivityAt = now;
-            return new TranscriptTailDecision(ShouldProcess: false);
-        }
+        var isPtyAttached = LiveHandle is PtyAttachedSessionHandle;
 
         if (acpEvent is AcpPermissionRequestEvent)
         {
+            if (isPtyAttached)
+            {
+                // PtyAttachedSessionHandle already streams permission events on its control pump.
+                return new TranscriptTailDecision(ShouldProcess: false);
+            }
+
             LastDiskActivityAt = now;
             return new TranscriptTailDecision(ShouldProcess: true);
         }
 
-        if ((LiveHandle?.IsTurnActive ?? false) || now < MobileTurnStartingUntil)
+        if ((!isPtyAttached && (LiveHandle?.IsTurnActive ?? false)) || now < MobileTurnStartingUntil)
         {
             return new TranscriptTailDecision(ShouldProcess: false);
         }
@@ -311,12 +317,13 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
                 string.Equals(cleanedUser, LastMobilePromptText, StringComparison.Ordinal))
             {
                 LastMobilePromptText = null;
+                LastDiskActivityAt = now;
                 return new TranscriptTailDecision(ShouldProcess: false);
             }
 
             SuppressTranscriptTailUntilNextUserMessage = false;
         }
-        else if (SuppressTranscriptTailUntilNextUserMessage)
+        else if (!isPtyAttached && SuppressTranscriptTailUntilNextUserMessage)
         {
             if ((now - LastMobileTurnCompletedAt) <= AcpGatewayDefaults.PostTurnTailSuppressionWindow)
             {
@@ -326,7 +333,8 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
             SuppressTranscriptTailUntilNextUserMessage = false;
         }
 
-        if (acpEvent is AcpTranscriptHistoryEntryEvent { Role: AcpRoles.Assistant } asstEntry &&
+        if (!isPtyAttached &&
+            acpEvent is AcpTranscriptHistoryEntryEvent { Role: AcpRoles.Assistant } asstEntry &&
             !string.IsNullOrWhiteSpace(LastMobileAssistantText) &&
             string.Equals(asstEntry.Text?.Trim(), LastMobileAssistantText, StringComparison.Ordinal))
         {
@@ -337,7 +345,7 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
         LastDiskActivityAt = now;
 
         DetachedLiveHandle detachedOnExternalActivity = default;
-        if (LiveHandle is not null)
+        if (LiveHandle is not null and not PtyAttachedSessionHandle)
         {
             HasExternalTranscriptActivitySinceAttach = true;
             detachedOnExternalActivity = DetachLiveHandleUnderGate();
@@ -428,7 +436,8 @@ internal sealed class AcpManagedSession(AgentProviderKind provider, string sessi
         var queuedCount = handle?.GetQueuedPrompts().Count ?? 0;
         var now = DateTimeOffset.UtcNow;
         var recentDiskTurn = (now - LastDiskActivityAt) <= AcpGatewayDefaults.ActiveDiskTurnThreshold;
-        var isTurnActive = (handle?.IsTurnActive ?? false) || recentDiskTurn;
+        var isLiveSubprocessTurn = handle is not null and not PtyAttachedSessionHandle && handle.IsTurnActive;
+        var isTurnActive = isLiveSubprocessTurn || recentDiskTurn;
         var isActiveNow = isTurnActive ||
                           handle is not null ||
                           (now - UpdatedAt) <= AcpGatewayDefaults.ActiveSessionRecencyThreshold;

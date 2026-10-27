@@ -734,6 +734,7 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
         {
             DetachedLiveHandle staleHandle;
             AcpSessionConfig config;
+            AcpDiscoveredSession? discoveredForPty = null;
 
             await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -745,6 +746,10 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
                 staleHandle = session.DetachLiveHandleUnderGate();
                 config = session.BuildAttachConfigUnderGate(_defaultWorkingDirectory);
+                if (!string.IsNullOrWhiteSpace(session.TranscriptPath))
+                {
+                    discoveredForPty = session.ToDiscoveredSessionUnderGate();
+                }
             }
             finally
             {
@@ -753,7 +758,17 @@ public sealed class AcpGatewayOrchestrator : IAsyncDisposable
 
             await staleHandle.DisposeAsync().ConfigureAwait(false);
 
-            var handle = await _runtime.StartSessionAsync(config, cancellationToken).ConfigureAwait(false);
+            IAcpSessionHandle? ptyHandle = null;
+            if (config.AttachToPtyIfAvailable && (config.ResumeExisting || !string.IsNullOrWhiteSpace(config.SessionId)))
+            {
+                ptyHandle = await _runtime.TryAttachToExternalSessionAsync(
+                    config,
+                    discoveredForPty,
+                    enableInternalTranscriptTail: false,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            var handle = ptyHandle ?? await _runtime.StartSessionAsync(config, cancellationToken).ConfigureAwait(false);
 
             await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try

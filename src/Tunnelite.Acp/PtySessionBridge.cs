@@ -41,17 +41,19 @@ public sealed class PtySessionBridge(string? registryDirectory = null) : IAcpExt
             SingleWriter = true
         });
 
-        var pumpTask = PumpEventsLoopAsync(session, shortId, channel.Writer, cancellationToken);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var pumpTask = PumpEventsLoopAsync(session, shortId, channel.Writer, linkedCts.Token);
         try
         {
-            await foreach (var ev in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (var ev in channel.Reader.ReadAllAsync(linkedCts.Token).ConfigureAwait(false))
             {
                 yield return ev;
             }
         }
         finally
         {
-            try { await pumpTask.WaitAsync(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false); } catch { }
+            await linkedCts.CancelAsync().ConfigureAwait(false);
+            try { await pumpTask.WaitAsync(TimeSpan.FromMilliseconds(150)).ConfigureAwait(false); } catch { }
         }
     }
 
