@@ -16,12 +16,21 @@ public class Program
     public static async Task<int> Main(string[] args)
     {
         if (args.Length >= 2 &&
-            string.Equals(args[0], "acp-pty", StringComparison.OrdinalIgnoreCase) &&
-            !IsHelpFlag(args[1]) &&
-            !string.Equals(args[1], "list", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(args[1], "--list", StringComparison.OrdinalIgnoreCase))
+            string.Equals(args[0], "acp", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(args[1], "--pty", StringComparison.OrdinalIgnoreCase))
         {
-            return await ExecuteDirectPtyPassThroughAsync(args).ConfigureAwait(false);
+            if (args.Length == 2 ||
+                string.Equals(args[2], "list", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(args[2], "--list", StringComparison.OrdinalIgnoreCase))
+            {
+                await RenderActivePtySessionsTableAsync(CancellationToken.None).ConfigureAwait(false);
+                return 0;
+            }
+
+            if (!IsHelpFlag(args[2]))
+            {
+                return await ExecuteDirectPtyPassThroughAsync(args[2], args[3..]).ConfigureAwait(false);
+            }
         }
 
         var root = new RootCommand("CLI tool to create a tunnel to a local server.");
@@ -32,7 +41,6 @@ public class Program
         var acp = new Command("acp", "Bridge local coding agents (claude, codex, grok, agy) to paired mobile browsers.");
         ConfigureAcp(acp);
         root.AddCommand(acp);
-        root.AddCommand(BuildAcpPtyCommand());
         return await root.InvokeAsync(args);
     }
 
@@ -41,11 +49,11 @@ public class Program
            string.Equals(arg, "--help", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(arg, "-?", StringComparison.OrdinalIgnoreCase);
 
-    private static async Task<int> ExecuteDirectPtyPassThroughAsync(string[] args)
+    private static async Task<int> ExecuteDirectPtyPassThroughAsync(string rawAgentArg, string[] remainingArgs)
     {
         try
         {
-            var rawAgent = args[1].Trim();
+            var rawAgent = rawAgentArg.Trim();
             string providerShortId;
             string? resolvedBinaryPath = null;
 
@@ -71,14 +79,14 @@ public class Program
                 return 1;
             }
 
-            var startIdx = 2;
-            if (startIdx < args.Length && string.Equals(args[startIdx], "--", StringComparison.Ordinal))
+            var startIdx = 0;
+            if (startIdx < remainingArgs.Length && string.Equals(remainingArgs[startIdx], "--", StringComparison.Ordinal))
             {
                 startIdx++;
             }
 
-            var forwardedArgs = startIdx < args.Length
-                ? args[startIdx..]
+            var forwardedArgs = startIdx < remainingArgs.Length
+                ? remainingArgs[startIdx..]
                 : [];
 
             return await PtySessionRunner.RunInteractiveAsync(
@@ -91,20 +99,6 @@ public class Program
             AnsiConsole.Write(new Text(TerminalText.Clean(ex.Message) + Environment.NewLine, new Style(Color.Red)));
             return 1;
         }
-    }
-
-    private static Command BuildAcpPtyCommand()
-    {
-        var cmd = new Command("acp-pty", "Run an interactive coding agent inside a transparent pseudo-terminal (PTY) with a local control socket, or list active PTY sessions.");
-        var providerArg = new Argument<string?>("provider", () => "list", "Coding agent to launch (claude, codex, grok, agy) or 'list' to inspect active PTY tabs.");
-        var listOpt = new Option<bool>("--list", "List active PTY sessions registered on this machine.");
-        cmd.AddArgument(providerArg);
-        cmd.AddOption(listOpt);
-        SetSafeCommandHandler(cmd, async invocation =>
-        {
-            await RenderActivePtySessionsTableAsync(invocation.GetCancellationToken()).ConfigureAwait(false);
-        });
-        return cmd;
     }
 
     private static async Task RenderActivePtySessionsTableAsync(CancellationToken cancellationToken)
@@ -185,6 +179,7 @@ public class Program
         var hooksStatus = new Option<bool>("--hooks-status", "Inspect PTY shell hook installation status and active PTY sessions.");
         var shellOpt = new Option<string?>("--shell", () => null, "Optional shell override for --install-hooks / --uninstall-hooks (zsh, bash, fish, pwsh, powershell).");
         var agentsOpt = new Option<string?>("--agents", () => null, "Optional comma-separated list of agent commands to wrap with --install-hooks (default: claude,codex,grok,agy).");
+        var ptyOpt = new Option<bool>("--pty", "Run an interactive coding agent inside a transparent PTY with a local control socket (used by shell hooks).");
         command.AddArgument(provider);
         var common = CommonCliOptions.AttachTo(command);
         command.AddOption(cwd);
@@ -193,6 +188,7 @@ public class Program
         command.AddOption(hooksStatus);
         command.AddOption(shellOpt);
         command.AddOption(agentsOpt);
+        command.AddOption(ptyOpt);
 
         SetSafeCommandHandler(command, async invocation =>
         {
@@ -233,7 +229,7 @@ public class Program
             var providers = ShellHookInstaller.ParseProvidersList(agentsCsv);
             var result = await ShellHookInstaller.InstallAsync(
                 shell,
-                wrapperCommand: "tunnelite acp-pty",
+                wrapperCommand: "tunnelite acp --pty",
                 providers: providers,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             AnsiConsole.Write(new Text(
